@@ -10,6 +10,7 @@ CODE_DIR = '/home/matteo/Documents/github/repler/'
 svdir = '/home/matteo/Documents/uni/columbia/bleilearning/'
 
 import torch
+import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as D
@@ -73,7 +74,7 @@ class GausDiag(nn.Module):
         """Return instance(s) of distribution, with parameters theta"""
         mu, logvar = theta.chunk(2, dim=1)
         var = torch.exp(logvar)
-        sigma = var[...,None]*torch.eye(2)[None,...]
+        sigma = var[...,None]*torch.eye(self.ndim)[None,...]
         
         d = D.multivariate_normal.MultivariateNormal(loc=mu, covariance_matrix=sigma)
         return d
@@ -119,6 +120,35 @@ class Bernoulli(nn.Module):
         z = torch.bernoulli(theta)
         return z
 
+class Categorical(nn.Module):
+    """
+    A family of distributions for deep generative models:
+    A categorical distribution
+    """
+    
+    def __init__(self, dim_z, prior_params=None):
+        
+        super(Categorical, self).__init__()
+        
+        self.ndim = dim_z
+        
+        if prior_params is None:
+            prior_params = {'probs': torch.ones(dim_z)/dim_z}
+        
+        self.prior = D.categorical.Categorical(**prior_params)
+        
+    def distr(self, theta):
+        """Return instance(s) of distribution, with parameters theta"""
+        d = D.categorical.Categorical(probs=theta)
+        return d
+        
+    def sample(self, theta):
+        """
+        Sample from variable, given parameters theta, using reparameterisation
+        """
+        z = torch.multinomial(theta)
+        return z
+
 #%% Models !!!
 class VAE(nn.Module):
     """Abstract basic VAE class"""
@@ -143,9 +173,12 @@ class VAE(nn.Module):
         
         return px_params, qz_params, z
     
+    # def 
+    
 #%%
-def free_energy(model, x, px_params, qz_params):
-    """Evidence lower bound
+def free_energy(model, x, px_params, qz_params, regularise=True, y=None):
+    """Computes free energy, or evidence lower bound
+    If y is supplied, does a cheeky thing that isn't really the free energy
     ToDo: add support for >1 MC sample in the cross-entropy estimation
     """
     btch_size = x.shape[0]
@@ -155,35 +188,54 @@ def free_energy(model, x, px_params, qz_params):
     # px_params = model.dec(z_samples)
     
     # reconstruction error (i.e. cross-entropy)
-    xent = model.obs.distr(px_params).log_prob(x).sum()
+    if y is not None:
+        xent = model.obs.distr(px_params).log_prob(y).sum()
+    else:
+        xent = model.obs.distr(px_params).log_prob(x).sum()
     
     # regularisation (i.e. KL-to-prior)
     prior = model.latent.prior.expand([btch_size])
     apprx = model.latent.distr(qz_params)
     
-    dkl = D.kl.kl_divergence(apprx, prior).sum()
+    dkl = regularise*(D.kl.kl_divergence(apprx, prior).sum())
     
     return xent-dkl
 
 #%%
-nepoch = 200
-bsz = 64
-lr = 1e-3
+z_dim = 2
+nepoch = 300
+bsz = 100
+lr = 1e-4
+include_kl = True
+supervise = False
 
-enc = Feedforward([784, 400, 4], ['ReLU', None])
-dec = Feedforward([2, 400, 784], ['ReLU', 'Sigmoid'])
-vae = VAE(enc, dec, GausDiag(2), Bernoulli(784))
+if supervise:
+    enc = Feedforward([784, 400, 400, 2*z_dim], ['ReLU','ReLU', None])
+    dec = Feedforward([z_dim, 10], ['Softmax'])
+    vae = VAE(enc, dec, GausDiag(z_dim), Categorical(10))    
+else:
+    enc = Feedforward([784, 500, 2*z_dim], ['ReLU', None])
+    dec = Feedforward([z_dim, 500, 784], ['ReLU', 'Sigmoid'])
+    vae = VAE(enc, dec, GausDiag(z_dim), Bernoulli(784))
 
 optimizer = optim.Adam(vae.parameters(), lr=lr)
 
 digits = torchvision.datasets.MNIST(svdir+'digits/',download=True, 
                                     transform=torchvision.transforms.ToTensor())
+stigid = torchvision.datasets.MNIST(svdir+'digits/',download=True, train=False,
+                                    transform=torchvision.transforms.ToTensor())
 dl = torch.utils.data.DataLoader(digits, batch_size=bsz, shuffle=True)
 
 elbo = np.zeros(0)
+test_err = np.zeros(0)
 # z_samples = np.zeros((2, 0))
-for epoch in range(nepoch):
+for epoch in range(100,100+nepoch):
     running_loss = 0
+    
+    if epoch>50:
+        beta = np.exp((epoch-300)/30)/(1+np.exp((epoch-300)/30))
+    else:
+        beta = 0
     for i, batch in enumerate(dl):
         nums, labels = batch
         nums = nums.squeeze(1).reshape((-1, 784))
@@ -192,7 +244,15 @@ for epoch in range(nepoch):
         
         # forward
         px_params, qz_params, z = vae(nums)
-        loss = -free_energy(vae, nums, px_params, qz_params)
+        if supervise:
+            loss = -free_energy(vae, nums, px_params, qz_params, regularise=beta, y=labels)
+            
+            idx = np.random.choice(10000, 1000, replace=False)
+            pred = vae(stigid.data.reshape(-1,784).float()/252)[0]
+            terr = (stigid.targets == pred.argmax(1)).sum().float()/10000
+            test_err = np.append(test_err, terr)
+        else:
+            loss = -free_energy(vae, nums, px_params, qz_params, regularise=beta)
         
         # optimise
         loss.backward()
@@ -205,8 +265,14 @@ for epoch in range(nepoch):
     print('Epoch %d: ELBO=%.3f'%(epoch, -running_loss/(i+1)))
 
 
+#%%
+idx = 6
 
+plt.subplot(1,2,1)
+plt.imshow(digits.data[idx,...].detach().numpy())
 
+plt.subplot(1,2,2)
+plt.imshow(foo[idx,...].detach().numpy())
 
 
 
