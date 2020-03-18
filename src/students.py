@@ -6,11 +6,10 @@ Current classes:
 """
 
 #%%
-CODE_DIR = '/home/matteo/Documents/github/repler/'
+CODE_DIR = '/home/matteo/Documents/github/repler/src/'
 svdir = '/home/matteo/Documents/uni/columbia/bleilearning/'
 
 import torch
-import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as D
@@ -18,6 +17,7 @@ import torch.optim as optim
 from torch.nn.parameter import Parameter
 from collections import OrderedDict
 import numpy as np
+import scipy
 
 #%% Neural networks !!!
 class Feedforward(nn.Module):
@@ -48,7 +48,24 @@ class Feedforward(nn.Module):
         return h
 
 #%% Latent variable distribution families !!!
-class GausDiag(nn.Module):
+class DeepDistribution(nn.Module):
+    """
+    Abstract class for distributions that I want to use. Designed to play with
+    neural networks of the NeuralNet class (below).
+    """
+    def __init__(self):
+        super(DeepDistribution, self).__init__()
+        
+    def name(self):
+        return self.__class__.__name__
+    
+    def distr(self):
+        raise NotImplementedError
+        
+    def sample(self):
+        raise NotImplementedError
+    
+class GausDiag(DeepDistribution):
     """
     A family of distributions for deep generative models:
     Gaussian with diagonal covariance
@@ -73,10 +90,10 @@ class GausDiag(nn.Module):
     def distr(self, theta):
         """Return instance(s) of distribution, with parameters theta"""
         mu, logvar = theta.chunk(2, dim=1)
-        var = torch.exp(logvar)
-        sigma = var[...,None]*torch.eye(self.ndim)[None,...]
+        std = torch.exp(0.5*logvar)
+        sigma = std[...,None]*torch.eye(self.ndim)[None,...]
         
-        d = D.multivariate_normal.MultivariateNormal(loc=mu, covariance_matrix=sigma)
+        d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
         return d
         
     def sample(self, theta):
@@ -91,7 +108,79 @@ class GausDiag(nn.Module):
         
         return z
 
-class Bernoulli(nn.Module):
+class GausId(DeepDistribution):
+    """
+    A family of distributions for deep generative models:
+    Gaussian with identity covariance
+    
+    This module relates the output of a neural net to the parameters of a 
+    gaussian distribution, assuming first N are the mean, and second N are
+    the log-variances of each dimension.
+    """
+    
+    def __init__(self, dim_z, prior_params=None):
+        
+        super(GausId, self).__init__()
+        
+        self.ndim = dim_z
+        
+        if prior_params is None:
+            prior_params = {'loc': torch.zeros(dim_z),
+                         'covariance_matrix': torch.eye(dim_z)}
+        
+        self.prior = D.multivariate_normal.MultivariateNormal(**prior_params)
+        
+    def distr(self, theta):
+        """Return instance(s) of distribution, with parameters theta"""
+        mu = theta
+        sigma = torch.ones(theta.shape + (1,))*torch.eye(self.ndim)[None,...]
+        
+        d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
+        return d
+        
+    def sample(self, theta):
+        """
+        Sample from posterior, given parameters theta, using reparameterisation
+        """
+        mu = theta # decompose into mean and variance
+        # std = 1
+        
+        eps = torch.randn_like(mu) 
+        z = mu + eps
+        
+        return z
+
+# class PointMass(DeepDistribution):
+    
+#     def __init__(self):
+        
+#         super(PointMass, self).__init__()
+        
+#         self.ndim = dim_z
+        
+#         self.prior = D.multivariate_normal.MultivariateNormal(**prior_params)
+        
+#     def distr(self, theta):
+#         """Return instance(s) of distribution, with parameters theta"""
+#         mu = theta
+#         sigma = torch.ones(theta.shape + (1,))*torch.eye(self.ndim)[None,...]
+        
+#         d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
+#         return d
+        
+#     def sample(self, theta):
+#         """
+#         Sample from posterior, given parameters theta, using reparameterisation
+#         """
+#         mu = theta # decompose into mean and variance
+#         # std = 1
+        
+#         eps = torch.randn_like(mu) 
+#         z = mu + eps
+        
+        return z
+
+class Bernoulli(DeepDistribution):
     """
     A family of distributions for deep generative models:
     Bernouli
@@ -120,7 +209,7 @@ class Bernoulli(nn.Module):
         z = torch.bernoulli(theta)
         return z
 
-class Categorical(nn.Module):
+class Categorical(DeepDistribution):
     """
     A family of distributions for deep generative models:
     A categorical distribution
@@ -150,7 +239,28 @@ class Categorical(nn.Module):
         return z
 
 #%% Models !!!
-class VAE(nn.Module):
+class NeuralNet(nn.Module):
+    """Skeleton of all pytorch models"""
+    def __init__(self):
+        super(NeuralNet,self).__init__()
+    
+    def forward(self):
+        raise NotImplementedError
+        
+    def grad_step(self):
+        raise NotImplementedError
+    
+    def save(self, to_path):
+        """ save model parameters to path """
+        with open(to_path, 'wb') as f:
+            torch.save(self.state_dict(), f)
+    
+    def load(self, from_path):
+        """ load parameters into model """
+        with open(from_path, 'rb') as f:
+            self.load_state_dict(torch.load(f))
+        
+class VAE(NeuralNet):
     """Abstract basic VAE class"""
     def __init__(self, encoder, decoder, latent, obs):
         super(VAE,self).__init__()
@@ -159,6 +269,7 @@ class VAE(nn.Module):
         self.dec = decoder
         
         self.latent = latent
+        
         self.obs = obs
         
     def forward(self, x):
@@ -173,10 +284,32 @@ class VAE(nn.Module):
         
         return px_params, qz_params, z
     
-    # def 
-    
-#%%
-def free_energy(model, x, px_params, qz_params, regularise=True, y=None):
+    def grad_step(self, data, optimizer, beta=1.0):
+        """ Single step of the AEVB algorithm on the VAE generator-posterior pair """
+
+        running_loss = 0
+        
+        for i, batch in enumerate(data):
+            nums, labels = batch
+            nums = nums.squeeze(1).reshape((-1, 784))
+            
+            optimizer.zero_grad()
+            
+            # forward
+            px_params, qz_params, z = self(nums)
+            
+            loss = -free_energy(self, nums, px_params, qz_params, regularise=beta, y=labels)
+            
+            # optimise
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+                
+        return running_loss/(i+1)
+            
+#%% custom loss functions
+def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):
     """Computes free energy, or evidence lower bound
     If y is supplied, does a cheeky thing that isn't really the free energy
     ToDo: add support for >1 MC sample in the cross-entropy estimation
@@ -191,7 +324,10 @@ def free_energy(model, x, px_params, qz_params, regularise=True, y=None):
     if y is not None:
         xent = model.obs.distr(px_params).log_prob(y).sum()
     else:
-        xent = model.obs.distr(px_params).log_prob(x).sum()
+        if xtrans is not None:
+            xent = model.obs.distr(px_params).log_prob(xtrans).sum()
+        else:
+            xent = model.obs.distr(px_params).log_prob(x).sum()
     
     # regularisation (i.e. KL-to-prior)
     prior = model.latent.prior.expand([btch_size])
@@ -201,78 +337,12 @@ def free_energy(model, x, px_params, qz_params, regularise=True, y=None):
     
     return xent-dkl
 
-#%%
-z_dim = 2
-nepoch = 300
-bsz = 100
-lr = 1e-4
-include_kl = True
-supervise = False
 
-if supervise:
-    enc = Feedforward([784, 400, 400, 2*z_dim], ['ReLU','ReLU', None])
-    dec = Feedforward([z_dim, 10], ['Softmax'])
-    vae = VAE(enc, dec, GausDiag(z_dim), Categorical(10))    
-else:
-    enc = Feedforward([784, 500, 2*z_dim], ['ReLU', None])
-    dec = Feedforward([z_dim, 500, 784], ['ReLU', 'Sigmoid'])
-    vae = VAE(enc, dec, GausDiag(z_dim), Bernoulli(784))
-
-optimizer = optim.Adam(vae.parameters(), lr=lr)
-
-digits = torchvision.datasets.MNIST(svdir+'digits/',download=True, 
-                                    transform=torchvision.transforms.ToTensor())
-stigid = torchvision.datasets.MNIST(svdir+'digits/',download=True, train=False,
-                                    transform=torchvision.transforms.ToTensor())
-dl = torch.utils.data.DataLoader(digits, batch_size=bsz, shuffle=True)
-
-elbo = np.zeros(0)
-test_err = np.zeros(0)
-# z_samples = np.zeros((2, 0))
-for epoch in range(100,100+nepoch):
-    running_loss = 0
-    
-    if epoch>50:
-        beta = np.exp((epoch-300)/30)/(1+np.exp((epoch-300)/30))
-    else:
-        beta = 0
-    for i, batch in enumerate(dl):
-        nums, labels = batch
-        nums = nums.squeeze(1).reshape((-1, 784))
-        
-        optimizer.zero_grad()
-        
-        # forward
-        px_params, qz_params, z = vae(nums)
-        if supervise:
-            loss = -free_energy(vae, nums, px_params, qz_params, regularise=beta, y=labels)
-            
-            idx = np.random.choice(10000, 1000, replace=False)
-            pred = vae(stigid.data.reshape(-1,784).float()/252)[0]
-            terr = (stigid.targets == pred.argmax(1)).sum().float()/10000
-            test_err = np.append(test_err, terr)
-        else:
-            loss = -free_energy(vae, nums, px_params, qz_params, regularise=beta)
-        
-        # optimise
-        loss.backward()
-        optimizer.step()
-        
-        running_loss += loss.item()
-        elbo = np.append(elbo, loss.item())
-        # z_samples = np.append(z_samples, z.detach().numpy(), axis=1)
-    
-    print('Epoch %d: ELBO=%.3f'%(epoch, -running_loss/(i+1)))
-
-
-#%%
-idx = 6
-
-plt.subplot(1,2,1)
-plt.imshow(digits.data[idx,...].detach().numpy())
-
-plt.subplot(1,2,2)
-plt.imshow(foo[idx,...].detach().numpy())
+#%% helpers
+def decimal(binary):
+    """ convert binary vector to dedimal number (i.e. enumerate) """
+    d = (binary*(2**np.arange(binary.shape[1]))[None,:]).sum(1)
+    return d
 
 
 
