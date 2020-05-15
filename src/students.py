@@ -24,7 +24,7 @@ class Feedforward(nn.Module):
     """
     Generic feedforward module, can be, e.g., the encoder or decoder of VAE
     """
-    def __init__(self, dim_layers, nonlinearity='relu'):
+    def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True):
         super(Feedforward, self).__init__()
         
         onion = OrderedDict()
@@ -33,10 +33,18 @@ class Feedforward(nn.Module):
         if type(nonlinearity) is str:
             nonlinearity = [nonlinearity for _ in dim_layers[1:]]
         
+        if encoder is not None:
+            # optionally include a pre-network encoder, e.g. if inputs are indices
+            onion['embedding'] = encoder
+        
         for l in range(len(dim_layers)-1):
-            onion['layer%d'%l] = nn.Linear(dim_layers[l], dim_layers[l+1])
+            # onions have layers
+            onion['layer%d'%l] = nn.Linear(dim_layers[l], dim_layers[l+1], bias=bias)
             if nonlinearity[l] is not None:
-                onion['link%d'%l] = getattr(nn, nonlinearity[l])()
+                if 'softmax' in nonlinearity[l].lower():
+                    onion['link%d'%l] = getattr(nn, nonlinearity[l])(dim=-1)
+                else:
+                    onion['link%d'%l] = getattr(nn, nonlinearity[l])()
         
         self.network = nn.Sequential(onion)
         
@@ -150,35 +158,19 @@ class GausId(DeepDistribution):
         
         return z
 
-# class PointMass(DeepDistribution):
-    
-#     def __init__(self):
+class PointMass(DeepDistribution):
+    def __init__(self, dim_z=None):
+        super(PointMass, self).__init__()
         
-#         super(PointMass, self).__init__()
+    def distr(self, theta=None):
+        """Return instance(s) of distribution, with parameters theta"""
+        return None
         
-#         self.ndim = dim_z
-        
-#         self.prior = D.multivariate_normal.MultivariateNormal(**prior_params)
-        
-#     def distr(self, theta):
-#         """Return instance(s) of distribution, with parameters theta"""
-#         mu = theta
-#         sigma = torch.ones(theta.shape + (1,))*torch.eye(self.ndim)[None,...]
-        
-#         d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
-#         return d
-        
-#     def sample(self, theta):
-#         """
-#         Sample from posterior, given parameters theta, using reparameterisation
-#         """
-#         mu = theta # decompose into mean and variance
-#         # std = 1
-        
-#         eps = torch.randn_like(mu) 
-#         z = mu + eps
-        
-        return z
+    def sample(self, theta):
+        """
+        Sample from posterior, given parameters theta, using reparameterisation
+        """
+        return theta
 
 class Bernoulli(DeepDistribution):
     """
@@ -212,7 +204,7 @@ class Bernoulli(DeepDistribution):
 class Categorical(DeepDistribution):
     """
     A family of distributions for deep generative models:
-    A categorical distribution
+    A categorical distribution, parameterised by log-probabilities
     """
     
     def __init__(self, dim_z, prior_params=None):
@@ -222,13 +214,14 @@ class Categorical(DeepDistribution):
         self.ndim = dim_z
         
         if prior_params is None:
-            prior_params = {'probs': torch.ones(dim_z)/dim_z}
+            prior_params = {'logits': torch.log(torch.ones(dim_z)/dim_z)}
         
         self.prior = D.categorical.Categorical(**prior_params)
         
     def distr(self, theta):
         """Return instance(s) of distribution, with parameters theta"""
-        d = D.categorical.Categorical(probs=theta)
+        # d = D.categorical.Categorical(probs=theta.exp())
+        d =  D.categorical.Categorical(logits=theta)
         return d
         
     def sample(self, theta):
@@ -240,7 +233,7 @@ class Categorical(DeepDistribution):
 
 #%% Models !!!
 class NeuralNet(nn.Module):
-    """Skeleton of all pytorch models"""
+    """Abstract class for all pytorch models, to enforce some regularity"""
     def __init__(self):
         super(NeuralNet,self).__init__()
     
@@ -261,7 +254,7 @@ class NeuralNet(nn.Module):
             self.load_state_dict(torch.load(f))
         
 class VAE(NeuralNet):
-    """Abstract basic VAE class"""
+    """Basic VAE class"""
     def __init__(self, encoder, decoder, latent, obs):
         super(VAE,self).__init__()
         
@@ -307,7 +300,87 @@ class VAE(NeuralNet):
             running_loss += loss.item()
                 
         return running_loss/(i+1)
+
+class MultiGLM(NeuralNet):
+    """A deep GLM model with multiple outputs"""
+    def __init__(self, encoder, decoder, p_targ, p_latent=None, p_data=None):
+        """
+        Parameters
+        ----------
+        encoder : Pytorch Module
+            Mapping from data (x) to code (z), a feedforward network.
+        decoder : Pytorch Module
+            Mapping from code (z) to the natural parameters of p_targ.
+            Usually just a linear-nonlinear layer, e.g. linear-sigmoid for 
+            logistic regression.
+        p_targ : DeepDistribution
+            Distributions of the targets, ideally from the exponential family.
+        p_latent : DeepDistribution, optional
+            Distribution of the latent code. The default (None) is a point
+            mass (i.e. deterministic).
+        p_data : DeepDistribution, optional
+            Distribution of the data, to model noise in the inputs. The 
+            default (None) is also deterministic.
+        """
+        
+        super(MultiGLM,self).__init__()
+        
+        self.enc = encoder
+        self.dec = decoder
+        
+        if p_latent is not None:
+            if p_latent.name() == 'PointMass':
+                p_latent = None
+        self.latent = p_latent
+        self.data = p_data
+        
+        self.obs = p_targ
+        
+    def forward(self, x):
+        """
+        Outputs the parameters of p_x, so that the likelihood can be evaluated
+        """
+        qz_params = self.enc(x) # encoding
+        if self.latent is None:
+            z = qz_params
+        else:
+            z = self.latent.sample(qz_params) # stochastic part
+        
+        py_params = self.dec(z) # decoding
+        # recon_x = self.p_x(px_params) # draw outputs
+        
+        return py_params, qz_params, z
+    
+    def grad_step(self, data, optimizer):
+        """ Single step of maximum likelihood over the data """
+
+        running_loss = 0
+        
+        for i, batch in enumerate(data):
+            optimizer.zero_grad()
             
+            nums, labels = batch
+            # nums = nums.squeeze(1).reshape((-1, 784))
+            
+            # # forward
+            px_params, qz_params, z = self(nums)
+            
+            loss = -self.obs.distr(px_params).log_prob(labels).sum()
+            if self.latent is not None:
+                loss -= self.latent.distr(qz_params).log_prob(z).sum()
+            
+            # loss = -loglihood(self, nums, labels)
+            # foo = self(nums)[0]
+            # loss = nn.NLLLoss(reduction='sum')(foo, labels)
+
+            # optimise
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            
+        return running_loss/(i+1)
+
 #%% custom loss functions
 def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):
     """Computes free energy, or evidence lower bound
@@ -337,12 +410,25 @@ def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=
     
     return xent-dkl
 
+# def loglihood(model, x, y):
+#     """
+#     Log-likelihood of data (x,y) under model. 
+#     """
+    
+#     py_params, qz_params, z = model(x)
+    
+#     # data likelihood 
+#     # ll = model.obs.distr(py_params).log_prob(y).mean()
+#     ll = model.obs.distr(py_params).log_prob(y).sum()
+#     # regularisation (if distributions exist)
+#     if model.latent is not None:
+#         ll += model.latent.distr(qz_params).log_prob(z).sum()
+        
+#     # if model.data is not None:
+#     #     p_x = model.data.distr()
+    
+#     return ll
 
-#%% helpers
-def decimal(binary):
-    """ convert binary vector to dedimal number (i.e. enumerate) """
-    d = (binary*(2**np.arange(binary.shape[1]))[None,:]).sum(1)
-    return d
 
 
 

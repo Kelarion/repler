@@ -1,6 +1,6 @@
 """
-Functions which implement experiments. They are what's called in the habanero
-experiment scripts.
+Classes which implement experiments. They are what's called in the habanero
+experiment scripts. They standardise my experiments.
 """
 
 # CODE_DIR = '/home/matteo/Documents/github/repler/src/'
@@ -8,143 +8,309 @@ experiment scripts.
 
 import os
 import pickle
+import warnings
 # sys.path.append(CODE_DIR)
 
 import torch
 import torchvision
 import torch.optim as optim
 import numpy as np
-# import scipy
+import scipy.special as spc
+import scipy.linalg as la
 
 from students import *
 from assistants import *
+from itertools import permutations
+from sklearn import svm
 
 #%% MNIST classification
-def mnist_multiclass(N, class_func, SAVE_DIR, verbose=False):
+class mnist_multiclass():
     """
     Train a feedforward network to do multiple classifications on MNIST.
     
-    Make sure that Q matches the dimension of class_func output.
+    class_func must output an integer Q when no argument is provided.
     """
-    # parameters
-    H = 500
-    Q = class_func()
-    
-    noise = True 
-    nonlinearity = 'ReLU'
-    include_kl = 'no'
-    
-    bsz = 64 
-    nepoch = 10000
-    lr = 1e-4
-    
-    opt_alg = optim.Adam
-    # opt_alg = optim.Adagrad
-    
-    expinf = '_N%d_H%d_%s_%s-kl'%(N,H,nonlinearity,include_kl)
-    print('- - - - - - - - - - - - - - - - - - - - - - - - - - ')
-    print('Running %s ...'%expinf)
-    # -------------------------------------------------------------------------
-    # Model/Encoder specification
-    latent_dist = GausId(N)
-    obs_dist = Bernoulli(Q)
-    
-    enc = Feedforward([784, H, N], [nonlinearity, None])
-    dec = Feedforward([N, Q], ['Sigmoid'])
-    vae = VAE(enc, dec, latent_dist, obs_dist)
-    
-    # data
-    digits = torchvision.datasets.MNIST(SAVE_DIR+'digits/',download=False, 
-                                        transform=torchvision.transforms.ToTensor())
-    classes = class_func(digits)
-    digits = torch.utils.data.TensorDataset(digits.data.float(), classes)
-    
-    stigid = torchvision.datasets.MNIST(SAVE_DIR+'digits/',download=False, train=False,
-                                        transform=torchvision.transforms.ToTensor())
-    classes = class_func(stigid)
-    stigid = torch.utils.data.TensorDataset(stigid.data.float(), classes)
-    
-    dl = torch.utils.data.DataLoader(digits, batch_size=bsz, shuffle=True)
-    
-    # inference
-    metrics = {'train_loss': np.zeros(0),
-               'test_err': np.zeros((0,Q))} # put all training metrics here
-    print('Starting inference')
-    optimizer = opt_alg(vae.parameters(), lr=lr)
-    for epoch in range(nepoch):
-        if include_kl == 'anneal':
-            if epoch>50:
-                beta = np.exp((epoch-300)/30)/(1+np.exp((epoch-300)/30))
-        elif include_kl == 'always':
-            beta = 1
+    def __init__(self, task, SAVE_DIR, N=None, H=100,
+                 nonlinearity='ReLU', num_layer=1, z_prior=None,
+                 bsz=64, nepoch=1000, lr=1e-4, opt_alg=optim.Adam, weight_decay=0,
+                 abstracts=None, init=None, skip_metrics=False):
+        """
+        Everything required to fully specify an experiment.
+        
+        Failure to supply the N argument will create the class in 'task only mode',
+        which means that will not have a model. Call the `self.use_model` method
+        to later equip it with a particular model.
+        """
+        
+        if abstracts is None:
+            abstracts = task
+        # -------------------------------------------------------------------------
+        # Parameters
+        
+        # these values index particular models (show up in the file names)
+        self.dim_latent = N
+        self.nonlinearity = nonlinearity
+        self.init = init # optionally specify an initialisation index -- for randomising
+        self.H = H # doesn't actually show up in the name -- don't change
+        
+        # these values specify model classes (show up in folder names)
+        self.num_layer = num_layer
+        self.task = task
+        
+        # output and abstraction dimensions
+        self.dim_output = task.dim_output
+        self.num_cond = abstracts.num_var
+        
+        # optimization hyperparameters
+        self.bsz = bsz
+        self.nepoch = nepoch
+        self.lr = lr
+        self.weight_decay = 0
+        
+        self.opt_alg = opt_alg
+        
+        # flags
+        self.skip_metrics = skip_metrics
+        if N is None:
+            # if the class is being called just to call the task
+            self.task_only_mode = True
         else:
-            beta = 0
+            self.task_only_mode = False
         
-        loss = vae.grad_step(dl, optimizer, beta)
+        # -------------------------------------------------------------------------
+        # Model specification (changing this will make past experiments incompatible)
+        if z_prior is None:
+            latent_dist = PointMass()
+        else:
+            latent_dist = z_prior
+        obs_dist = task.obs_distribution
         
-        metrics['train_loss'] = np.append(metrics['train_loss'], loss)
+        if self.task_only_mode:
+            enc = None
+            dec = None
+        else:
+            enc = Feedforward([784]+[self.H for _ in range(num_layer)]+[N], self.nonlinearity)
+            dec = Feedforward([N, self.dim_output], [task.link])
+            
+        self.model = MultiGLM(enc, dec, obs_dist, latent_dist)
         
-        # test error
-        idx = np.random.choice(10000, 1000, replace=False)
+        # -------------------------------------------------------------------------
+        # Import data, create the train and test sets, and the dataloader for optimisation
+        digits = torchvision.datasets.MNIST(SAVE_DIR+'digits/', download=True, 
+                                            transform=torchvision.transforms.ToTensor())
+        valid = (digits.targets <= 8) & (digits.targets>=1)
+        self.train_data = (digits.data[valid,...].reshape(-1,784).float()/252, 
+                           task(digits)[valid,...])
+        self.train_conditions = abstracts(digits)[valid,...]
+        self.ntrain = int(valid.sum())
         
-        pred = vae(stigid.tensors[0][idx,:,:].reshape(-1,784).float()/252)[0]
-        terr = (stigid.tensors[1][idx,:] == (pred>=0.5)).sum(0).float()/1000
-        metrics['test_err'] = np.append(metrics['test_err'], terr[None,:], axis=0)
+        stigid = torchvision.datasets.MNIST(SAVE_DIR+'digits/',download=True, train=False,
+                                            transform=torchvision.transforms.ToTensor())
+        valid = (stigid.targets<=8) & (stigid.targets>=1)
+        self.test_data = (stigid.data[valid,...].reshape(-1,784).float()/252, 
+                          task(stigid)[valid,...])
+        self.test_conditions = abstracts(stigid)[valid,...]
+        self.ntest = int(valid.sum())
+    
+    def use_model(self, N, init=None, H=None):
+        """If the object is in task_only_mode, it can be equipped later with
+        a model by specifying the particular parameters"""
         
-        if verbose:
-            print('Epoch %d: ELBO=%.3f'%(epoch, -loss))
+        self.task_only_mode = (self.task_only_mode and False)
+        
+        # specify model
+        self.dim_latent = N
+        self.init = init
+        enc = Feedforward([784]+[self.H for _ in range(self.num_layer)]+[N], self.nonlinearity)
+        dec = Feedforward([N, self.dim_output], [self.task.link])
+        
+        new_model = MultiGLM(enc, dec, self.model.obs, self.model.latent)
+        self.model = new_model
     
-    # -------------------------------------------------------------------------
-    # save
-    FOLDERS = folder_hierarchy(class_func, obs_dist, latent_dist)
+    def run_experiment(self, verbose=False):
+        
+        expinf = self.file_suffix()
+        print('Running %s ...'%expinf)
+        
+        dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
+        dl = torch.utils.data.DataLoader(dset, batch_size=self.bsz, shuffle=True) 
+        
+        optimizer = self.opt_alg(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        
+        # inference
+        n_compute = 5000
+        n_dichotomy = int(spc.binom(2**self.num_cond, 2**(self.num_cond-1))/2)
+        
+        metrics = {'train_loss': np.zeros(0),
+                   'train_perf': np.zeros((0, self.task.num_var)),
+                   'train_PS': np.zeros((0, n_dichotomy)),
+                   'test_perf': np.zeros((0, self.task.num_var)),
+                   'test_PS': np.zeros((0, n_dichotomy)),
+                   'shattering': np.zeros((0, n_dichotomy)),
+                   'mean_grad': np.zeros((0, 3)),
+                   'std_grad': np.zeros((0, 3)),
+                   'train_ccgp': np.zeros((0, n_dichotomy)),
+                   'test_ccgp': np.zeros((0, n_dichotomy)),
+                   'linear_dim': np.zeros(0)} # put all training metrics here
+        
+        for epoch in range(self.nepoch):
+            # check each quantity before optimisation
+            
+            if not self.skip_metrics:
+                with torch.no_grad():
+                    # train error ##############################################
+                    idx_trn = np.random.choice(self.ntrain, n_compute, replace=False)
+                    
+                    pred, _, z_train = self.model(self.train_data[0][idx_trn,...])
+                    # terr = (self.train_data[1][idx_trn,...] == (pred>=0.5)).sum(0).float()/n_compute
+                    terr = self.task.correct(pred, self.train_data[1][idx_trn,...])/n_compute
+                    terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                    metrics['train_perf'] = np.append(metrics['train_perf'], terr, axis=0)
+                    
+                    # test error ##############################################
+                    idx_tst = np.random.choice(self.ntest, n_compute, replace=False)
+                    
+                    pred, _, z_test = self.model(self.test_data[0][idx_tst,...])
+                    # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
+                    terr = self.task.correct(pred, self.test_data[1][idx_tst,...])/n_compute
+                    terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                    metrics['test_perf'] = np.append(metrics['test_perf'], terr, axis=0)
+                    
+                    # Dimensionality #########################################
+                    _, S, _ = la.svd(z_train.detach()-z_train.mean(1).detach()[:,None], full_matrices=False)
+                    eigs = S**2
+                    pr = (np.sum(eigs)**2)/np.sum(eigs**2)
+                    metrics['linear_dim'] = np.append(metrics['linear_dim'], pr)
+                          
+                    # various dichotomy-based metrics ########################
+                    clf = LinearDecoder(self.dim_latent, 1, MeanClassifier)
+                    dclf = LinearDecoder(self.dim_latent, n_dichotomy, svm.LinearSVC)
+                    gclf = LinearDecoder(self.dim_latent, 1, svm.LinearSVC)
+                    K = 2**(self.num_cond-1)-1
+                    
+                    # train set
+                    D = Dichotomies(self.train_conditions[idx_trn,...].detach().numpy(), 'general') 
+                    
+                    # PS = np.zeros(n_dichotomy)
+                    # CCGP = np.zeros(n_dichotomy)
+                    d = np.zeros((n_compute, n_dichotomy))
+                    for i, dic in enumerate(D):
+                    #     PS[i] = D.parallelism(z_train.detach().numpy(), clf)
+                    #     CCGP[i] = D.CCGP(z_train.detach().numpy(), gclf, K)
+                        d[:,i] = dic
+                    dclf.fit(z_train.detach().numpy(), d, tol=1e-5, max_iter=5000)
+                    
+                    # metrics['train_PS'] = np.append(metrics['train_PS'], PS[None,:], axis=0)
+                    # metrics['train_ccgp'] = np.append(metrics['train_ccgp'], CCGP[None,:], axis=0)
+                    
+                    #test set
+                    D = Dichotomies(self.test_conditions[idx_tst,...].detach().numpy(), 'general') 
+                    
+                    PS = np.zeros(n_dichotomy)
+                    d = np.zeros((n_compute, n_dichotomy))
+                    CCGP = np.zeros(n_dichotomy)
+                    for i, dic in enumerate(D):
+                        PS[i] = D.parallelism(z_test.detach().numpy(), clf)
+                        CCGP[i] = D.CCGP(z_test.detach().numpy(), gclf, K, max_iter=3000)
+                        d[:,i] = dic
+                    SD = dclf.test(z_test.detach().numpy(), d).T
+                    
+                    metrics['test_PS'] = np.append(metrics['test_PS'], PS[None,:], axis=0)
+                    metrics['test_ccgp'] = np.append(metrics['test_ccgp'], CCGP[None,:], axis=0)
+                    metrics['shattering'] = np.append(metrics['shattering'], SD, axis=0)
+                    
+            # Actually update model #######################################
+            loss = self.model.grad_step(dl, optimizer)
+            
+            metrics['train_loss'] = np.append(metrics['train_loss'], loss)
+            
+            # gradient SNR
+            # means = np.zeros(3)
+            # std = np.zeros(3)
+            # i=0
+            # for k,v in zip(self.model.state_dict().keys(), self.model.parameters()):
+            #     if 'weight' in k:
+            #         means[i] = (v.grad.data.mean(1)/v.data.norm(2,1)).norm(2,0).numpy()
+            #         std[i] = (v.grad.data/v.data.norm(2,1,keepdim=True)).std().numpy()
+            #         i+=1
+            # metrics['mean_grad'] = np.append(metrics['mean_grad'], means[None,:], axis=0)
+            # metrics['std_grad'] = np.append(metrics['std_grad'], std[None,:], axis=0)
+            
+            # print updates ############################################
+            if verbose:
+                print('Epoch %d: Loss=%.3f'%(epoch, -loss))
+            
+        self.metrics = metrics
+                
+    def save_experiment(self, SAVE_DIR):
+        """
+        Save the experimental information: model parameters, learning metrics,
+        and hyperparameters. 
+        """
+        
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        if not os.path.isdir(SAVE_DIR+FOLDERS):
+            os.makedirs(SAVE_DIR+FOLDERS)
+        
+        # save all hyperparameters, for posterity
+        all_args = {'model': str(self.model),
+                    'batch_size': self.bsz,
+                    'nepoch': self.nepoch,
+                    'learning_rate': self.lr,
+                    'optimizer': str(self.opt_alg.__name__)}
+        
+        params_fname = 'parameters'+expinf+'.pt'
+        metrics_fname = 'metrics'+expinf+'.pkl'
+        args_fname = 'arguments'+expinf+'.npy'
+        
+        self.model.save(SAVE_DIR+FOLDERS+params_fname)
+        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+            pickle.dump(self.metrics, f, -1)
+        with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
+            np.save(f, all_args)
+            
+    def load_experiment(self, SAVE_DIR):
+        """
+        Loads model parameters from the files that ought to exist, if they were
+        saved with the save_experiments method.
+        """
+        
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        params_fname = 'parameters'+expinf+'.pt'
+        metrics_fname = 'metrics'+expinf+'.pkl'
+        args_fname = 'arguments'+expinf+'.npy'
+        
+        self.model.load(SAVE_DIR+FOLDERS+params_fname)
+        with open(SAVE_DIR+FOLDERS+metrics_fname,'rb') as f:
+            metrics = pickle.load(f)
+        args = np.load(SAVE_DIR+FOLDERS+args_fname, allow_pickle=True).item()
+        
+        return self.model, metrics, args
     
-    if not os.path.isdir(SAVE_DIR+FOLDERS):
-        os.makedirs(SAVE_DIR+FOLDERS)
-    
-    # save all hyperparameters, for posterity
-    all_args = {'enc_specs': str(enc),
-                'dec_specs': str(dec),
-                'noise': noise,
-                'batch_size': bsz,
-                'nepoch': nepoch,
-                'learning_rate': lr,
-                'optimizer': str(type(opt_alg))}
-    
-    params_fname = 'parameters'+expinf+'.pt'
-    metrics_fname = 'metrics'+expinf+'.pkl'
-    args_fname = 'arguments'+expinf+'.npy'
-    
-    vae.save(SAVE_DIR+FOLDERS+params_fname)
-    with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
-        pickle.dump(metrics, f, -1)
-    with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
-        np.save(f, all_args)
-
-    print('ALL DONE! THANK YOU VERY MUCH FOR YOUR PATIENCE!!!!!!!')
-
-# The `class functions' go here: functions which take in `digits' and output 
-# binary vectors indicating Q classes. They should also have an option to take
-# no argument, and return the number of classes (Q). 
-def parity_magnitude(digits=None):
-    """Compute the parity and magnitude of digits"""
-    if digits is None:
-        return 2
-    else:
-        parity = np.mod(digits.targets, 2).float()
-        magnitude = (digits.targets>=5).float()
-        return torch.cat((parity[:,None], magnitude[:,None]), dim=1)
-
-# file I/O functions
-def folder_hierarchy(class_func, obs_dist, latent_dist):
-    FOLDERS = 'results/'
-    FOLDERS += class_func.__name__ + '/'
-    FOLDERS += obs_dist.name() + '/'   
-    FOLDERS += latent_dist.name() + '/'   
-    
-    return FOLDERS
-    
-# def expinfo(N, H):
-    
+    # file I/O functions for this experiment
+    # I do this in order to standardise everything within this experiment
+    def folder_hierarchy(self):
+        FOLDERS = 'results/mnist/'
+        if self.num_layer != 1:
+            FOLDERS += str(self.num_layer+1)+'layer/'
+        FOLDERS += self.task.__name__ + '/'
+        FOLDERS += self.model.obs.name() + '/'
+        if self.model.latent is not None:
+            FOLDERS += self.model.latent.name() + '/'   
+        if self.weight_decay > 0:
+            FOLDERS += 'L2reg/'
+        
+        return FOLDERS
+        
+    def file_suffix(self):
+        if self.init is None:
+            return '_N%d_%s'%(self.dim_latent, self.nonlinearity)
+        else:
+            return '_init%d_N%d_%s'%(self.init, self.dim_latent, self.nonlinearity)
     
     
     
