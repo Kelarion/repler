@@ -154,8 +154,10 @@ class HyperboloidEncoder(nn.Module):
     Reparameterizes the output of encoder as the domain of some mapping 
     onto the upper component of the two-sheet hyperboloid.
     """
-    def __init__(self):
+    def __init__(self, max_norm=1e20, norm_type=2):
         super(HyperboloidEncoder, self).__init__()
+        self.max_norm = max_norm
+        self.norm_type = norm_type
 
     def init_weights(self, test_inp):
         raise NotImplementedError
@@ -166,7 +168,7 @@ class HyperboloidEncoder(nn.Module):
         
         u = ManifoldFunction.apply(self.enc(inp))
         if self.max_norm: # norm clipping
-            u = u.renorm(p=2, dim=-1, maxnorm=self.max_norm)
+            u = u.renorm(p=self.norm_type, dim=-1, maxnorm=self.max_norm)
         z = self.chart(u)
         # z = self.chart(u)
         return z
@@ -205,7 +207,7 @@ class HyperboloidEncoder(nn.Module):
     def dist(x,y,eps=1e-5):
         """Distance function on hyperboloid"""
         sp = -LorentzDot.apply(x,y)
-        sp.data.clamp_(min=1)
+        sp.data.clamp_(min=1.)
         return Acosh.apply(sp, eps)
 
     @staticmethod
@@ -421,7 +423,7 @@ class GeodesicCoordinates(HyperboloidEncoder):
     """
     ONLY WORKS FOR 2 DIMENSIONS.
     """
-    def __init__(self, encoder, max_norm=1e8, dec=None):
+    def __init__(self, encoder, max_norm=20, norm_type=np.inf, dec=None):
         """encoder should output points in euclidean space
         by default implements very severe norm clipping to avoid infs
         """
@@ -492,7 +494,7 @@ class ManifoldFunction(Function):
     @staticmethod
     def backward(ctx, g):
         inp, = ctx.saved_tensors
-        coshv = torch.cosh(inp.narrow(-1,1,1)).pow(2) + 1e-5
+        coshv = torch.cosh(inp.narrow(-1,1,1)).pow(2)
         g.narrow(-1,0,1).mul_(coshv.pow(-1))
         return g
 

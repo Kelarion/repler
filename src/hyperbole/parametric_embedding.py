@@ -76,7 +76,7 @@ enc = Feedforward([len(obj), dim], [None],
 # hype = TangentSpace(enc)
 # hype = CartesianHyperboloid(enc)
 # hype = PseudoPolar(enc)
-hype = GeodesicCoordinates(enc)
+hype = GeodesicCoordinates(enc, max_norm=1e3, norm_type=2)
 hype.init_weights(torch.tensor(np.arange(1180)).long())
 
 # optimizer = optim.Adam(hype.parameters(), lr=eta)
