@@ -20,7 +20,7 @@ from sklearn import svm, discriminant_analysis, manifold
 import scipy.stats as sts
 import scipy.linalg as la
 
-import umap
+# import umap
 from cycler import cycler
 
 from students import *
@@ -29,9 +29,10 @@ import experiments as exp
 import util
 
 #%% Model specification -- for loading purposes
-task = util.ParityMagnitude()
+# task = util.ParityMagnitude()
+# task = util.RandomDichotomies(2)
 # task = util.ParityMagnitudeEnumerated()
-# task = util.Digits()
+task = util.Digits()
 # task = util.DigitsBitwise()
 # obs_dist = Bernoulli(1)
 latent_dist = None
@@ -39,19 +40,23 @@ latent_dist = None
 nonlinearity = 'ReLU'
 # nonlinearity = 'LeakyReLU'
 
-num_layer = 0
+num_layer = 1
+
+decay = 1.0
 
 H = 100
 Q = task.num_var
 # N_list = None # set to None if you want to automatically discover which N have been tested
 # N_list = [2,3,4,5,6,7,8,9,10,11,20,25,50,100]
-N_list = None
+# N_list = None
 # N_list = [2,3,5,10,50,100]
+N_list = [51]
 
 # find experiments 
 this_exp = exp.mnist_multiclass(task, SAVE_DIR, 
                                 z_prior=latent_dist,
-                                num_layer=num_layer)
+                                num_layer=num_layer,
+                                weight_decay=decay)
 this_folder = SAVE_DIR + this_exp.folder_hierarchy()
 if (N_list is None):
     files = os.listdir(this_folder)
@@ -111,18 +116,18 @@ test_dat = this_exp.test_data
 train_dat = this_exp.train_data
 
 #%%
-netid = 3
+netid = 0
 
 model = nets[netid]
 N = N_list[netid]
 
 #%%
 # show_me = 'train_loss'
-# show_me = 'train_perf'
+# show_me = 'train_perf' 
 # show_me = 'test_perf'
 # show_me = 'test_PS'
 # show_me = 'shattering'
-show_me = 'test_ccgp'
+# show_me = 'test_ccgp'
 # show_me = 'mean_grad'
 # show_me = 'std_grad'
 # show_me = 'linear_dim'
@@ -212,8 +217,8 @@ idx = np.random.choice(train_dat[0].shape[0], n_compute, replace=False)
 
 z = model(train_dat[0][idx,...])[2].detach().numpy()
 
-this_exp = exp.mnist_multiclass(N, task, SAVE_DIR, abstracts=util.DigitsBitwise())
-# this_exp = exp.mnist_multiclass(n, task, SAVE_DIR, abstracts=util.ParityMagnitude())
+this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.DigitsBitwise())
+# this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.ParityMagnitude())
 ans = this_exp.train_conditions[idx,...]
 cond = util.decimal(ans)
 
@@ -235,6 +240,7 @@ cb.draw_all()
 #%% dichotomy metrics
 abstract_variables = util.DigitsBitwise()
 # abstract_variables = util.ParityMagnitude()
+# abstract_variables = util.RandomDichotomies(2)
 Q = abstract_variables.num_var
 
 z = model(train_dat[0])[2].detach().numpy()
@@ -301,7 +307,14 @@ mag = plt.scatter(xfoo[[0, ndic, 2*ndic]], yfoo[[0,ndic,2*ndic]],
 other = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
                     marker='o', edgecolors='b', s=60, facecolors='none', linewidths=3)
 
+# par = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
+#                   marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
+# mag = plt.scatter(xfoo[[27, 27+ndic, 27+2*ndic]], yfoo[[27,27+ndic,27+2*ndic]], 
+#                   marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
+
 plt.legend([par,mag,other], ['Parity', 'Magnitude', 'The other one'])
+# plt.legend([par,mag], ['{3,4,7,8}', '{2,3,6,7}'])
+
 
 #%%
 scat = plt.scatter(z[:,0],z[:,1], c=cond)
@@ -358,7 +371,7 @@ clf = LinearDecoder(N, 1, svm.LinearSVC)
 
 pos = np.unique(D.cond[coloring])
 
-ps = []
+ps = [] 
 for neg in permutations(np.unique(D.cond[~coloring])):
     # for a given pairing of positive and negative conditions, I need to
     # generate labels for a classifier.
@@ -397,7 +410,7 @@ nepoch = 300
 
 n_compute = 5000
 
-new_exp = exp.mnist_multiclass(N, new_task, SAVE_DIR)
+new_exp = exp.mnist_multiclass(new_task, SAVE_DIR)
 
 glm = nn.Linear(N, new_task.dim_output)
 # glm = nn.Linear(784, new_task.dim_output)

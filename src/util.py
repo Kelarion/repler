@@ -10,6 +10,7 @@ import torchvision
 import torch.optim as optim
 import numpy as np
 import scipy
+from itertools import permutations
 
 import students
 import assistants
@@ -115,6 +116,28 @@ class Digits(Classification):
     
     def __call__(self, digits):
         return digits.targets - self.start
+
+class RandomDichotomies(IndependentBinary):
+    def __init__(self, n=3):
+        super(RandomDichotomies,self).__init__()
+        self.num_var = n
+        self.dim_output = n
+        
+        conds = np.arange(2**n)
+        pos = []
+        for d in range(n):
+            these_pos = np.sort(np.random.permutation(conds)[:2**(n-1)])
+            if not np.any([np.all(np.isin(these_pos,p)) for p in pos]):
+                pos.append(these_pos)
+        self.positives = pos
+
+        self.obs_distribution = students.Bernoulli(n)
+        self.link = 'Sigmoid'
+    
+    def __call__(self, digits):
+        these = torch.tensor([np.isin(digits.targets, p) for p in self.positives]).float()
+        return these.T
+
 
 #%% miscellaneous
     

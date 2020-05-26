@@ -244,8 +244,9 @@ class Dichotomies:
                 g_neg = np.arange(2**self.ntot)[bit_is_zero]
 
                 # L = 
-                L = np.array([np.where((self.cond==n)|(self.cond==n+(2**p)),self.cond==n,np.nan)\
-                    for n in g_neg]).transpose(1,2,0)
+                # L = np.array([np.where((self.cond==n)|(self.cond==n+(2**p)),self.cond==n,np.nan)\
+                #     for n in g_neg]).transpose(1,2,0)
+                L = ~np.isin(self.cond, g_neg)
 
             if self.dictype == 'general':
                 pos = next(self.combs)

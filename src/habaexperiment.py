@@ -57,14 +57,20 @@ for op, val in opts:
 #%% run experiment (put the code you want to run here!)
 # task = util.ParityMagnitude()
 # task = util.ParityMagnitudeEnumerated()
-task = util.Digits()
-# task = util.DigitsBitwise()
+# task = util.Digits()
+task = util.DigitsBitwise()
 # task = util.ParityMagnitudeFourunit()
+# task = util.RandomDichotomies(2)
 
-parallelism_conditions = util.ParityMagnitude()
-# parallelism_function = util.DigitsBitwise()
+# parallelism_conditions = util.ParityMagnitude()
+parallelism_conditions = util.DigitsBitwise()
+# parallelism_conditions = task
 
-decay = 0.1
+dichotomy_type = 'simple'
+
+decay = 1.0
+
+nepoch = 5000
 
 latent_dist = None
 # latent_dist = students.GausId
@@ -85,7 +91,9 @@ exp = experiments.mnist_multiclass(N=N,
                                    num_layer=num_layer,
                                    z_prior=latent_dist,
                                    weight_decay=decay,
+                                   nepoch=nepoch,
                                    abstracts=parallelism_conditions,
+                                   dichotomy_type=dichotomy_type,
                                    init=init,
                                    skip_metrics=skip_metrics)
 exp.run_experiment(verbose)

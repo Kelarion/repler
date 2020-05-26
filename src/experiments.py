@@ -33,7 +33,7 @@ class mnist_multiclass():
     def __init__(self, task, SAVE_DIR, N=None, H=100,
                  nonlinearity='ReLU', num_layer=1, z_prior=None,
                  bsz=64, nepoch=1000, lr=1e-4, opt_alg=optim.Adam, weight_decay=0,
-                 abstracts=None, init=None, skip_metrics=False):
+                 abstracts=None, init=None, skip_metrics=False, dichotomy_type='general'):
         """
         Everything required to fully specify an experiment.
         
@@ -60,12 +60,13 @@ class mnist_multiclass():
         # output and abstraction dimensions
         self.dim_output = task.dim_output
         self.num_cond = abstracts.num_var
+        self.dichotomy_type = dichotomy_type
         
         # optimization hyperparameters
         self.bsz = bsz
         self.nepoch = nepoch
         self.lr = lr
-        self.weight_decay = 0
+        self.weight_decay = weight_decay
         
         self.opt_alg = opt_alg
         
@@ -139,7 +140,8 @@ class mnist_multiclass():
         
         # inference
         n_compute = 5000
-        n_dichotomy = int(spc.binom(2**self.num_cond, 2**(self.num_cond-1))/2)
+        # n_dichotomy = int(spc.binom(2**self.num_cond, 2**(self.num_cond-1))/2)
+        n_dichotomy = Dichotomies(self.train_conditions, self.dichotomy_type).ntot
         
         metrics = {'train_loss': np.zeros(0),
                    'train_perf': np.zeros((0, self.task.num_var)),
@@ -189,7 +191,7 @@ class mnist_multiclass():
                     K = 2**(self.num_cond-1)-1
                     
                     # train set
-                    D = Dichotomies(self.train_conditions[idx_trn,...].detach().numpy(), 'general') 
+                    D = Dichotomies(self.train_conditions[idx_trn,...].detach().numpy(), self.dichotomy_type) 
                     
                     # PS = np.zeros(n_dichotomy)
                     # CCGP = np.zeros(n_dichotomy)
@@ -198,20 +200,20 @@ class mnist_multiclass():
                     #     PS[i] = D.parallelism(z_train.detach().numpy(), clf)
                     #     CCGP[i] = D.CCGP(z_train.detach().numpy(), gclf, K)
                         d[:,i] = dic
-                    dclf.fit(z_train.detach().numpy(), d, tol=1e-5, max_iter=5000)
+                    dclf.fit(z_train.detach().numpy(), d, tol=1e-5)
                     
                     # metrics['train_PS'] = np.append(metrics['train_PS'], PS[None,:], axis=0)
                     # metrics['train_ccgp'] = np.append(metrics['train_ccgp'], CCGP[None,:], axis=0)
                     
                     #test set
-                    D = Dichotomies(self.test_conditions[idx_tst,...].detach().numpy(), 'general') 
+                    D = Dichotomies(self.test_conditions[idx_tst,...].detach().numpy(), self.dichotomy_type) 
                     
                     PS = np.zeros(n_dichotomy)
                     d = np.zeros((n_compute, n_dichotomy))
                     CCGP = np.zeros(n_dichotomy)
                     for i, dic in enumerate(D):
                         PS[i] = D.parallelism(z_test.detach().numpy(), clf)
-                        CCGP[i] = D.CCGP(z_test.detach().numpy(), gclf, K, max_iter=3000)
+                        CCGP[i] = D.CCGP(z_test.detach().numpy(), gclf, K)
                         d[:,i] = dic
                     SD = dclf.test(z_test.detach().numpy(), d).T
                     
@@ -260,6 +262,9 @@ class mnist_multiclass():
                     'nepoch': self.nepoch,
                     'learning_rate': self.lr,
                     'optimizer': str(self.opt_alg.__name__)}
+        
+        if self.task.__name__ == 'RandomDichotomies':
+            all_args['dichotomies'] = self.task.positives
         
         params_fname = 'parameters'+expinf+'.pt'
         metrics_fname = 'metrics'+expinf+'.pkl'

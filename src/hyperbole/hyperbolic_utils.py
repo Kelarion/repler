@@ -166,7 +166,7 @@ class HyperboloidEncoder(nn.Module):
         """Take the input to the network (e.g. tokens in indicator format)
         and return an embedding which lies on the hyperboloid"""
         
-        u = ManifoldFunction.apply(self.enc(inp))
+        u = self.enc(inp)
         if self.max_norm: # norm clipping
             u = u.renorm(p=self.norm_type, dim=-1, maxnorm=self.max_norm)
         z = self.chart(u)
@@ -433,6 +433,17 @@ class GeodesicCoordinates(HyperboloidEncoder):
         self.max_norm = max_norm
         
         self.dec = dec
+
+    def forward(self, inp):
+        """Take the input to the network (e.g. tokens in indicator format)
+        and return an embedding which lies on the hyperboloid"""
+        
+        u = GeodesicManifold.apply(self.enc(inp))
+        if self.max_norm: # norm clipping
+            u = u.renorm(p=self.norm_type, dim=-1, maxnorm=self.max_norm)
+        z = self.chart(u)
+        # z = self.chart(u)
+        return z
         
     def init_weights(self, test_inp=None, these_weights=None):
         """
@@ -452,7 +463,8 @@ class GeodesicCoordinates(HyperboloidEncoder):
         elif these_weights is not None:
             final_w.data.copy_(these_weights)
     
-    def chart(self, inp):
+    @staticmethod
+    def chart(inp):
         """
         Map inp onto the hyperboloid using the global chart
         """
@@ -467,21 +479,100 @@ class GeodesicCoordinates(HyperboloidEncoder):
         su = torch.sinh(inp.narrow(-1,0,1)).squeeze()
         # h_ = inp
         
-        return torch.stack((cu*cv, cv*su, sv), dim=-1)
+        return torch.stack((cu*cv, cu*sv, su), dim=-1)
         # return d
     
-    def invchart(self, emb, eps=1e-5):
+    @staticmethod
+    def invchart(emb, eps=1e-5):
         """
         Get the preimage of emb under the chart.
         """
         nump = emb.detach().numpy()
-        v = np.arcsinh(nump[...,2])
+        u = np.arcsinh(nump[...,2])
         # v = torch.acos(w[...,0]/torch.cos(u))
-        u = np.arctanh(nump[...,1]/nump[...,0])
+        v = np.arctanh(nump[...,1]/nump[...,0])
         return torch.tensor(np.stack((u,v)))
 
+
+class RelaxedGeodesics(HyperboloidEncoder):
+    """
+    ONLY WORKS FOR 2 DIMENSIONS.
+    """
+    def __init__(self, encoder, max_norm=1e2, norm_type=np.inf, dec=None):
+        """encoder should output points in euclidean space
+        by default implements very severe norm clipping to avoid infs
+        """
+        super(RelaxedGeodesics, self).__init__()
+
+        self.enc = encoder
+        self.max_norm = max_norm
+        
+        self.dec = dec
+    
+    def forward(self, inp):
+        """Take the input to the network (e.g. tokens in indicator format)
+        and return an embedding which lies on the hyperboloid"""
+        
+        u = RelaxedGeodesicManifold.apply(self.enc(inp))
+        if self.max_norm: # norm clipping
+            u = u.renorm(p=self.norm_type, dim=-1, maxnorm=self.max_norm)
+        z = self.chart(u)
+        # z = self.chart(u)
+        return z
+
+    def init_weights(self, test_inp=None, these_weights=None):
+        """
+        Do a hacky initialisation to begin with a centred output
+        Assumes that the encoder has """
+        
+        # final_bias = list(self.enc.network.children())[-2].bias
+        lyrs = [module for name,module in self.enc.network.named_modules() if 'layer' in name]
+        final_bias = lyrs[-1].bias
+        final_w = lyrs[-1].weight
+
+        if test_inp is not None:
+            test_out = self.enc(test_inp)
+            if final_bias is not None:
+                final_bias.data = final_bias.data*0 #- test_out.mean(0)
+            final_w.data = final_w.data/10
+        elif these_weights is not None:
+            final_w.data.copy_(these_weights)
+    
+    @staticmethod
+    def chart(inp):
+        """
+        Map inp onto the hyperboloid using the global chart
+        """
+        k = inp.shape[-1]
+
+        # inp_norm = torch.norm(inp, p=2, dim=-1, keepdim=True)
+        # d = F.normalize(inp, p=2, dim=-1)
+
+        # cu = torch.cosh(inp.narrow(-1,0,1)).squeeze()
+        # su = torch.sinh(inp.narrow(-1,0,1)).squeeze()
+        cu = torch.sqrt(inp.narrow(-1,0,1).pow(2)+1).squeeze()
+        su = inp.narrow(-1,0,1).squeeze()
+        cv = torch.sqrt(inp.narrow(-1,1,1).pow(2)+1).squeeze()
+        sv = inp.narrow(-1,1,1).squeeze()
+        # h_ = inp
+        
+        return torch.stack((cu*cv, cu*sv, su), dim=-1)
+        # return d
+    
+    @staticmethod
+    def invchart(emb, eps=1e-5):
+        """
+        Get the preimage of emb under the chart.
+        """
+        nump = emb.detach().numpy()
+        u = nump[...,2]
+        # v = torch.acos(w[...,0]/torch.cos(u))
+        v = np.sqrt((nump[...,1]**2)/(nump[...,0]**2 - nump[...,1]**2))
+        return torch.tensor(np.stack((u,v)))
+
+
 #%% Helper classes 
-class ManifoldFunction(Function):
+class GeodesicManifold(Function):
     """
     To implement Riemannian gradients during backward pass
     Applying this function says 'the input is on the hyperboloid'
@@ -494,8 +585,27 @@ class ManifoldFunction(Function):
     @staticmethod
     def backward(ctx, g):
         inp, = ctx.saved_tensors
-        coshv = torch.cosh(inp.narrow(-1,1,1)).pow(2)
-        g.narrow(-1,0,1).mul_(coshv.pow(-1))
+        coshv = torch.cosh(inp.narrow(-1,0,1)).pow(2)
+        g.narrow(-1,1,1).mul_(coshv.pow(-1))
+        return g
+
+class RelaxedGeodesicManifold(Function):
+    """
+    To implement Riemannian gradients during backward pass
+    Applying this function says 'the input is on the hyperboloid'
+    """
+    @staticmethod
+    def forward(ctx, inp):
+        ctx.save_for_backward(inp)
+        return inp
+
+    @staticmethod
+    def backward(ctx, g):
+        inp, = ctx.saved_tensors
+        coshu = inp.narrow(-1,0,1).pow(2) + 1
+        coshv = inp.narrow(-1,1,1).pow(2) + 1
+        g.narrow(-1,0,1).mul_(coshu)
+        g.narrow(-1,1,1).mul_(coshv*coshu.pow(-1))
         return g
 
 # these are taken from Nickel & Kiela's code

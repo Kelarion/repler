@@ -28,7 +28,7 @@ from students import Feedforward
 from assistants import Indicator
 from hyperbole.hyperbolic_utils import Acosh
 from hyperbole.hyperbolic_utils import LorentzDot
-from hyperbole.hyperbolic_utils import GeodesicCoordinates
+from hyperbole.hyperbolic_utils import GeodesicCoordinates, RelaxedGeodesics
 
 #%%
 def expmap(w, v):
@@ -44,13 +44,13 @@ def expmap(w, v):
 #     sv = torch.sin(2*np.pi*v)
 #     su = torch.sin(np.pi*u - np.pi/2)
 #     return torch.stack((cv*cu, sv*cu, su)).T
-def geochart(u, v):
-    """Geodesic coordinates of the hyperboloid"""
-    cv = torch.cosh(v)
-    cu = torch.cosh(u)
-    sv = torch.sinh(v)
-    su = torch.sinh(u)
-    return torch.stack((cu*cv, cv*su, sv)).T
+# def geochart(u, v):
+#     """Geodesic coordinates of the hyperboloid"""
+#     cv = torch.cosh(v)
+#     cu = torch.cosh(u)
+#     sv = torch.sinh(v)
+#     su = torch.sinh(u)
+#     return torch.stack((cu*cv, cu*sv, su)).T
 # def geochart(u, v):
 #     """Geodesic coordinates of the hyperboloid"""
 #     cv = torch.cosh(v)
@@ -60,20 +60,14 @@ def geochart(u, v):
 #     return torch.stack((su*cv, su*sv, cu)).T
 
 
-def invgeochart(w):
-    """Geodesic coordinates of the 2-sphere, p.a.l."""
-    # u = torch.asin(w[...,2])
-    v = np.arcsinh(w[...,2])
-    # v = torch.acos(w[...,0]/torch.cos(u))
-    u = np.arctanh(w[...,1]/w[...,0])
-    return np.stack((u,v))
+# def invgeochart(w):
+#     """Geodesic coordinates of the 2-sphere, p.a.l."""
+#     # u = torch.asin(w[...,2])
+#     u = np.arcsinh(w[...,2])
+#     # v = torch.acos(w[...,0]/torch.cos(u))
+#     v = np.arctanh(w[...,1]/w[...,0])
+#     return np.stack((u,v))
 
-def ginverse(p, x):
-    """Inverse metric at p, applied to x"""
-    x_ = x.data
-    coshv = torch.cosh(p.narrow(-1,1,1)).pow(2)
-    x_.narrow(-1,0,1).mul_(coshv.pow(-1))
-    return x_
     
 def dist_hyp(w1, w2, eps=1e-5):
     """Distance between w1 and w2 on the 2-sphere"""
@@ -103,24 +97,28 @@ L = np.sum(w_test*(C@w_test),0)
 # scat = ax.scatter(w_test[0,:],w_test[1,:],w_test[2,:], c=L)
 
 #%%
+# model = GeodesicCoordinates
+model = RelaxedGeodesics
+
 nplot = 50
-x = np.linspace(-2,2,nplot) # u
+x = np.linspace(-10,10,nplot) # u
 # x = 1
-y = np.linspace(-2,2,nplot) # v
+y = np.linspace(-10,10,nplot) # v
 # y = 1
 X,Y = np.meshgrid(x, y) # grid of point
 
 u_test = torch.tensor(np.vstack((X.flatten(),Y.flatten())))
 
-w_map = geochart(u_test[0,:], u_test[1,:]).numpy().T
+w_map = model.chart(u_test.T).numpy().T
+
 
 w0 = torch.tensor(np.random.randn(dim-1))
-w0 = geochart(w0[0], w0[1])
-# w0 /= torch.sqrt(-LorentzDot.apply(w0,w0))
+# w0 = torch.zeros(dim-1)
+w0 = model.chart(w0)
+w0 /= torch.sqrt(-LorentzDot.apply(w0,w0))
 L = torch.sin(2*dist_hyp(w0, torch.tensor(w_map).T))
 # L = np.sum(w_map*(C@w_map),0)
 # L = loss(torch.tensor(w_map).float())
-
 
 
 fig = plt.figure()
@@ -131,6 +129,7 @@ ax1.set_title('On the sphere')
 ax2 = fig.add_subplot(122)
 ax2.pcolormesh(X,Y, L.reshape((nplot,nplot)))
 ax2.set_title('Geodesic coordinates')
+
 
 #%%
 nstep = 1000
@@ -146,11 +145,11 @@ u_met = Feedforward([1,2], [None],
                 encoder=Indicator(1, 1), bias=False)
 u_met.network.layer0.weight.data.copy_(init.unsqueeze(1))
 
-hype = GeodesicCoordinates(u_met)
+hype = model(u_met)
 
 # U = nn.Embedding(1, 3)
 emb = u(torch.zeros(1).long())
-w = geochart(init[0], init[1]).unsqueeze(1).float()
+w = model.chart(init).unsqueeze(1).float()
 U = torch.tensor(w.T, requires_grad=True)
 
 optimizer = optim.SGD(u.parameters(), lr=dt)
@@ -172,7 +171,7 @@ for t in range(nstep):
     optimizer.zero_grad()
     emb = u(torch.zeros(1).long())
     emb.retain_grad()
-    w = geochart(emb[:,0].T, emb[:,1].T).T
+    w = model.chart(emb).T
     w.retain_grad()
     
     ws[:,t] = w.detach().numpy().squeeze()
@@ -223,7 +222,7 @@ for t in range(nstep):
     loss2.backward()
     
     Ws[:,t] = U.data.numpy().squeeze()
-    Us[:,t] = invgeochart(U.data.numpy()).squeeze()
+    Us[:,t] = model.invchart(U).squeeze()
     
     dL = U.grad.data
     dL.narrow(-1,0,1).mul_(-1)
@@ -233,13 +232,12 @@ for t in range(nstep):
     new = expmap(U.data, -dt*gradL)
     U.data.copy_(torch.tensor(new))
     U.grad.zero_()
-    
 
 #%%
 nplot = 50
 path_cmap = 'cool'
 man_cmap = 'spring'
-riem_cmap = 'hot'
+riem_cmap = 'viridis'
 loss_cmap = 'Blues'
 
 # x = np.linspace(0,1,nplot)
@@ -250,7 +248,7 @@ X,Y = np.meshgrid(x, y) # grid of point
 
 u_test = torch.tensor(np.vstack((X.flatten(),Y.flatten())))
 
-w_map = geochart(u_test[0,:], u_test[1,:]).T.numpy()
+w_map = model.chart(u_test.T).T.numpy()
 # L = np.sum(w_map*(C@w_map),0)
 L = torch.sin(dist_hyp(w0, torch.tensor(w_map).T)*2)
 col = getattr(cm,loss_cmap)(L.reshape((nplot,nplot))/L.max())

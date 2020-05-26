@@ -32,7 +32,7 @@ from nltk.corpus import wordnet as wn # natural language toolkit
 
 # my code
 sys.path.append(CODE_DIR+'repler/src/')
-from hyperbole.hyperbolic_utils import Hyperboloid, PseudoPolar, TangentSpace, CartesianHyperboloid, GeodesicCoordinates
+from hyperbole.hyperbolic_utils import Hyperboloid, PseudoPolar, TangentSpace, CartesianHyperboloid, GeodesicCoordinates, RelaxedGeodesics
 from hyperbole.dataset_utils import DenseDataset, SparseGraphDataset
 from students import Feedforward 
 from assistants import Indicator
@@ -57,12 +57,12 @@ def torch_where(cond, x1, x2):
 dim = 2 # dimension of poincare embedding
 n_neg = 10
 bsz = 64
-nepoch = 1000
+nepoch = 2000
 # nepoch = 700
 # eta = 1e-2
 eta = 0.3
-burnin = 20
-c_bi = 10
+burnin = 50
+c_bi = 20
 
 anneal = 500
 
@@ -76,7 +76,8 @@ enc = Feedforward([len(obj), dim], [None],
 # hype = TangentSpace(enc)
 # hype = CartesianHyperboloid(enc)
 # hype = PseudoPolar(enc)
-hype = GeodesicCoordinates(enc, max_norm=1e3, norm_type=2)
+# hype = GeodesicCoordinates(enc, max_norm=1e2, norm_type=2)
+hype = RelaxedGeodesics(enc, max_norm=1e4, norm_type=np.inf)
 hype.init_weights(torch.tensor(np.arange(1180)).long())
 
 # optimizer = optim.Adam(hype.parameters(), lr=eta)
@@ -107,7 +108,7 @@ for epoch in range(nepoch):
             optimizer.zero_grad()
             
             emb = hype(n)
-        
+            
             u_jk = emb.narrow(-2, 1, emb.size(-2)-1) # the neighbour set around u_i
             u_i = emb.narrow(-2,0,1).expand_as(u_jk) # the point in question
             
@@ -137,7 +138,7 @@ for epoch in range(nepoch):
 fname = '/home/matteo/Documents/uni/columbia/bleilearning/results/hyperbole/mammal_parametric.pt'
 torch.save(hype.state_dict(), open(fname, 'wb'))
 
-#%%
+    #%%
 num_obj = 600
 num_label = 6
 
