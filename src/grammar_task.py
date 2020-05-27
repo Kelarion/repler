@@ -25,7 +25,7 @@ from cycler import cycler
 
 from tqdm import tqdm
 
-from students import MultiGLM
+from students import MultiGLM, Feedforward
 from assistants import Indicator
 import experiments as exp
 import util
@@ -35,14 +35,17 @@ from recurrent import RNNModel
 #%%
 class RNNClassifier(nn.Module):
     """Fairly thin wrapper for nn.RNN with a classifier readout"""
-    def __init__(self, hidden_size, input_size, num_classes=2, embedding=None, **rnnargs):
+    def __init__(self, hidden_size, input_size, num_classes=2, encoder=None, embedding=None, **rnnargs):
         super(RNNClassifier, self).__init__()
         
-        if embedding is not None:
+        if encoder is not None:
+            self.encoder = encoder
+            self.use_encoder = True
+        elif embedding is not None:
             self.encoder = Indicator(input_size, input_size)
-            self.takes_indices = True
+            self.use_encoder = True
         else:
-            self.takes_indices = False
+            self.use_encoder = False
         
         self.rnn = nn.RNN(input_size, hidden_size, **rnnargs)
         self.decoder = nn.Linear(hidden_size, num_classes)
@@ -62,8 +65,8 @@ class RNNClassifier(nn.Module):
         return torch.zeros(1, bsz, self.nhid)
         
     def forward(self, inp, hid):
-        if self.takes_indices:
-            inp = self.encoder(inp)
+        if self.use_encoder:
+            inp = self.encoder(inp[0],inp[1])
         output, hidden = self.rnn(inp, hid)
         
         decoded = self.decoder(output)
@@ -97,10 +100,24 @@ class RotatedOnehot(object):
         active = (binary_seq==0)|(binary_seq==1)
         expansion[active,:-1] = np.matmul(onehot, self.basis.T)[active,:]
         expansion[binary_seq==2,-1] = 1
-        expansion[binary_seq==-1,:] = -1
+        expansion[binary_seq==-1,:] = 0
         
         return torch.tensor(expansion, requires_grad=False).float()
 
+class FeedforwardContextual(nn.Module):
+    def __init__(self, *ff_args):
+        super(FeedforwardContextual, self).__init__()
+        self.ffn = Feedforward(*ff_args)
+    
+    def forward(self, inp, binary_seq):
+        # inp_ = inp.clone()
+        # inp_[(binary_seq==-1)|(binary_seq==2),:] = 0
+        # print(inp_)
+        main = self.ffn(inp)
+        main[(binary_seq==-1)|(binary_seq==2),:] = 0
+        final = torch.cat([main, torch.tensor(binary_seq==2).float().unsqueeze(-1)],dim=-1)
+        return final
+        
 #%%
 def AnBn(nseq, nT, L, eps=0.5, cue=True, align=False, atfront=True):
     """
@@ -192,7 +209,7 @@ def sample_images(binary_seq, digits):
 def represent(images, encoder, binary_seq):
     
     pretrained_rep = encoder(images).detach()
-    reps = np.ones(binary_seq.shape+(N+1*cued,))*-1
+    reps = np.zeros(binary_seq.shape+(encoder.ndim[-1]+1*cued,))
     if cued:
         reps[(binary_seq==0)|(binary_seq==1),:-1] = pretrained_rep[(binary_seq==0)|(binary_seq==1),:]
         reps[(binary_seq==0)|(binary_seq==1),-1] = 0
@@ -211,10 +228,11 @@ digits = torchvision.datasets.MNIST(SAVE_DIR+'digits/', download=True,
 # drawings = digits.data.reshape((-1,784)).float()/255
 
 #%% generate underlying sequences
-nseq = 3000
+nseq = 2000
 nT = 24
-dense = True # is the sequence dense? (no time without input)
-L_train = [3,5,7,12]
+# dense = True # is the sequence dense? (no time without input)
+dense = False
+L_train = [3,5,7]
 L_test = [2,4,6,8]
 cued = True
 
@@ -238,6 +256,12 @@ this_exp = exp.mnist_multiclass(util.DigitsBitwise(), SAVE_DIR,
                                 z_prior=None,
                                 num_layer=1,
                                 weight_decay=0)
+# this_exp = exp.mnist_multiclass(util.ParityMagnitude(), SAVE_DIR, 
+#                                 N=N,
+#                                 init=1,
+#                                 z_prior=None,
+#                                 num_layer=1,
+#                                 weight_decay=0)
 network, metrics, args = this_exp.load_experiment(SAVE_DIR)
 bern_encoder = network.enc
 bern_inp = represent(images, network.enc, seqs)
@@ -250,6 +274,12 @@ this_exp = exp.mnist_multiclass(util.Digits(), SAVE_DIR,
                                 z_prior=None,
                                 num_layer=1,
                                 weight_decay=0)
+# this_exp = exp.mnist_multiclass(util.ParityMagnitudeEnumerated(), SAVE_DIR, 
+#                                 N=N,
+#                                 init=1,
+#                                 z_prior=None,
+#                                 num_layer=1,
+#                                 weight_decay=0)
 network, metrics, args = this_exp.load_experiment(SAVE_DIR)
 cat_encoder = network.enc
 cat_inp = represent(images, network.enc, seqs)
@@ -257,11 +287,11 @@ test_cat_inp = represent(test_images, network.enc, tseqs)
 
 # Regularised categorical representattion
 this_exp = exp.mnist_multiclass(util.Digits(), SAVE_DIR, 
-                                N=N,
+                                N=51,
                                 init=None,
                                 z_prior=None,
                                 num_layer=1,
-                                weight_decay=0.1)
+                                weight_decay=1.0)
 network, metrics, args = this_exp.load_experiment(SAVE_DIR)
 regcat_encoder = network.enc
 regcat_inp = represent(images, network.enc, seqs)
@@ -270,6 +300,9 @@ test_regcat_inp = represent(test_images, network.enc, tseqs)
 # Random rotation of one-hot encoding to match dimension
 onehot_encoder = RotatedOnehot(N, numbers.max())
 indic_inp = onehot_encoder(numbers, seqs)
+
+# Train encoder end to end
+e2e_encoder = FeedforwardContextual([784, 100, N],'ReLU')
 
 #%% check that the representations are what we think they are
 n_mds = 2
@@ -298,7 +331,7 @@ cb.set_ticklabels(np.unique(cond))
 cb.set_alpha(1)
 cb.draw_all()
 
-#%% Train and test Bernoulli representation
+#%% Train and test each representation
 N_rnn = 100
 rnn_type = 'tanh'
 # rnn_type = 'relu'
@@ -311,16 +344,16 @@ dlargs = {'num_workers': 2,
 optargs = {'lr': 1e-3}
 criterion = torch.nn.CrossEntropyLoss()
 
-
 # define networks
-rnn_bern = RNNClassifier(N_rnn, N+1*cued, nonlinearity=rnn_type)
+rnn_bern = RNNClassifier(N_rnn, bern_inp.shape[-1], nonlinearity=rnn_type)
 # rnn_indic = RNNClassifier(N_rnn, numbers.max(), nonlinearity=rnn_type, embedding=True)
 if rotate_onehot:
-    rnn_indic = RNNClassifier(N_rnn, N+1*cued, nonlinearity=rnn_type)
+    rnn_indic = RNNClassifier(N_rnn, indic_inp.shape[-1], nonlinearity=rnn_type)
 else:
     rnn_indic = RNNClassifier(N_rnn, numbers.max()+1, nonlinearity=rnn_type)
-rnn_cat = RNNClassifier(N_rnn, N+1*cued, nonlinearity=rnn_type)
-rnn_regcat = RNNClassifier(N_rnn, N+1*cued, nonlinearity=rnn_type)
+rnn_cat = RNNClassifier(N_rnn, cat_inp.shape[-1], nonlinearity=rnn_type)
+rnn_regcat = RNNClassifier(N_rnn, regcat_inp.shape[-1], nonlinearity=rnn_type)
+rnn_e2e = RNNClassifier(N_rnn, N+1*cued, nonlinearity=rnn_type, encoder=e2e_encoder)
 
 # make dataloaders
 inp_idx = torch.arange(bern_inp.shape[0])
@@ -333,19 +366,22 @@ optimizer_bern = alg(rnn_bern.parameters(), **optargs)
 optimizer_indic = alg(rnn_indic.parameters(), **optargs)
 optimizer_cat = alg(rnn_cat.parameters(), **optargs)
 optimizer_regcat = alg(rnn_regcat.parameters(), **optargs)
+optimizer_e2e = alg(rnn_e2e.parameters(), **optargs)
 
 train_loss_bern = np.zeros(nepoch)
 train_loss_indic = np.zeros(nepoch)
 train_loss_cat = np.zeros(nepoch)
 train_loss_regcat = np.zeros(nepoch)
+train_loss_e2e = np.zeros(nepoch)
 train_error = np.zeros(nepoch)
 test_error = np.zeros(nepoch)
-with tqdm(range(nepoch), total=nepoch, postfix=[dict(bern_loss=0, cat_loss=0, indic_loss=0, l2cat_loss=0)]) as looper:
+with tqdm(range(nepoch), total=nepoch, postfix=[dict(bern_loss=0, cat_loss=0, indic_loss=0, l2cat_loss=0, e2e_loss=0)]) as looper:
     for epoch in looper:
         running_loss_bern = 0.0
         running_loss_indic = 0.0
         running_loss_cat = 0.0
         running_loss_regcat = 0.0
+        running_loss_e2e = 0.0
         
         idx = np.random.choice(test_bern_inp.shape[0], 500, replace=False)
         hid = rnn_bern.init_hidden(500)
@@ -406,31 +442,55 @@ with tqdm(range(nepoch), total=nepoch, postfix=[dict(bern_loss=0, cat_loss=0, in
             loss_regcat = criterion(output, lab)
             loss_regcat.backward()
             
+            # End-to-end training
+            inp_seqs = (images[inp,:,:].transpose(1,0), seqs[inp,:].T)
+            optimizer_e2e.zero_grad()
+            hid = rnn_e2e.init_hidden(len(inp))
+            # need to get the cue time -- the last non-padding input
+            t_final = -(np.fliplr(seqs[inp,:]==-1).argmin(1)+1)
+            out, _ = rnn_e2e(inp_seqs, hid)
+            output = out[t_final, np.arange(len(inp)),:]
+            loss_e2e = criterion(output, lab)
+            loss_e2e.backward()
+            
             optimizer_bern.step()
             optimizer_indic.step()
             optimizer_cat.step()
             optimizer_regcat.step()
+            optimizer_e2e.step()
             
             running_loss_bern += loss_bern.item()
             running_loss_indic += loss_indic.item()
             running_loss_cat += loss_cat.item()
             running_loss_regcat += loss_regcat.item()
+            running_loss_e2e += loss_e2e.item()
             
         train_loss_bern[epoch] = running_loss_bern/(i+1)
         train_loss_indic[epoch] = running_loss_indic/(i+1)
         train_loss_cat[epoch] = running_loss_cat/(i+1)
         train_loss_regcat[epoch] = running_loss_regcat/(i+1)
+        train_loss_e2e[epoch] = running_loss_e2e/(i+1)        
         
         looper.postfix[0]['bern_loss'] = np.round(running_loss_bern/(i+1), 3)
         looper.postfix[0]['cat_loss'] = np.round(running_loss_cat/(i+1), 3)
         looper.postfix[0]['indic_loss'] = np.round(running_loss_indic/(i+1), 3)
         looper.postfix[0]['l2cat_loss'] = np.round(running_loss_regcat/(i+1), 3)
+        looper.postfix[0]['e2e_loss'] = np.round(running_loss_e2e/(i+1), 3)
         looper.update()
 
-rnn_bern.save(SAVE_DIR+'sequential/bern_rnn_params.pt')
-rnn_cat.save(SAVE_DIR+'sequential/cat_rnn_params.pt')
-rnn_indic.save(SAVE_DIR+'sequential/indic_rnn_params.pt')
-rnn_regcat.save(SAVE_DIR+'sequential/l2cat_rnn_params.pt')
+rnn_bern.save(SAVE_DIR+'/results/sequential/bern_rnn_params.pt')
+rnn_cat.save(SAVE_DIR+'/results/sequential/cat_rnn_params.pt')
+rnn_indic.save(SAVE_DIR+'/results/sequential/indic_rnn_params.pt')
+rnn_regcat.save(SAVE_DIR+'/results/sequential/l2cat_rnn_params.pt')
+rnn_e2e.save(SAVE_DIR+'/results/sequential/e2e_rnn_params.pt')
+
+#%%
+plt.plot(np.arange(epoch)+1,train_loss_bern[:epoch])
+plt.plot(np.arange(epoch)+1,train_loss_cat[:epoch])
+plt.plot(np.arange(epoch)+1,train_loss_indic[:epoch])
+plt.plot(np.arange(epoch)+1,train_loss_regcat[:epoch])
+
+plt.semilogx()
 
 #%%
 ntest = 500
@@ -440,7 +500,7 @@ perf_bern = np.zeros(len(L_testing))
 perf_indic = np.zeros(len(L_testing))
 perf_regcat = np.zeros(len(L_testing))
 for i,l in enumerate(L_testing):
-    new_seq, new_labs = AnBn(ntest, nT, [l], cue=cued)
+    new_seq, new_labs = AnBn(ntest, nT, [l], cue=cued, atfront=dense)
     timg, tnum = sample_images(new_seq, digits)
     
     tinp = represent(timg, bern_encoder, new_seq)

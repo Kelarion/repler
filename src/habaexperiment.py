@@ -55,15 +55,15 @@ for op, val in opts:
         num_layer = int(val)
 
 #%% run experiment (put the code you want to run here!)
-# task = util.ParityMagnitude()
+task = util.ParityMagnitude()
 # task = util.ParityMagnitudeEnumerated()
 # task = util.Digits()
-task = util.DigitsBitwise()
+# task = util.DigitsBitwise()
 # task = util.ParityMagnitudeFourunit()
 # task = util.RandomDichotomies(2)
 
-# parallelism_conditions = util.ParityMagnitude()
-parallelism_conditions = util.DigitsBitwise()
+parallelism_conditions = util.ParityMagnitude()
+# parallelism_conditions = util.DigitsBitwise()
 # parallelism_conditions = task
 
 dichotomy_type = 'simple'
