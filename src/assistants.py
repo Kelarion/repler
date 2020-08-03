@@ -13,6 +13,10 @@ import scipy.linalg as la
 import scipy.special as spc
 from itertools import combinations, permutations
 
+# silence that horrible, probably useless warning
+from sklearn.utils.testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
+
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 class LinearDecoder(object):
     """
@@ -35,6 +39,7 @@ class LinearDecoder(object):
     def __repr__(self):
         return "LinearDecoder(ntoken=%d, classifier=%s)"%(len(self.tokens),self.clsfr.__name__)
 
+    @ignore_warnings(category=ConvergenceWarning)
     def fit(self, H, labels, t_=None, **cfargs):
         """
         Trains classifiers for each time bin

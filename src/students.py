@@ -185,13 +185,13 @@ class Bernoulli(DeepDistribution):
         self.ndim = dim_z
         
         if prior_params is None:
-            prior_params = {'probs': 0.5*torch.ones(dim_z)}
+            prior_params = {'logits': torch.zeros(dim_z)}
         
         self.prior = D.bernoulli.Bernoulli(**prior_params)
         
     def distr(self, theta):
         """Return instance(s) of distribution, with parameters theta"""
-        d = D.bernoulli.Bernoulli(probs=theta)
+        d = D.bernoulli.Bernoulli(logits=theta)
         return d
         
     def sample(self, theta):

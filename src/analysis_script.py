@@ -31,8 +31,8 @@ import util
 #%% Model specification -- for loading purposes
 # task = util.ParityMagnitude()
 # task = util.RandomDichotomies(2)
-# task = util.ParityMagnitudeEnumerated()
-task = util.Digits()
+task = util.ParityMagnitudeEnumerated()
+# task = util.Digits()
 # task = util.DigitsBitwise()
 # obs_dist = Bernoulli(1)
 latent_dist = None
@@ -50,7 +50,7 @@ Q = task.num_var
 # N_list = [2,3,4,5,6,7,8,9,10,11,20,25,50,100]
 # N_list = None
 # N_list = [2,3,5,10,50,100]
-N_list = [51]
+N_list = [100]
 
 # find experiments 
 this_exp = exp.mnist_multiclass(task, SAVE_DIR, 
@@ -70,13 +70,13 @@ if (N_list is None):
     
     N_list = np.unique(Ns)
 
-
 # load experiments
 # loss = np.zeros((len(N_list), 1000))
 # test_perf = np.zeros((Q, len(N_list), 1000))
 # test_PS = np.zeros((Q, len(N_list), 1000))
 # shat = np.zeros((Q, len(N_list), 1000))
 nets = [[] for _ in N_list]
+all_nets = [[] for _ in N_list]
 mets = [[] for _ in N_list]
 best_perf = []
 for i,n in enumerate(N_list):
@@ -106,8 +106,11 @@ for i,n in enumerate(N_list):
             if key not in all_metrics.keys():
                 shp = (num,) + val.shape
                 all_metrics[key] = np.zeros(shp)*np.nan
+            if (val.shape[0]==1000) or not len(val):
+                continue
             all_metrics[key][j,...] = val
-    
+        all_nets[i].append(model)
+        
     nets[i] = best_net
     mets[i] = all_metrics
     best_perf.append(maxmin)
@@ -130,12 +133,12 @@ N = N_list[netid]
 # show_me = 'test_ccgp'
 # show_me = 'mean_grad'
 # show_me = 'std_grad'
-# show_me = 'linear_dim'
+show_me = 'linear_dim'
 
 epochs = np.arange(1,mets[netid]['train_loss'].shape[-1]+1)
 
 mean = np.nanmean(mets[netid][show_me],0)
-error = (np.nanstd(mets[netid][show_me],0)/np.sqrt(mets[netid][show_me].shape[0]))
+error = (np.nanstd(mets[netid][show_me],0))#/np.sqrt(mets[netid][show_me].shape[0]))
 
 if len(mean.shape)>1:
     for dim in range(mean.shape[-1]):
@@ -217,8 +220,8 @@ idx = np.random.choice(train_dat[0].shape[0], n_compute, replace=False)
 
 z = model(train_dat[0][idx,...])[2].detach().numpy()
 
-this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.DigitsBitwise())
-# this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.ParityMagnitude())
+# this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.DigitsBitwise())
+this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.ParityMagnitude())
 ans = this_exp.train_conditions[idx,...]
 cond = util.decimal(ans)
 
@@ -304,15 +307,16 @@ par = plt.scatter(xfoo[[20,20+ndic,20+2*ndic]], yfoo[[20,20+ndic,20+2*ndic]],
                   marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
 mag = plt.scatter(xfoo[[0, ndic, 2*ndic]], yfoo[[0,ndic,2*ndic]], 
                   marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
-other = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
-                    marker='o', edgecolors='b', s=60, facecolors='none', linewidths=3)
+# other = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
+#                     marker='o', edgecolors='b', s=60, facecolors='none', linewidths=3)
 
 # par = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
 #                   marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
 # mag = plt.scatter(xfoo[[27, 27+ndic, 27+2*ndic]], yfoo[[27,27+ndic,27+2*ndic]], 
 #                   marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
 
-plt.legend([par,mag,other], ['Parity', 'Magnitude', 'The other one'])
+plt.legend([par,mag],['Parity', 'Magnitude'])
+# plt.legend([par,mag,other], ['Parity', 'Magnitude', 'The other one'])
 # plt.legend([par,mag], ['{3,4,7,8}', '{2,3,6,7}'])
 
 
@@ -472,4 +476,5 @@ plt.loglog(np.arange(1,nepoch+1), test_error*100)
 plt.xlabel('epoch')
 plt.ylabel('test error')
 
+#%%
 

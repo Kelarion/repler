@@ -15,9 +15,12 @@ import os
 if socket.gethostname() == 'kelarion':
     CODE_DIR = '/home/matteo/Documents/github/repler/src/'
     SAVE_DIR = '/home/matteo/Documents/uni/columbia/bleilearning/'
-else:    
+elif socket.gethostname() in ['watson', 'holmes']:    
     CODE_DIR = '/rigel/home/ma3811/repler/'
     SAVE_DIR = '/rigel/theory/users/ma3811/'
+else: 
+    CODE_DIR = '/home/malleman/repler/'
+    SAVE_DIR = '/om2/user/malleman/'
     
 import getopt, sys
 sys.path.append(CODE_DIR)
@@ -55,18 +58,19 @@ for op, val in opts:
         num_layer = int(val)
 
 #%% run experiment (put the code you want to run here!)
-task = util.ParityMagnitude()
-# task = util.ParityMagnitudeEnumerated()
+# task = util.ParityMagnitude()
+task = util.ParityMagnitudeEnumerated()
 # task = util.Digits()
 # task = util.DigitsBitwise()
 # task = util.ParityMagnitudeFourunit()
 # task = util.RandomDichotomies(2)
 
-parallelism_conditions = util.ParityMagnitude()
-# parallelism_conditions = util.DigitsBitwise()
+# parallelism_conditions = util.ParityMagnitude()
+parallelism_conditions = util.DigitsBitwise()
 # parallelism_conditions = task
 
 dichotomy_type = 'simple'
+# dichotomy_type = 'general'
 
 decay = 1.0
 

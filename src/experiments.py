@@ -33,7 +33,8 @@ class mnist_multiclass():
     def __init__(self, task, SAVE_DIR, N=None, H=100,
                  nonlinearity='ReLU', num_layer=1, z_prior=None,
                  bsz=64, nepoch=1000, lr=1e-4, opt_alg=optim.Adam, weight_decay=0,
-                 abstracts=None, init=None, skip_metrics=False, dichotomy_type='general'):
+                 abstracts=None, init=None, skip_dichotomies=False,
+                 skip_metrics=False, dichotomy_type='general'):
         """
         Everything required to fully specify an experiment.
         
@@ -143,31 +144,32 @@ class mnist_multiclass():
         # n_dichotomy = int(spc.binom(2**self.num_cond, 2**(self.num_cond-1))/2)
         n_dichotomy = Dichotomies(self.train_conditions, self.dichotomy_type).ntot
         
-        metrics = {'train_loss': np.zeros(0),
-                   'train_perf': np.zeros((0, self.task.num_var)),
-                   'train_PS': np.zeros((0, n_dichotomy)),
-                   'test_perf': np.zeros((0, self.task.num_var)),
-                   'test_PS': np.zeros((0, n_dichotomy)),
-                   'shattering': np.zeros((0, n_dichotomy)),
-                   'mean_grad': np.zeros((0, 3)),
-                   'std_grad': np.zeros((0, 3)),
-                   'train_ccgp': np.zeros((0, n_dichotomy)),
-                   'test_ccgp': np.zeros((0, n_dichotomy)),
-                   'linear_dim': np.zeros(0)} # put all training metrics here
+        metrics = {'train_loss': np.zeros(self.nepoch),
+                   'train_perf': np.zeros((self.nepoch, self.task.num_var)),
+                   'train_PS': np.zeros((self.nepoch, n_dichotomy)),
+                   'test_perf': np.zeros((self.nepoch, self.task.num_var)),
+                   'test_PS': np.zeros((self.nepoch, n_dichotomy)),
+                   'shattering': np.zeros((self.nepoch, n_dichotomy)),
+                   'mean_grad': np.zeros((self.nepoch, 3)),
+                   'std_grad': np.zeros((self.nepoch, 3)),
+                   'train_ccgp': np.zeros((self.nepoch, n_dichotomy)),
+                   'test_ccgp': np.zeros((self.nepoch, n_dichotomy)),
+                   'linear_dim': np.zeros(self.nepoch)} # put all training metrics here
         
         for epoch in range(self.nepoch):
             # check each quantity before optimisation
             
             if not self.skip_metrics:
                 with torch.no_grad():
-                    # train error ##############################################
+                    # train error #############################################
                     idx_trn = np.random.choice(self.ntrain, n_compute, replace=False)
                     
                     pred, _, z_train = self.model(self.train_data[0][idx_trn,...])
                     # terr = (self.train_data[1][idx_trn,...] == (pred>=0.5)).sum(0).float()/n_compute
                     terr = self.task.correct(pred, self.train_data[1][idx_trn,...])/n_compute
-                    terr = terr.expand_as(torch.empty((1,self.task.num_var)))
-                    metrics['train_perf'] = np.append(metrics['train_perf'], terr, axis=0)
+                    # terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                    # metrics['train_perf'] = np.append(metrics['train_perf'], terr, axis=0)
+                    metrics['train_perf'][epoch,:] = terr
                     
                     # test error ##############################################
                     idx_tst = np.random.choice(self.ntest, n_compute, replace=False)
@@ -175,16 +177,18 @@ class mnist_multiclass():
                     pred, _, z_test = self.model(self.test_data[0][idx_tst,...])
                     # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
                     terr = self.task.correct(pred, self.test_data[1][idx_tst,...])/n_compute
-                    terr = terr.expand_as(torch.empty((1,self.task.num_var)))
-                    metrics['test_perf'] = np.append(metrics['test_perf'], terr, axis=0)
+                    # terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                    # metrics['test_perf'] = np.append(metrics['test_perf'], terr, axis=0)
+                    metrics['test_perf'][epoch,:] = terr
                     
-                    # Dimensionality #########################################
+                    # Dimensionality ##########################################
                     _, S, _ = la.svd(z_train.detach()-z_train.mean(1).detach()[:,None], full_matrices=False)
                     eigs = S**2
                     pr = (np.sum(eigs)**2)/np.sum(eigs**2)
-                    metrics['linear_dim'] = np.append(metrics['linear_dim'], pr)
-                          
-                    # various dichotomy-based metrics ########################
+                    # metrics['linear_dim'] = np.append(metrics['linear_dim'], pr)
+                    metrics['linear_dim'][epoch] = pr      
+                    
+                    # various dichotomy-based metrics #########################
                     clf = LinearDecoder(self.dim_latent, 1, MeanClassifier)
                     dclf = LinearDecoder(self.dim_latent, n_dichotomy, svm.LinearSVC)
                     gclf = LinearDecoder(self.dim_latent, 1, svm.LinearSVC)
@@ -200,7 +204,7 @@ class mnist_multiclass():
                     #     PS[i] = D.parallelism(z_train.detach().numpy(), clf)
                     #     CCGP[i] = D.CCGP(z_train.detach().numpy(), gclf, K)
                         d[:,i] = dic
-                    dclf.fit(z_train.detach().numpy(), d, tol=1e-5)
+                    dclf.fit(z_train.detach().numpy(), d)
                     
                     # metrics['train_PS'] = np.append(metrics['train_PS'], PS[None,:], axis=0)
                     # metrics['train_ccgp'] = np.append(metrics['train_ccgp'], CCGP[None,:], axis=0)
@@ -217,14 +221,18 @@ class mnist_multiclass():
                         d[:,i] = dic
                     SD = dclf.test(z_test.detach().numpy(), d).T
                     
-                    metrics['test_PS'] = np.append(metrics['test_PS'], PS[None,:], axis=0)
-                    metrics['test_ccgp'] = np.append(metrics['test_ccgp'], CCGP[None,:], axis=0)
-                    metrics['shattering'] = np.append(metrics['shattering'], SD, axis=0)
+                    # metrics['test_PS'] = np.append(metrics['test_PS'], PS[None,:], axis=0)
+                    metrics['test_PS'][epoch,:] = PS
+                    # metrics['test_ccgp'] = np.append(metrics['test_ccgp'], CCGP[None,:], axis=0)
+                    metrics['test_ccgp'][epoch,:] = CCGP
+                    # metrics['shattering'] = np.append(metrics['shattering'], SD, axis=0)
+                    metrics['shattering'][epoch,:] = SD
                     
             # Actually update model #######################################
             loss = self.model.grad_step(dl, optimizer)
             
-            metrics['train_loss'] = np.append(metrics['train_loss'], loss)
+            # metrics['train_loss'] = np.append(metrics['train_loss'], loss)
+            metrics['train_loss'][epoch] = loss
             
             # gradient SNR
             # means = np.zeros(3)
