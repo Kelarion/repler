@@ -1,5 +1,3 @@
-
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -8,7 +6,7 @@ Created on Tue May  5 10:31:38 2020
 @author: matteo
 """
 
-CODE_DIR = '/home/matteo/Documents/github/'
+CODE_DIR = 'C:/Users/mmall/Documents/github/'
 
 import sys
 
@@ -17,7 +15,7 @@ import scipy.linalg as la
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
-import mayavi.mlab as mlab
+# import mayavi.mlab as mlab
 
 import torch
 import torch.nn as nn

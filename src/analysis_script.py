@@ -1,6 +1,6 @@
-CODE_DIR = '/home/matteo/Documents/github/repler/src/'
-SAVE_DIR = '/home/matteo/Documents/uni/columbia/bleilearning/'
-
+CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
+SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+ 
 import os, sys, re
 import pickle
 sys.path.append(CODE_DIR)
@@ -16,23 +16,23 @@ from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
 from itertools import permutations
 
-from sklearn import svm, discriminant_analysis, manifold
+from sklearn import svm, discriminant_analysis, manifold, linear_model
 import scipy.stats as sts
 import scipy.linalg as la
 
 # import umap
 from cycler import cycler
 
-from students import *
+import students
 from assistants import *
 import experiments as exp
 import util
 
 #%% Model specification -- for loading purposes
 # task = util.ParityMagnitude()
-# task = util.RandomDichotomies(2)
+task = util.RandomDichotomies(8,2,0)
 # task = util.ParityMagnitudeEnumerated()
-task = util.Digits()
+# task = util.Digits()
 # task = util.DigitsBitwise()
 # obs_dist = Bernoulli(1)
 latent_dist = None
@@ -40,23 +40,55 @@ latent_dist = None
 nonlinearity = 'ReLU'
 # nonlinearity = 'LeakyReLU'
 
-num_layer = 1
+num_layer = 0
+# num_layer = 1
 
-decay = 1.0
+good_start = True
+# good_start = False
+coding_level = 0.8
+# coding_level = None
+
+decay = 0.0
 
 H = 100
-Q = task.num_var
 # N_list = None # set to None if you want to automatically discover which N have been tested
 # N_list = [2,3,4,5,6,7,8,9,10,11,20,25,50,100]
 # N_list = None
 # N_list = [2,3,5,10,50,100]
-N_list = [51]
+N_list = [100]
+
+# random_decoder = students.LinearRandomSphere(radius=0.2, eps=0.05, 
+#                                               fix_weights=True,
+#                                               nonlinearity=task.link)
+# random_decoder = students.LinearRandomNormal(var=0.2, 
+#                                               fix_weights=True, 
+#                                               nonlinearity=task.link)
+# random_decoder = students.LinearRandomProportional(scale=0.2, 
+#                                                     fix_weights=True, 
+#                                                     coef=2,
+#                                                     nonlinearity=task.link)
+random_decoder = None
 
 # find experiments 
-this_exp = exp.mnist_multiclass(task, SAVE_DIR, 
+# this_exp = exp.mnist_multiclass(task, SAVE_DIR, 
+#                                 z_prior=latent_dist,
+#                                 num_layer=num_layer,
+#                                 weight_decay=decay,
+#                                 decoder=random_decoder,
+#                                 good_start=good_start,
+#                                 init_coding=coding_level)
+
+this_exp = exp.random_patterns(task, SAVE_DIR, 
+                                num_class=8,
+                                dim=100,
+                                var_means=1,
                                 z_prior=latent_dist,
                                 num_layer=num_layer,
-                                weight_decay=decay)
+                                weight_decay=decay,
+                                decoder=random_decoder,
+                                good_start=good_start,
+                                init_coding=coding_level)
+
 this_folder = SAVE_DIR + this_exp.folder_hierarchy()
 if (N_list is None):
     files = os.listdir(this_folder)
@@ -70,7 +102,6 @@ if (N_list is None):
     
     N_list = np.unique(Ns)
 
-
 # load experiments
 # loss = np.zeros((len(N_list), 1000))
 # test_perf = np.zeros((Q, len(N_list), 1000))
@@ -78,6 +109,7 @@ if (N_list is None):
 # shat = np.zeros((Q, len(N_list), 1000))
 nets = [[] for _ in N_list]
 mets = [[] for _ in N_list]
+dicts = [[] for _ in N_list]
 best_perf = []
 for i,n in enumerate(N_list):
     files = os.listdir(this_folder)
@@ -87,6 +119,7 @@ for i,n in enumerate(N_list):
     num = len(param_files)
     all_metrics = {}
     best_net = None
+    this_arg = None
     maxmin = 0
     for j,f in enumerate(param_files):
         rg = re.findall(r"init(\d+)?_N%d_%s"%(n,nonlinearity),f)
@@ -101,25 +134,31 @@ for i,n in enumerate(N_list):
         if metrics['test_perf'][-1,...].min() > maxmin:    
             maxmin = metrics['test_perf'][-1,...].min()
             best_net = model
+            this_arg = args
         
         for key, val in metrics.items():
             if key not in all_metrics.keys():
-                shp = (num,) + val.shape
+                shp = (num,) + np.squeeze(np.array(val)).shape
                 all_metrics[key] = np.zeros(shp)*np.nan
-            all_metrics[key][j,...] = val
+            all_metrics[key][j,...] = np.squeeze(val)
     
     nets[i] = best_net
     mets[i] = all_metrics
+    dicts[i] = this_arg
     best_perf.append(maxmin)
+
+#%%
+netid = 0 # which specific experiment to use
+
+model = nets[netid]
+params = dicts[netid]
+N = N_list[netid]
+
+this_exp.load_other_info(params)
+this_exp.load_data(SAVE_DIR)
 
 test_dat = this_exp.test_data
 train_dat = this_exp.train_data
-
-#%%
-netid = 0
-
-model = nets[netid]
-N = N_list[netid]
 
 #%%
 # show_me = 'train_loss'
@@ -131,6 +170,7 @@ N = N_list[netid]
 # show_me = 'mean_grad'
 # show_me = 'std_grad'
 # show_me = 'linear_dim'
+show_me = 'sparsity'
 
 epochs = np.arange(1,mets[netid]['train_loss'].shape[-1]+1)
 
@@ -153,6 +193,24 @@ plt.xlabel('epoch', fontsize=15)
 plt.ylabel(show_me, fontsize=15)
 plt.title('N=%d'%N)
 
+#%%
+ba = []
+for d in this_exp.task.positives:
+    ba.append(np.where([(list(p) == list(d)) or (list(np.setdiff1d(range(8),p))==list(d))\
+                  for p in pos_conds])[0][0])
+        
+mean = np.nanmean(mets[netid]['shattering'],0)
+plt.plot(epochs,mean[:,ba].mean(1))
+plt.plot(epochs,mean[:,np.setdiff1d(range(35),ba)].mean(1))
+plt.fill_between(epochs,mean[:,ba].mean(1)-mean[:,ba].std(1),mean[:,ba].mean(1)+mean[:,ba].std(1),
+                 alpha=0.5)
+plt.fill_between(epochs,mean[:,np.setdiff1d(range(35),ba)].mean(1)-mean[:,np.setdiff1d(range(35),ba)].std(1),
+                 mean[:,np.setdiff1d(range(35),ba)].mean(1)+mean[:,np.setdiff1d(range(35),ba)].std(1),
+                 alpha=0.5)
+
+plt.semilogx()
+plt.ylabel('Shattering dimension')
+plt.legend(['Trained','Untrained'])
 #%%
 best = mets[netid]['test_perf'][:,-1,:].max(-1).argmin(0)
 plt.plot(epochs,mets[netid][show_me][best,...], 'r--', alpha=0.6)
@@ -217,9 +275,7 @@ idx = np.random.choice(train_dat[0].shape[0], n_compute, replace=False)
 
 z = model(train_dat[0][idx,...])[2].detach().numpy()
 
-this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.DigitsBitwise())
-# this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=util.ParityMagnitude())
-ans = this_exp.train_conditions[idx,...]
+ans = this_exp.train_data[1][idx,...]
 cond = util.decimal(ans)
 
 mds = manifold.MDS(n_components=2)
@@ -229,7 +285,7 @@ emb = mds.fit_transform(z)
 scat = plt.scatter(emb[:,0],emb[:,1], c=cond)
 plt.xlabel('MDS1')
 plt.ylabel('MDS2')
-cb = plt.colorbar(scat, 
+cb = plt.colorbar(scat,
                   ticks=np.unique(cond),
                   drawedges=True,
                   values=np.unique(cond))
@@ -237,57 +293,58 @@ cb.set_ticklabels(np.unique(cond)+1)
 cb.set_alpha(1)
 cb.draw_all()
 
-#%% dichotomy metrics
-abstract_variables = util.DigitsBitwise()
-# abstract_variables = util.ParityMagnitude()
-# abstract_variables = util.RandomDichotomies(2)
-Q = abstract_variables.num_var
-
-z = model(train_dat[0])[2].detach().numpy()
+#%% compute dichotomy metrics
+z = model(this_exp.train_data[0])[2].detach().numpy()
+# z = this_exp.train_data[0].detach().numpy()
+# z = linreg.predict(this_exp.train_data[0])@W1.T
 n_compute = np.min([5000, z.shape[0]])
 
 idx = np.random.choice(z.shape[0], n_compute, replace=False)
-idx_tst = idx[::4] # save 1/4 for test set
-idx_trn = np.setdiff1d(idx, idx_tst)
+# idx_tst = idx[::4] # save 1/4 for test set
+# idx_trn = np.setdiff1d(idx, idx_tst)
 
-this_exp = exp.mnist_multiclass(task, SAVE_DIR, abstracts=abstract_variables)
-# this_exp = exp.mnist_multiclass(n, class_func, SAVE_DIR)
-ans = this_exp.train_conditions
-cond = util.decimal(ans)
+cond = this_exp.train_conditions[idx]
+# cond = util.decimal(this_exp.train_data[1][idx,...])
+num_cond = len(np.unique(cond))
 
 # Loop over dichotomies
-D = Dichotomies(ans, 'general')
+D = Dichotomies(num_cond)
 clf = LinearDecoder(N, 1, MeanClassifier)
 gclf = LinearDecoder(N, 1, svm.LinearSVC)
 dclf = LinearDecoder(N, D.ntot, svm.LinearSVC)
+# clf = LinearDecoder(this_exp.dim_input, 1, MeanClassifier)
+# gclf = LinearDecoder(this_exp.dim_input, 1, svm.LinearSVC)
+# dclf = LinearDecoder(this_exp.dim_input, D.ntot, svm.LinearSVC)
 
-# K = 2**(this_exp.num_cond-1) - 1 # use all but one pairing
-K = 2**(this_exp.num_cond-2) # use half the pairings
+K = int(num_cond/2) - 1 # use all but one pairing
+# K = int(num_cond/4) # use half the pairings
 
 PS = np.zeros(D.ntot)
 CCGP = np.zeros(D.ntot)
 d = np.zeros((n_compute, D.ntot))
-for i, coloring in enumerate(D):
-    pos = np.unique(D.cond[coloring])
-    neg = np.unique(D.cond[~coloring])
+pos_conds = []
+for i, pos in enumerate(D):
+    pos_conds.append(pos)
     print('Dichotomy %d...'%i)
     # parallelism
-    PS[i] = D.parallelism(z, clf)
+    PS[i] = D.parallelism(z[idx,:], cond, clf)
     
     # CCGP
-    CCGP[i] = D.CCGP(z, gclf, K)
+    CCGP[i] = D.CCGP(z[idx,:], cond, gclf, K)
     
     # shattering
-    d[:,i] = coloring[idx]
+    d[:,i] = D.coloring(cond)
     
 # dclf.fit(z[idx_trn,:], d[np.isin(idx, idx_trn),:], tol=1e-5, max_iter=5000)
-dclf.fit(z[idx,:], d, tol=1e-5, max_iter=5000)
+dclf.fit(z[idx,:], d, tol=1e-5)
 
-z = model(test_dat[0])[2].detach().numpy()
-ans = this_exp.test_conditions
-d_tst = np.array([c for c in Dichotomies(ans, 'general')]).T
+z = model(this_exp.test_data[0])[2].detach().numpy()
+# z = this_exp.test_data[0].detach().numpy()
+# z = linreg.predict(this_exp.test_data[0])@W1.T
+idx = np.random.choice(z.shape[0], n_compute, replace=False)
 
-SD = dclf.test(z, d_tst).squeeze()
+d_tst = np.array([D.coloring(this_exp.test_conditions[idx]) for _ in D]).T
+SD = dclf.test(z[idx,:], d_tst).squeeze()
 
 #%% plot PS and CCGP
 ndic = len(PS)
@@ -300,19 +357,25 @@ plt.xticks([0,1,2], labels=['PS', 'CCGP', 'Shattering'])
 plt.ylabel('PS or Cross-validated performance')
 
 # highlight special dichotomies
-par = plt.scatter(xfoo[[20,20+ndic,20+2*ndic]], yfoo[[20,20+ndic,20+2*ndic]], 
-                  marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
-mag = plt.scatter(xfoo[[0, ndic, 2*ndic]], yfoo[[0,ndic,2*ndic]], 
-                  marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
-other = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
-                    marker='o', edgecolors='b', s=60, facecolors='none', linewidths=3)
+# par = plt.scatter(xfoo[[20,20+ndic,20+2*ndic]], yfoo[[20,20+ndic,20+2*ndic]], 
+#                   marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
+# mag = plt.scatter(xfoo[[0, ndic, 2*ndic]], yfoo[[0,ndic,2*ndic]], 
+#                   marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
+# other = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
+#                     marker='o', edgecolors='b', s=60, facecolors='none', linewidths=3)
+anns = []
+for d in this_exp.task.positives:
+    n = np.where([(list(p) == list(d)) or (list(np.setdiff1d(range(this_exp.num_class),p))==list(d))\
+                  for p in pos_conds])[0][0]
+    anns.append(plt.scatter(xfoo[[n,n+ndic,n+2*ndic]], yfoo[[n,n+ndic,n+2*ndic]], 
+                marker='o', s=60, linewidths=3))
 
 # par = plt.scatter(xfoo[[9,9+ndic,9+2*ndic]], yfoo[[9,9+ndic,9+2*ndic]], 
 #                   marker='o', edgecolors='r', s=60, facecolors='none', linewidths=3)
 # mag = plt.scatter(xfoo[[27, 27+ndic, 27+2*ndic]], yfoo[[27,27+ndic,27+2*ndic]], 
 #                   marker='o', edgecolors='g', s=60, facecolors='none', linewidths=3)
 
-plt.legend([par,mag,other], ['Parity', 'Magnitude', 'The other one'])
+plt.legend(anns, ['var %d'%(i+1) for i in range(len(anns))])
 # plt.legend([par,mag], ['{3,4,7,8}', '{2,3,6,7}'])
 
 
@@ -330,12 +393,12 @@ cb.draw_all()
 
 #%% PCA
 # abstract_variables = util.DigitsBitwise()
-abstract_variables = util.ParityMagnitude()
+# abstract_variables = util.ParityMagnitude()
 
-z = model(train_dat[0])[2].detach().numpy()
-this_exp = exp.mnist_multiclass(N, task, SAVE_DIR, abstracts=abstract_variables)
+z = model(this_exp.train_data[0])[2].detach().numpy()
+# this_exp = exp.mnist_multiclass(N, task, SAVE_DIR, abstracts=abstract_variables)
 # this_exp = exp.mnist_multiclass(n, class_func, SAVE_DIR)
-ans = this_exp.train_conditions
+ans = this_exp.train_data[1]
 cond = util.decimal(ans)
 
 # cmap_name = 'nipy_spectral'
@@ -404,25 +467,28 @@ z_q = np.append(wa[0].flatten()[:,None], wa[1].flatten()[:,None],axis=1)
 #%% See if the learned representation makes another task easier
 new_task = util.Digits()
 # new_task = util.ParityMagnitudeEnumerated()
+# new_task = this_exp.task
+
 bsz = 64
 lr = 1e-4
 nepoch = 300
 
 n_compute = 5000
 
-new_exp = exp.mnist_multiclass(new_task, SAVE_DIR)
+# new_exp = exp.mnist_multiclass(new_task, SAVE_DIR)
+new_exp = this_exp
 
-glm = nn.Linear(N, new_task.dim_output)
-# glm = nn.Linear(784, new_task.dim_output)
+# glm = nn.Linear(N, new_task.dim_output)
+glm = nn.Linear(new_exp.dim_input, new_task.dim_output)
 # glm = Feedforward([784, 100, 50, new_task.dim_output], ['ReLU', 'ReLU', None])
 # glm = MultiGLM(Feedforward([784, 100, 50]), nn.Linear(50,new_task.dim_output), new_task.obs_distribution)
 
-z_pretrained = model(new_exp.train_data[0])[2].detach()
-# z_pretrained = train_dat[0]
+# z_pretrained = model(new_exp.train_data[0])[2].detach()
+z_pretrained = new_exp.train_data[0]
 targ = new_exp.train_data[1]
 
-z_test = model(new_exp.test_data[0])[2].detach()
-# z_test = test_dat[0]
+# z_test = model(new_exp.test_data[0])[2].detach()
+z_test = new_exp.test_data[0]
 targ_test = new_exp.test_data[1]
 
 new_dset = torch.utils.data.TensorDataset(z_pretrained, targ)
@@ -432,7 +498,7 @@ optimizer = new_exp.opt_alg(glm.parameters(), lr=lr)
 
 # optimize
 train_loss = np.zeros(nepoch)
-test_error = np.zeros(nepoch)
+test_error = np.zeros((nepoch, new_task.dim_output)).squeeze()
 for epoch in range(nepoch):
     
     idx = np.random.choice(len(targ_test), n_compute, replace=False)
@@ -457,7 +523,7 @@ for epoch in range(nepoch):
         
     train_loss[epoch] = running_loss/(i+1)
     test_error[epoch] = terr
-    print('Epoch %d: loss=%.3f; error=%.3f'%(epoch, running_loss/(i+1), terr))
+    print('Epoch %d: loss=%.3f; error=%.3f'%(epoch, running_loss/(i+1), terr.mean()))
 
 # plt.figure()
 # plt.plot(np.arange(1,nepoch+1),train_loss)

@@ -7,7 +7,7 @@ implementation of a non-parametric hyperboloid embedding.
 """
 
 # SAVE_DIR = '/home/matteo/Documents/github/bertembeddings/'
-CODE_DIR = '/home/matteo/Documents/github/'
+CODE_DIR = 'C:/Users/mmall/Documents/github/'
 
 import sys
 from tqdm import tqdm, trange
@@ -66,7 +66,7 @@ c_bi = 20
 
 anneal = 500
 
-idx, obj, weights = load_edge_list('/home/matteo/Documents/github/repler/src/hyperbole/mammal_closure.csv')
+idx, obj, weights = load_edge_list(CODE_DIR + '/repler/src/hyperbole/mammal_closure.csv')
 # idx, obj, weights = load_edge_list('/home/matteo/Documents/github/repler/src/hyperbole/noun_closure.csv')
 
 D = SparseGraphDataset(idx, weights, obj, bsz, n_neg=n_neg)
@@ -135,7 +135,7 @@ for epoch in range(nepoch):
     # print('Epoch %d, loss=%.3f'%(epoch, running_loss/(i+1)))    
     train_loss[epoch] = running_loss/(i+1)
 
-fname = '/home/matteo/Documents/uni/columbia/bleilearning/results/hyperbole/mammal_parametric.pt'
+fname = 'C:/Users/mmall/Documents/uni/columbia/bleilearning/results/hyperbole/mammal_parametric.pt'
 torch.save(hype.state_dict(), open(fname, 'wb'))
 
     #%%

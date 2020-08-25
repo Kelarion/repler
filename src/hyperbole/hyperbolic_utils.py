@@ -91,7 +91,7 @@ class Hyperboloid(nn.Embedding):
         """Project vector u onto the tangent space at point x"""
         p = torch.addcmul(u, self.inner(x,u, keepdim=True).expand_as(x), x)
         return p
-    
+
     def rgrad(self, x, u):
         """Riemannian gradient of hyperboloid, combines metric_invers and proj"""
         u_ = u

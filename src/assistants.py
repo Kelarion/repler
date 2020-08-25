@@ -11,7 +11,9 @@ from torch.nn.parameter import Parameter
 import numpy as np
 import scipy.linalg as la
 import scipy.special as spc
-from itertools import combinations, permutations
+from itertools import combinations, permutations, islice, filterfalse
+from sklearn.utils._testing import ignore_warnings
+from sklearn.exceptions import ConvergenceWarning
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 class LinearDecoder(object):
@@ -35,6 +37,7 @@ class LinearDecoder(object):
     def __repr__(self):
         return "LinearDecoder(ntoken=%d, classifier=%s)"%(len(self.tokens),self.clsfr.__name__)
 
+    @ignore_warnings(category=ConvergenceWarning)
     def fit(self, H, labels, t_=None, **cfargs):
         """
         Trains classifiers for each time bin
@@ -72,8 +75,8 @@ class LinearDecoder(object):
         for p in self.tokens:
             for t in t_lbs:
                 if ~np.all(np.isnan(clf[p][t].coef_)):
-                    coefs[p,:,t] = clf[p][t].coef_/la.norm(clf[p][t].coef_)
-                    thrs[p,t] = -clf[p][t].intercept_/la.norm(clf[p][t].coef_)
+                    coefs[p,:,t] = clf[p][t].coef_/(la.norm(clf[p][t].coef_)+1e-3)
+                    thrs[p,t] = -clf[p][t].intercept_/(la.norm(clf[p][t].coef_)+1e-3)
 
         self.clf = clf
         self.nclfr = len(self.tokens)
@@ -187,11 +190,135 @@ class MeanClassifier(object):
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 # helper classes
 
+# class Dichotomies:
+#     """An iterator for looping over all dichotomies when computing parallelism, which 
+#     also includes a method for computing said parallelism if you want to."""
+
+#     def __init__(self, labels, dictype='simple'):
+#         """
+#         Takes an n-bit binary vector for each datapoint, and produces an iterator over the possible
+#         dichotomies of those classes. Each 'dichotomy' of the iterator is a re-labeling of the data
+#         into 2^(n-1) binary classifications.
+
+#         More specifically, 'labels' should be a binary vector for each datapoint you want to compute
+#         parallelism with. e.g. each timepoint in a sequence. 
+        
+#         labels should be shape (..., n) where n is the number of binary variables.
+
+#         TODO: support various types of dichotomy -- right now only considers dichotomies where the
+#         same binary variable is flipped in every class (calling it a 'simple' dichotomy).
+#         """
+
+#         self.labels = labels
+#         if dictype == 'simple':
+#             self.ntot = labels.shape[-1] # number of binary variables
+
+#             # 'cond' is the lexicographic enumeration of each binary condition
+#             # i.e. converting each p-bit binary vector into decimal number
+#             self.cond = np.einsum('...i,i',self.labels,2**np.arange(self.ntot))
+
+#         elif dictype == 'general':
+#             p = labels.shape[-1]
+#             if p > 5:
+#                 raise ValueError("Sorry, n=%d variables have too many dichotomies ..."%p)
+
+#             self.ntot = int(spc.binom(2**p, 2**(p-1))/2)
+#             self.cond = np.einsum('...i,i',self.labels,2**np.arange(p))
+#             self.combs = combinations(range(2**p), 2**(p-1))
+    
+#         else:
+#             raise ValueError('Value for "dictype" is not valid: ' + dictype)
+
+#         self.dictype = dictype
+#         self.num_var = labels.shape[-1]
+
+#         self.__iter__()
+
+#     def __iter__(self):
+#         self.curr = 0
+#         return self
+
+#     def __next__(self):
+#         if self.curr < self.ntot:
+#             if self.dictype == 'simple':
+#                 p = self.curr
+#                 # we want g_neg, the set of points in which condition p is zero
+#                 bit_is_zero = np.arange(2**self.ntot)&np.array(2**p) == 0
+#                 g_neg = np.arange(2**self.ntot)[bit_is_zero]
+
+#                 # L = 
+#                 # L = np.array([np.where((self.cond==n)|(self.cond==n+(2**p)),self.cond==n,np.nan)\
+#                 #     for n in g_neg]).transpose(1,2,0)
+#                 L = ~np.isin(self.cond, g_neg)
+
+#             if self.dictype == 'general':
+#                 pos = next(self.combs)
+
+#                 L = np.isin(self.cond, pos)
+
+#             self.curr +=1
+#             self.coloring = L
+
+#             return L
+
+#         else:
+#             raise StopIteration
+
+#     def parallelism(self, H, clf):
+#         """
+#         Computes the parallelism of H under the current coloring. It's admittedly weird 
+#         to include this as a method on the iterator, but here we are
+        
+#         H is shape (N, ..., N_feat)
+#         clf is an instance of a LinearDecoder, with a method clf.orthogonality()
+#         """
+
+#         warnings.filterwarnings('ignore',message='invalid value encountered in')
+#         # get which conditions are on each side of the coloring
+#         pos = np.unique(self.cond[self.coloring])
+
+#         ps = []
+#         for neg in permutations(np.unique(self.cond[~self.coloring])):
+#             # for a given pairing of positive and negative conditions, I need to
+#             # generate labels for a classifier.
+#             whichone = np.array([(self.cond==pos[n])|(self.cond==neg[n]) \
+#                          for n, _ in enumerate(neg)]).argmax(0)
+#             lbs = np.isin(self.cond, pos)
+            
+#             clf.fit(H, lbs[:,None], t_=whichone)
+#             clf.coefs = clf.coefs.transpose(2,1,0)
+#             ps.append(clf.avg_dot()[0])
+
+#         PS = np.max(ps)
+#         warnings.filterwarnings('default')
+
+#         return PS
+
+#     def CCGP(self, H, clf, K, **cfargs):
+#         """
+#         Cross-condition generalisation performance, computed on representation H using
+#         classifier clf, with K conditions (on each side) in the training set.
+#         """
+#         pos = np.unique(self.cond[self.coloring])
+#         neg = np.unique(self.cond[~self.coloring])
+        
+#         ntot = spc.binom(2**(self.num_var-1), K)**2
+#         ccgp = 0
+#         for p in combinations(pos,K):
+#             for n in combinations(neg,K):
+#                 train_set = np.append(p,n)
+#                 is_trn = np.isin(self.cond, train_set)
+                
+#                 clf.fit(H[is_trn,...], self.coloring[is_trn][:,None], **cfargs)
+#                 perf = clf.test(H[~is_trn,...], self.coloring[~is_trn][:,None])[0]
+#                 ccgp += perf/ntot
+#         return ccgp
+
 class Dichotomies:
     """An iterator for looping over all dichotomies when computing parallelism, which 
     also includes a method for computing said parallelism if you want to."""
 
-    def __init__(self, labels, dictype='simple'):
+    def __init__(self, num_cond, special=None, extra=0):
         """
         Takes an n-bit binary vector for each datapoint, and produces an iterator over the possible
         dichotomies of those classes. Each 'dichotomy' of the iterator is a re-labeling of the data
@@ -205,29 +332,28 @@ class Dichotomies:
         TODO: support various types of dichotomy -- right now only considers dichotomies where the
         same binary variable is flipped in every class (calling it a 'simple' dichotomy).
         """
+        
+        self.num_cond = num_cond
+        # self.cond = cond_labels
 
-        self.labels = labels
-        if dictype == 'simple':
-            self.ntot = labels.shape[-1] # number of binary variables
+        if special is None:
+            if num_cond > 30:
+                raise ValueError("Sorry, %d conditions have too many dichotomies ..."%num_cond)
 
-            # 'cond' is the lexicographic enumeration of each binary condition
-            # i.e. converting each p-bit binary vector into decimal number
-            self.cond = np.einsum('...i,i',self.labels,2**np.arange(self.ntot))
+            self.ntot = int(spc.binom(num_cond, int(num_cond)/2)/2)
+            self.combs = list(combinations(range(num_cond), int(num_cond/2)))
 
-        elif dictype == 'general':
-            p = labels.shape[-1]
-            if p > 5:
-                raise ValueError("Sorry, n=%d variables have too many dichotomies ..."%p)
-
-            self.ntot = int(spc.binom(2**p, 2**(p-1))/2)
-            self.cond = np.einsum('...i,i',self.labels,2**np.arange(p))
-            self.combs = combinations(range(2**p), 2**(p-1))
-    
         else:
-            raise ValueError('Value for "dictype" is not valid: ' + dictype)
+            if num_cond > 30:
+                raise ValueError("Sorry, %d conditions have too many dichotomies ..."%num_cond)
 
-        self.dictype = dictype
-        self.num_var = labels.shape[-1]
+            nmax = int(spc.binom(num_cond, int(num_cond)/2)/2)
+            self.ntot = len(special)+extra
+
+            # get all non-special dichotomies; this is convoluted but memory-efficient?
+            remain = list(filterfalse(lambda x: x in special, 
+                islice(combinations(range(num_cond),int(num_cond/2)),nmax)))
+            self.combs = special + np.random.permutation(remain)[:extra].tolist()
 
         self.__iter__()
 
@@ -237,31 +363,22 @@ class Dichotomies:
 
     def __next__(self):
         if self.curr < self.ntot:
-            if self.dictype == 'simple':
-                p = self.curr
-                # we want g_neg, the set of points in which condition p is zero
-                bit_is_zero = np.arange(2**self.ntot)&np.array(2**p) == 0
-                g_neg = np.arange(2**self.ntot)[bit_is_zero]
-
-                # L = 
-                # L = np.array([np.where((self.cond==n)|(self.cond==n+(2**p)),self.cond==n,np.nan)\
-                #     for n in g_neg]).transpose(1,2,0)
-                L = ~np.isin(self.cond, g_neg)
-
-            if self.dictype == 'general':
-                pos = next(self.combs)
-
-                L = np.isin(self.cond, pos)
+            self.pos = self.combs[self.curr]
+            # L = np.isin(self.cond, self.pos)
 
             self.curr +=1
-            self.coloring = L
+            # self.coloring = L
 
-            return L
+            return self.pos
 
         else:
+            self.__iter__()
             raise StopIteration
 
-    def parallelism(self, H, clf):
+    def coloring(self, cond):
+        return np.isin(cond, self.pos)
+
+    def parallelism(self, H, cond, clf):
         """
         Computes the parallelism of H under the current coloring. It's admittedly weird 
         to include this as a method on the iterator, but here we are
@@ -270,44 +387,48 @@ class Dichotomies:
         clf is an instance of a LinearDecoder, with a method clf.orthogonality()
         """
 
-        warnings.filterwarnings('ignore',message='invalid value encountered in')
+        # warnings.filterwarnings('ignore',message='invalid value encountered in')
         # get which conditions are on each side of the coloring
-        pos = np.unique(self.cond[self.coloring])
+        # pos = np.unique(self.cond[self.coloring])
+        # pos = self.pos
+        coloring = np.isin(cond, self.pos)
 
         ps = []
-        for neg in permutations(np.unique(self.cond[~self.coloring])):
+        for neg in permutations(np.unique(cond[~coloring])):
             # for a given pairing of positive and negative conditions, I need to
             # generate labels for a classifier.
-            whichone = np.array([(self.cond==pos[n])|(self.cond==neg[n]) \
+            whichone = np.array([(cond==self.pos[n])|(cond==neg[n]) \
                          for n, _ in enumerate(neg)]).argmax(0)
-            lbs = np.isin(self.cond, pos)
+            # lbs = np.isin(self.cond, pos)
             
-            clf.fit(H, lbs[:,None], t_=whichone)
+            clf.fit(H, coloring[:,None], t_=whichone)
             clf.coefs = clf.coefs.transpose(2,1,0)
             ps.append(clf.avg_dot()[0])
 
         PS = np.max(ps)
-        warnings.filterwarnings('default')
+        # warnings.filterwarnings('default')
 
         return PS
 
-    def CCGP(self, H, clf, K, **cfargs):
+    def CCGP(self, H, cond, clf, K, **cfargs):
         """
         Cross-condition generalisation performance, computed on representation H using
         classifier clf, with K conditions (on each side) in the training set.
         """
-        pos = np.unique(self.cond[self.coloring])
-        neg = np.unique(self.cond[~self.coloring])
+        coloring = np.isin(cond, self.pos)
+        # pos = np.unique(self.cond[self.coloring])
+        # pos = self.pos
+        neg = np.unique(cond[~coloring])
         
-        ntot = spc.binom(2**(self.num_var-1), K)**2
+        ntot = spc.binom(int(self.num_cond/2), K)**2
         ccgp = 0
-        for p in combinations(pos,K):
+        for p in combinations(self.pos,K):
             for n in combinations(neg,K):
                 train_set = np.append(p,n)
-                is_trn = np.isin(self.cond, train_set)
+                is_trn = np.isin(cond, train_set)
                 
-                clf.fit(H[is_trn,...], self.coloring[is_trn][:,None], **cfargs)
-                perf = clf.test(H[~is_trn,...], self.coloring[~is_trn][:,None])[0]
+                clf.fit(H[is_trn,...], coloring[is_trn][:,None], **cfargs)
+                perf = clf.test(H[~is_trn,...], coloring[~is_trn][:,None])[0]
                 ccgp += perf/ntot
         return ccgp
 

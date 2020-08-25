@@ -55,6 +55,99 @@ class Feedforward(nn.Module):
         #     h = self.activation(layer(h))
         return h
 
+# Layers with random weights
+class LinearRandom(object):
+    """
+    Abstract class for linear layers with random weights
+    """
+    def __init__(self, fix_weights=False, nonlinearity=None):
+        if nonlinearity is not None:
+            self.link = getattr(nn, nonlinearity)()
+        else:
+            self.link = None
+
+        self.fixed = fix_weights
+        if fix_weights:
+            self.called = False
+
+        self.__name__ = self.__class__.__name__
+        #     self.w = self.draw_weights()
+
+    def draw_weights(self, num_weights):
+        raise NotImplementedError
+
+    def __call__(self, inp):
+        if self.fixed and self.called:
+            W = self.weights
+        else:
+            W = self.draw_weights(inp.shape[-1])
+            if self.fixed:
+                self.weights = W
+        self.called = True
+        if self.link is not None:
+            return self.link(torch.matmul(inp, W.T))
+        else:
+            return torch.matmul(inp, W.T)
+
+class LinearRandomSphere(LinearRandom):
+    """
+    Weights drawn one p-norm sphere with orthogonal gaussian noise
+    only works for a curve right now!!
+    and the parametrization is a hack, should do better
+    """
+    def __init__(self, dim=2, p=1, radius=1, eps=0.1, 
+                 fix_weights=False, bias=False, nonlinearity=None):
+        super(LinearRandomSphere, self).__init__(fix_weights,
+                                                 nonlinearity)
+        self.dim = dim
+        self.p = p
+        # self.num_weights = num_weights
+        self.radius = radius
+        self.eps = eps  # noise scale relative to radius
+
+    def draw_weights(self, num_weights):
+        theta = np.random.rand(num_weights)*2*np.pi 
+        orth_noise = np.random.randn(num_weights)*self.eps*self.radius
+
+        coords = np.array([np.cos(theta), np.sin(theta)])
+        scl = np.sum(np.abs(coords)**self.p,0)**(1/self.p) # the p-normalizing factor
+        coords /= scl/self.radius
+        normal = np.sign(coords)*(np.abs(coords)/scl)**(self.p-1)
+
+        return torch.tensor(coords + orth_noise*normal, requires_grad=False).float()
+
+class LinearRandomNormal(LinearRandom):
+    def __init__(self, dim=2, var=1, fix_weights=False, nonlinearity=None):
+        super(LinearRandomNormal, self).__init__(fix_weights,
+                                                 nonlinearity)
+        self.dim = dim
+        self.var = var
+
+    def draw_weights(self, num_weights):
+        return torch.tensor(np.random.randn(self.dim, num_weights)*self.var, requires_grad=False).float()
+
+class LinearRandomProportional(LinearRandom):
+    """
+    Create that very strange assymetric cross-shaped distribution
+    """
+    def __init__(self, dim=2, scale=1, coef=1,
+                 fix_weights=False, nonlinearity=None):
+        super(LinearRandomProportional, self).__init__(fix_weights,
+                                                 nonlinearity)
+        self.dim = dim
+        self.scale = scale
+        self.coef = coef
+
+    def draw_weights(self, num_weights):
+        param = np.random.rand(num_weights)*2*self.scale - self.scale
+        coords = np.ones((self.dim,num_weights))*param
+        coords *= np.sign(np.array([np.random.randn(num_weights), 
+                                    np.ones(num_weights)]))
+        coords += np.random.randn(self.dim,num_weights)*0.05*self.scale
+        coords[0,np.all(coords>0, axis=0)] *= self.coef
+        coords[0,np.all(coords<0, axis=0)] /= self.coef
+        return torch.tensor(coords).float()
+
 #%% Latent variable distribution families !!!
 class DeepDistribution(nn.Module):
     """
@@ -185,13 +278,13 @@ class Bernoulli(DeepDistribution):
         self.ndim = dim_z
         
         if prior_params is None:
-            prior_params = {'probs': 0.5*torch.ones(dim_z)}
+            prior_params = {'logits': torch.zeros(dim_z)}
         
         self.prior = D.bernoulli.Bernoulli(**prior_params)
         
     def distr(self, theta):
         """Return instance(s) of distribution, with parameters theta"""
-        d = D.bernoulli.Bernoulli(probs=theta)
+        d = D.bernoulli.Bernoulli(logits=theta)
         return d
         
     def sample(self, theta):
