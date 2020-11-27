@@ -11,10 +11,15 @@ Command-line arguments:
 #%%
 import socket
 import os
+import sys
 
 if socket.gethostname() == 'kelarion':
-    CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
-    SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+    if sys.platform == 'linux':
+        CODE_DIR = '/home/kelarion/github/repler/src'
+        SAVE_DIR = '/mnt/c/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+    else:
+        CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
+        SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
     openmind = False
 elif socket.gethostname() == 'openmind7':
     CODE_DIR = '/home/malleman/repler/'
@@ -24,9 +29,10 @@ else:
     CODE_DIR = '/rigel/home/ma3811/repler/'
     SAVE_DIR = '/rigel/theory/users/ma3811/'
     openmind = False
-    
-import getopt, sys
+
 sys.path.append(CODE_DIR)
+
+import getopt
 
 import math
 import pickle
@@ -41,8 +47,8 @@ allargs = sys.argv
 
 arglist = allargs[1:]
 
-unixOpts = "vmdn:i:h:c:q:o:f:"
-gnuOpts = ["verbose"]
+unixOpts = "vmdgn:i:h:c:q:o:f:r:e:"
+gnuOpts = ["verbose", "mse"]
 
 opts, _ = getopt.getopt(arglist, unixOpts, gnuOpts)
 
@@ -51,31 +57,42 @@ verbose, skip_metrics, N, init = False, False, None, None # defaults
 num_class, num_dich, ovlp = 8, 2, 0
 use_digits = False
 coding_level = None
+ols_initialised = False
+gaus_obs = False
+rot = 0.0
+nepoch = 1000
 for op, val in opts:
     if op in ('-v','--verbose'):
         verbose = True
-    if op in ('-n'):
+    if op in ('-n',):
         N = int(val)
-    if op in ('-i'):
+    if op in ('-i',):
         if openmind:
             coding_level = float(val)/10
         else:    
             init = int(val)
-    if op in ('-m'):
+    if op in ('-m',):
         skip_metrics = True
-    if op in ('-h'):
+    if op in ('-h',):
         num_layer = int(val)
-    if op in ('-c'):
+    if op in ('-c',):
         num_class = int(val)
-    if op in ('-q'):
+    if op in ('-q',):
         num_dich =  int(val)
-    if op in ('-o'):
+    if op in ('-o',):
         ovlp = int(val)
-    if op in ('-d'):
+    if op in ('-d',):
         use_digits = True
-    if op in ('-f'):
+    if op in ('-f',):
         coding_level = float(val)
-    
+    if op in ('-r',):
+        rot = int(val)
+    if op in ('-e',):
+        nepoch = int(val)
+    if op in ('-g',):
+        ols_initialised = True
+    if op in ('--mse',):
+        gaus_obs = True
 
 #%% run experiment (put the code you want to run here!)
 # task = util.ParityMagnitude()
@@ -83,14 +100,14 @@ for op, val in opts:
 # task = util.Digits()
 # task = util.DigitsBitwise()
 # task = util.ParityMagnitudeFourunit()
-task = util.RandomDichotomies(num_class, num_dich, overlap=ovlp)
+task = util.RandomDichotomies(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
+# task = util.RandomDichotomiesCategorical(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
 
 sample_dichotomies = 2*num_dich
 # sample_dichotomies = None
 
-ols_initialised = True
-# ols_initialised = False
-
+fixed_decoder = True
+# fixed_decoder = False
 
 decay = 0.0
 
@@ -106,7 +123,6 @@ decay = 0.0
 #                                                     nonlinearity=task.link)
 random_decoder = None
 
-nepoch = 1000
 
 latent_dist = None
 # latent_dist = students.GausId
@@ -119,22 +135,24 @@ nonlinearity = 'ReLU'
 # nonlinearity = 'LeakyReLU'
 
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - ')        
-if use_digits:   
+if use_digits: 
     exp = experiments.mnist_multiclass(N=N, 
-                                        task=task, 
-                                        SAVE_DIR=SAVE_DIR, 
-                                        H=H,
-                                        nonlinearity=nonlinearity,
-                                        num_layer=num_layer,
-                                        z_prior=latent_dist,
-                                        weight_decay=decay,
-                                        decoder=random_decoder,
-                                        nepoch=nepoch,
-                                        sample_dichotomies=sample_dichotomies,
-                                        init=init,
-                                        skip_metrics=skip_metrics,
-                                        good_start=ols_initialised,
-                                        init_coding=coding_level)
+                                      task=task, 
+                                      SAVE_DIR=SAVE_DIR, 
+                                      H=H,
+                                      nonlinearity=nonlinearity,
+                                      num_layer=num_layer,
+                                      z_prior=latent_dist,
+                                      weight_decay=decay,
+                                      decoder=random_decoder,
+                                      nepoch=nepoch,
+                                      sample_dichotomies=sample_dichotomies,
+                                      init=init,
+                                      skip_metrics=skip_metrics,
+                                      good_start=ols_initialised,
+                                      init_coding=coding_level,
+                                      fix_decoder=fixed_decoder,
+                                      rot=rot)
 else:
     exp = experiments.random_patterns(N=N,
                                       task=task, 
@@ -154,7 +172,9 @@ else:
                                       init=init,
                                       skip_metrics=skip_metrics,
                                       init_coding=coding_level,
-                                      good_start=ols_initialised)
+                                      good_start=ols_initialised,
+                                      fix_decoder=fixed_decoder,
+                                      rot=rot)
 exp.run_experiment(verbose)
 exp.save_experiment(SAVE_DIR)
 

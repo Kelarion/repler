@@ -19,6 +19,7 @@ import scipy.special as spc
 # this is my code base, this assumes that you can access it
 from students import *
 from assistants import *
+import util
 from itertools import permutations
 from sklearn import svm, linear_model
 
@@ -32,8 +33,8 @@ class MultiClassification():
     def __init__(self, task, SAVE_DIR, N=None, H=100,
                  nonlinearity='ReLU', num_layer=1, z_prior=None,
                  bsz=64, nepoch=1000, lr=1e-4, opt_alg=optim.Adam, weight_decay=0,
-                 init=None, skip_metrics=False, sample_dichotomies=0,
-                 decoder=None, init_from_saved=False, good_start=False, init_coding=None):
+                 init=None, skip_metrics=False, sample_dichotomies=0, fix_decoder=False,
+                 decoder=None, init_from_saved=False, good_start=False, init_coding=None, rot=0.0):
         """
         Everything required to fully specify an experiment.
         
@@ -62,6 +63,7 @@ class MultiClassification():
         self.fixed_decoder = decoder
         self.good_start = good_start
         self.init_coding = init_coding
+        self.init_rot = rot
         
         # output and abstraction dimensions
         self.dim_output = task.dim_output
@@ -74,6 +76,7 @@ class MultiClassification():
         self.nepoch = nepoch
         self.lr = lr
         self.weight_decay = weight_decay
+        self.fix_decoder = fix_decoder
         
         self.opt_alg = opt_alg
         
@@ -155,32 +158,39 @@ class MultiClassification():
 
         if self.good_start:
             if self.init_coding is None:
-                self.init_coding = 0.8
-            C = np.random.rand(self.dim_latent, self.dim_latent)
-            W1 = la.qr(C)[0][:,:self.dim_output]
+                self.init_coding = 0.9
+            # C = np.random.rand(self.dim_latent, self.dim_latent)
+            # W1 = la.qr(C)[0][:,:self.dim_output]
 
             # ideal representation: a random ortho-linear pre-image of the logits
-            # print(self.train_data[1])
-            fake_rep = ((2*self.train_data[1].numpy()-1)*10)@W1.T
+            # fake_rep = ((2*self.train_data[1].numpy()-1)*10)@W1.T
+            emb = util.ContinuousEmbedding(self.dim_latent, self.init_rot)
+            W1 = 20*emb.rotation_mat(-self.init_rot/2)@(emb.basis[:,:2])
+            fake_rep = emb(self.train_data[1])
             offset = np.quantile(fake_rep, 1-self.init_coding)
-            # offset = 0.8*fake_rep.min()
-            # print(self.train_data[1][:20])
-            # print(self.train_conditions[:20])
+
             ols = linear_model.LinearRegression()
-            ols.fit(self.train_data[0], fake_rep - offset)
+            if self.num_layer>0:
+                regressor = self.model.enc.network[:-2](self.train_data[0]).detach().numpy()
+            else:
+                regressor = self.train_data[0]
+            ols.fit(regressor, fake_rep - offset)
 
-            self.model.enc.network.layer0.weight.data = torch.tensor(ols.coef_).float()
-            self.model.enc.network.layer0.bias.data = torch.tensor(ols.intercept_).float()
+            penult = getattr(self.model.enc.network, 'layer%d'%(self.num_layer))
+            penult.weight.data = torch.tensor(ols.coef_).float()
+            penult.bias.data = torch.tensor(ols.intercept_).float()
 
-            self.model.dec.network.layer0.weight.data = torch.tensor(W1).float().T
-            self.model.dec.network.layer0.bias.data = torch.tensor((offset*W1).sum(0)).float()
-            # self.model.dec.network.layer0.weight.data = torch.tensor(W1, requires_grad=False).float().T
-            # self.model.dec.network.layer0.bias.data = torch.tensor((offset*W1).sum(0),requires_grad=False).float()
+            self.model.dec.network.layer0.weight.data = W1.float().T
+            self.model.dec.network.layer0.bias.data = (offset*W1).sum(0).float()
         elif self.init_coding is not None:
             init_rep = self.model.enc.network.layer0(self.train_data[0])
             offset = -1*np.quantile(init_rep.detach().numpy(), 1-self.init_coding)
 
             self.model.enc.network.layer0.bias.data = (torch.ones(self.dim_latent)*offset).float()
+
+        if self.fix_decoder:
+            for p in self.model.dec.network.parameters():
+                p.requires_grad = False
 
         dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
         dl = torch.utils.data.DataLoader(dset, batch_size=self.bsz, shuffle=True) 
@@ -189,18 +199,20 @@ class MultiClassification():
         
         # inference
         n_compute = 5000
-        # n_dichotomy = int(spc.binom(2**self.num_cond, 2**(self.num_cond-1))/2)
-        # n_dichotomy = Dichotomies(self.train_conditions, self.dichotomy_type).ntot
         num_cond = len(np.unique([self.train_conditions,self.train_conditions]))
         # num_dic_max = int(spc.binom(num_cond, int(num_cond/2))/2)
 
-        if self.sample_dichotomies is not None:
-            these_dics = [tuple(p.tolist()) for p in self.task.positives]
-            dics = Dichotomies(num_cond, these_dics, self.sample_dichotomies)
-            # dic_shat = Dichotomies(num_cond, these_dics, self.sample_dichotomies)
+        if not self.skip_metrics:
+            if self.sample_dichotomies is not None:
+                these_dics = [tuple(p.tolist()) for p in self.task.positives]
+                dics = Dichotomies(num_cond, these_dics, self.sample_dichotomies)
+                # dic_shat = Dichotomies(num_cond, these_dics, self.sample_dichotomies)
+            else:
+                dics = Dichotomies(num_cond)
+            dic_shat = Dichotomies(num_cond, these_dics, 50)
         else:
-            dics = Dichotomies(num_cond)
-        dic_shat = Dichotomies(num_cond)
+            dics = Dichotomies(0)
+            dic_shat = Dichotomies(0)
 
         metrics = {'train_loss': np.zeros(0),
                    'train_perf': np.zeros((0, self.task.num_var)),
@@ -208,24 +220,27 @@ class MultiClassification():
                    'test_perf': np.zeros((0, self.task.num_var)),
                    'test_PS': np.zeros((0, dics.ntot)),
                    'shattering': np.zeros((0, dic_shat.ntot)),
-                   'mean_grad': np.zeros((0, 3)),
-                   'std_grad': np.zeros((0, 3)),
+                   'mean_grad': [],
+                   'std_grad': [],
                    'train_ccgp': np.zeros((0, dics.ntot)),
                    'test_ccgp': np.zeros((0, dics.ntot)),
                    'linear_dim': np.zeros(0),
-                   'sparsity': np.zeros(0)} # put all training metrics here
-        
+                   'sparsity': np.zeros(0),
+                   'dcorr_input': [],
+                   'dcorr_output': []} # put all training metrics here
+
         for epoch in range(self.nepoch):
             # check each quantity before optimisation
             
             with torch.no_grad():
                 # train error ##############################################
                 idx_trn = np.random.choice(self.ntrain, n_compute, replace=False)
-                
+
                 pred, _, z_train = self.model(self.train_data[0][idx_trn,...])
                 # terr = (self.train_data[1][idx_trn,...] == (pred>=0.5)).sum(0).float()/n_compute
-                terr = self.task.correct(pred, self.train_data[1][idx_trn,...])/n_compute
-                terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                # print(pred.shape)
+                # print(self.train_data[1][idx_trn,...].shape)
+                terr = self.task.correct(pred, self.train_data[1][idx_trn,...])
                 metrics['train_perf'] = np.append(metrics['train_perf'], terr, axis=0)
                 
                 # test error ##############################################
@@ -233,21 +248,29 @@ class MultiClassification():
                 
                 pred, _, z_test = self.model(self.test_data[0][idx_tst,...])
                 # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
-                terr = self.task.correct(pred, self.test_data[1][idx_tst,...])/n_compute
-                terr = terr.expand_as(torch.empty((1,self.task.num_var)))
+                terr = self.task.correct(pred, self.test_data[1][idx_tst,...])
                 metrics['test_perf'] = np.append(metrics['test_perf'], terr, axis=0)
 
                 # representation sparsity
                 metrics['sparsity'] = np.append(metrics['sparsity'], np.mean(z_test.detach().numpy()>0))
 
+                # Dimensionality #########################################
+                _, S, _ = la.svd(z_train.detach()-z_train.mean(1).detach()[:,None], full_matrices=False)
+                eigs = S**2
+                pr = (np.sum(eigs)**2)/np.sum(eigs**2)
+                metrics['linear_dim'] = np.append(metrics['linear_dim'], pr)
+
                 # things that take up time! ###################################
                 if not self.skip_metrics:
-                    # Dimensionality #########################################
-                    _, S, _ = la.svd(z_train.detach()-z_train.mean(1).detach()[:,None], full_matrices=False)
-                    eigs = S**2
-                    pr = (np.sum(eigs)**2)/np.sum(eigs**2)
-                    metrics['linear_dim'] = np.append(metrics['linear_dim'], pr)
-                    
+                    # distance correlations
+                    didx = np.random.choice(n_compute,np.min([n_compute, 2000]),replace=False)
+                    Z = z_train[didx,...].T
+                    X = self.train_data[0][idx_trn,...][didx,...].T
+                    Y = self.train_data[1][idx_trn,...][didx,...].T
+
+                    metrics['dcorr_input'].append(util.distance_correlation(Z, X))
+                    metrics['dcorr_output'].append(util.distance_correlation(Z, Y))
+
                     # shattering dimension #####################################
                     dclf = LinearDecoder(self.dim_latent, dic_shat.ntot, svm.LinearSVC)
 
@@ -259,41 +282,44 @@ class MultiClassification():
                         for _ in dic_shat])
                     SD = dclf.test(z_test.detach().numpy(), tst_conds_all.T).T
 
-                    metrics['shattering'] = np.append(metrics['shattering'], SD, axis=0)  
-
-                    # various dichotomy-based metrics ########################
+                    metrics['shattering'] = np.append(metrics['shattering'], SD, axis=0)   
+                    
+                    # various abstraction metrics #########################
                     clf = LinearDecoder(self.dim_latent, 1, MeanClassifier)
                     gclf = LinearDecoder(self.dim_latent, 1, svm.LinearSVC)
-                    K = int(num_cond/2)-1
-                    # K = int(num_cond/4)
+
+                    # K = int(num_cond/2)-1
+                    K = int(num_cond/4)
 
                     PS = np.zeros(dics.ntot)
                     CCGP = np.zeros(dics.ntot)
                     for i, _ in enumerate(dics):
                         PS[i] = dics.parallelism(z_test.detach().numpy(),
                             self.test_conditions[idx_tst], clf)
-                        CCGP[i] = dics.CCGP(z_test.detach().numpy(), 
-                            self.test_conditions[idx_tst], gclf, K)
+                        CCGP[i] = np.mean(dics.CCGP(z_test.detach().numpy(), 
+                            self.test_conditions[idx_tst], gclf)[0])
 
                     metrics['test_PS'] = np.append(metrics['test_PS'], PS[None,:], axis=0)
                     metrics['test_ccgp'] = np.append(metrics['test_ccgp'], CCGP[None,:], axis=0)
-                
+ 
             # Actually update model #######################################
             loss = self.model.grad_step(dl, optimizer) # this does a pass through the data
             
             metrics['train_loss'] = np.append(metrics['train_loss'], loss)
             
             # gradient SNR
-            # means = np.zeros(3)
-            # std = np.zeros(3)
-            # i=0
-            # for k,v in zip(self.model.state_dict().keys(), self.model.parameters()):
-            #     if 'weight' in k:
-            #         means[i] = (v.grad.data.mean(1)/v.data.norm(2,1)).norm(2,0).numpy()
-            #         std[i] = (v.grad.data/v.data.norm(2,1,keepdim=True)).std().numpy()
-            #         i+=1
-            # metrics['mean_grad'] = np.append(metrics['mean_grad'], means[None,:], axis=0)
-            # metrics['std_grad'] = np.append(metrics['std_grad'], std[None,:], axis=0)
+            if not np.mod(epoch,10):
+                means = []
+                std = []
+                # i=0
+                for k,v in zip(self.model.state_dict().keys(), self.model.parameters()):
+                    if 'weight' in k and v.requires_grad:
+                        means.append((v.grad.data.mean(1)/v.data.norm(2,1)).norm(2,0).numpy())
+                        std.append((v.grad.data/v.data.norm(2,1,keepdim=True)).std().numpy())
+                        # print(means)
+                        # i+=1
+                metrics['mean_grad'].append(np.array(means)[None,:])
+                metrics['std_grad'].append(np.array(std)[None,:])
             
             # print updates ############################################
             if verbose:
@@ -384,7 +410,7 @@ class MultiClassification():
         if self.fixed_decoder is not None:
             FOLDERS += self.fixed_decoder.__name__ + '/'
         if self.good_start:
-            FOLDERS += 'ols_%.1f_init/'%self.init_coding
+            FOLDERS += '%.1ffactored_init/'%self.init_rot
         elif self.init_coding is not None:
             FOLDERS += '%.1f_init/'%self.init_coding
         if self.model.latent is not None:
@@ -455,7 +481,7 @@ class random_patterns(MultiClassification):
         self.means = None
 
         super(random_patterns, self).__init__(task, SAVE_DIR, **expargs)
-        self.base_dir = 'results/mog-%d-%d-%.1f/'%(dim, num_class, var_means/var_noise) # append at will
+        self.base_dir = 'results/mog/%d-%d-%.1f/'%(dim, num_class, var_means/var_noise) # append at will
 
     def load_data(self, SAVE_DIR):
         # -------------------------------------------------------------------------

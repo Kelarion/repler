@@ -457,8 +457,7 @@ class MultiGLM(NeuralNet):
             
             # # forward
             px_params, qz_params, z = self(nums)
-            
-            loss = -self.obs.distr(px_params).log_prob(labels).sum()
+            loss = -self.obs.distr(px_params).log_prob(labels).mean()
             if self.latent is not None:
                 loss -= self.latent.distr(qz_params).log_prob(z).sum()
             
