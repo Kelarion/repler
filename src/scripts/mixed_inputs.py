@@ -50,9 +50,11 @@ import plotting as dicplt
 
 #%% data
 num_var = 3
-dim_inp = 25 # dimension per variable
+dim_inp = 1 # dimension per variable
 num_data = 5000 # total
-noise = 0.1
+noise = 0.05
+
+num_recoded = 2 # number of input bits represented by random patterns
 
 apply_rotation = False
 # apply_rotation = True
@@ -66,17 +68,19 @@ output_task = util.RandomDichotomies(d=[(0,3,5,6)]) # 3d xor
 # input_task = util.RandomDichotomies(d=[(0,1),(0,2)])
 # output_task = util.RandomDichotomies(d=[(0,1)])
 
-# generate inputs
+
 inp_condition = np.random.choice(2**num_var, num_data)
 # var_bit = (np.random.rand(num_var, num_data)>0.5).astype(int)
 var_bit = input_task(inp_condition).numpy().T
+inp_subcondition = util.decimal(var_bit[:num_recoded,:].T).astype(int)
 
 means = np.random.randn(num_var, dim_inp)
+cat_means = np.random.randn(2**num_recoded, dim_inp*num_recoded)
 
 mns = (means[:,None,:]*var_bit[:,:,None]) - (means[:,None,:]*(1-var_bit[:,:,None]))
-        
-clus_mns = np.reshape(mns.transpose((0,2,1)), (dim_inp*num_var,-1)).T
 
+clus_mns = np.reshape(mns.transpose((0,2,1)), (dim_inp*num_var,-1)).T
+clus_mns[:,:num_recoded*dim_inp] = cat_means[inp_subcondition,:]
 
 if apply_rotation:
     C = np.random.rand(num_var*dim_inp, num_var*dim_inp)
@@ -86,6 +90,7 @@ inputs = torch.tensor(clus_mns + np.random.randn(num_data, num_var*dim_inp)*nois
 
 # generate outputs
 outputs = output_task(inp_condition)
+
 
 #%%
 U, S, V = la.svd(inputs.numpy()-inputs.numpy().mean(0)[None,:],full_matrices=False)
@@ -119,7 +124,7 @@ net = students.MultiGLM(students.Feedforward([dim_inp*num_var,N], ['ReLU']),
 #                         students.Feedforward([N, p], [None]),
 #                         students.Categorical(p))
 
-n_trn = int(0.8*num_data)   
+n_trn = int(0.8*num_data)
 trn = np.random.choice(num_data,n_trn,replace=False)
 tst = np.setdiff1d(range(num_data),trn)
 
@@ -137,7 +142,7 @@ out_PS = []
 test_loss = []
 lin_dim = []
 min_dist = []
-for epoch in tqdm(range(2000)):
+for epoch in tqdm(range(10000)):
     # check whether outputs are in the correct class centroid
     idx2 = np.random.choice(tst, n_compute, replace=False)
     zee, _, z = net(inputs[idx2,:].float())
@@ -437,7 +442,6 @@ for i,d in enumerate(output_task.positives):
 plt.legend(inps+outs, ['input %d'%(i+1) for i in range(len(inps))] + ['output %d'%(i+1) for i in range(len(outs))])
 
 # plt.legend(outs, ['output %d'%(i+1) for i in range(len(outs))])
-
 #%%
 # mask = (R.max(2)==1) # context must be an output variable   
 # mask = (np.abs(R).sum(2)==0) # context is uncorrelated with either output variable

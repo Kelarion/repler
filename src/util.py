@@ -12,301 +12,130 @@ import numpy as np
 import scipy
 import scipy.linalg as la
 from scipy.spatial.distance import pdist, squareform
-from itertools import permutations
+from itertools import permutations, combinations
+import itertools as itt
 
 import students
 import assistants
 
-#%% Tasks
-class IndependentBinary(object):
-    """Abstract class encompassing all classifications of multiple binary variables"""
-    def __init__(self):
-        super(IndependentBinary,self).__init__()
-        self.__name__ = self.__class__.__name__
-        
-    def __call__(self):
-        raise NotImplementedError
-    
-    def correct(self, pred, targets):
-        n = (targets.detach().numpy() == (pred.detach().numpy()>=0.5)).mean(0, keepdims=True)
-        return n.astype(float)
+#%%
+def pca(X,**kwargs):
+    '''assume X is (n_feat, n_sample)'''
+    U,S,_ = la.svd((X-X.mean(1, keepdims=True)), full_matrices=False, **kwargs)
+    return U, S**2
 
-    def information(self, test_var, normalize=False):
-        """
-        Computes the mutual information between the output of the task, and another variable
-        """
-        # given b is positive
-        ab = decimal(self(test_var)).numpy()
-        # pab = np.unique(ab, return_counts=True)[1]/np.min([self.num_cond,(2**self.num_var)])
-        pab = np.unique(ab, return_counts=True)[1]/len(test_var)
+def pca_reduce(X, thrs, **kwargs):
 
-        # given b is negative
-        b_ = np.setdiff1d(range(self.num_cond), test_var)
-        ab_ = decimal(self(b_)).numpy()
-        # pab_ = np.unique(ab_, return_counts=True)[1]/np.min([self.num_cond,(2**self.num_var)])
-        pab_ = np.unique(ab_, return_counts=True)[1]/len(test_var)
+    U,S = pca(X, **kwargs)
+    these_comps = np.cumsum(S)/np.sum(S) <=  thrs
+    return X.T@U[:,these_comps]
 
-        # entropy of outputs (in case they are degenerate)
-        a = decimal(self(np.arange(self.num_cond)))
-        pa = np.unique(a, return_counts=True)[1]/self.num_cond
-        Ha = -np.sum(pa*np.log2(pa))
+#%%
+# def 
 
-        MI = Ha + 0.5*(np.sum(pab*np.log2(pab))+np.sum(pab_*np.log2(pab_)))
-
-        return MI
-
-    def subspace_information(self):
-        """
-        Computes the mutual information between each output, and the rest
-
-        """
-        MI = []
-        outputs = self(range(self.num_cond)).numpy()
-        # print(outputs)
-        for i, pos in enumerate(self.positives):
-            # rest = [self.positives[p] for p in range(self.num_var) if p!=i]
-            # ab = decimal(np.array([np.isin(pos, p) for p in rest]).T)
-            not_i = ~np.isin(range(self.num_var), i)
-            if not_i.sum()==1:
-                a = decimal(outputs[:,not_i][:,None])
-            else:
-                a = decimal(outputs[:,not_i])
-            # print(a)
-
-            ab = a[outputs[:,i]>0]
-            # pab = np.array([np.mean(ab==c) for c in range(2**(self.num_var-1))])
-            # pab = np.unique(ab, return_counts=True)[1]/(2**(self.num_var-1))
-            pab = np.unique(ab, return_counts=True)[1]/np.sum(outputs[:,i])
-
-            ab_ = a[outputs[:,i]==0]
-            # print(ab_)
-            # pab_ = np.array([np.mean(ab_==c) for c in range(2**(self.num_var-1))])
-            # pab_ = np.unique(ab_, return_counts=True)[1]/(2**(self.num_var-1))
-            pab_ = np.unique(ab_, return_counts=True)[1]/np.sum(outputs[:,i])
-
-            pa = np.unique(a, return_counts=True)[1]/self.num_cond  
-            ha = -np.sum(pa*np.log2(pa))
-
-            # MI.append(ha + 0.5*(pab*np.ma.log2(pab)+(1-pab)*np.ma.log2(1-pab)).sum())
-            MI.append(ha + 0.5*(np.sum(pab*np.log2(pab))+np.sum(pab_*np.log2(pab_))))
-        return MI
-
-class Classification(object):
-    def __init__(self):
-        super(Classification,self).__init__()
-        self.__name__ = self.__class__.__name__
-        
-    def __call__(self):
-        raise NotImplementedError
-    
-    def correct(self, pred, targets):
-        n = (targets.detach().numpy() == pred.detach().numpy().argmax(-1)).mean(0, keepdims=True)[None,:]
-        return n.astype(float)
-
-class Regression(object):
-    def __init__(self):
-        super(Regression,self).__init__()
-        self.__name__ = self.__class__.__name__
-        
-    def __call__(self):
-        raise NotImplementedError
-    
-    def correct(self, pred, targets):
-        n = (targets.detach().numpy() - pred.detach().numpy()).pow(2).mean(0, keepdims=True)
-        return n.astype(float)
-
-# MNIST tasks
-class ParityMagnitude(IndependentBinary):
-    def __init__(self):
-        super(ParityMagnitude,self).__init__()
-        self.num_var = 2
-        self.dim_output = 2
-        
-        self.obs_distribution = students.Bernoulli(2)
-        self.link = None
-
-        self.positives = [np.array([0,2,4,6]),np.array([0,1,2,3])]
-    
-    def __call__(self,labels):
-        parity = (np.mod(labels, 2)==0).float()
-        magnitude = (labels<4).float()
-        return torch.cat((parity[:,None], magnitude[:,None]), dim=1)\
-
-class ParityMagnitudeFourunit(IndependentBinary):
-    def __init__(self):
-        super(ParityMagnitudeFourunit,self).__init__()
-        self.num_var = 4
-        self.dim_output = 4
-        
-        self.obs_distribution = students.Bernoulli(4)
-        self.link = None
-    
-    def __call__(self, labels):
-        """Compute the parity and magnitude of digits"""
-        parity = np.mod(labels, 2).float()>0
-        magnitude = (labels>=5)
-        return torch.cat((parity[:,None], ~parity[:,None], 
-                          magnitude[:,None], ~magnitude[:,None]), dim=1).float()
-
-class ParityMagnitudeEnumerated(Classification):
-    def __init__(self):
-        super(ParityMagnitudeEnumerated,self).__init__()
-        self.num_var = 1
-        self.dim_output = 4
-        
-        self.obs_distribution = students.Categorical(4)
-        # self.link = 'LogSoftmax'
-        self.link = None
-    
-    def __call__(self, labels):
-        """Compute the parity and magnitude"""
-        parity = np.mod(labels, 2).float()
-        magnitude = (labels<4).float()
-        return  (1*parity + 2*magnitude)
-
-class DigitsBitwise(IndependentBinary):
-    """Digits represented as n-bit binary variables"""
-    def __init__(self, n=3):
-        super(DigitsBitwise,self).__init__()
-        self.num_var = n
-        self.dim_output = n
-        self.obs_distribution = students.Bernoulli(n)
-        self.link = None
-    
-    def __call__(self,labels):
-        targ = labels-1
-        bits = torch.stack([(targ&(2**i))/2**i for i in range(self.num_var)]).float().T
-    
-class Digits(Classification):
-    def __init__(self, start=1, stop=8, noise=None):
-        super(Digits,self).__init__()
-        n = stop-start+1
-        self.start = start
-        self.num_var = 1
-        self.dim_output = n
-        if noise is None:
-            self.obs_distribution = students.Categorical(n)
-        else:
-            self.obs_distribution = noise
-        # self.link = 'LogSoftmax'
-        self.link = None
-    
-    def __call__(self, labels):
-        return labels - self.start
-
-class RandomDichotomies(IndependentBinary):
-    def __init__(self, c=None, n=None, overlap=0, d=None, use_mse=False):
-        """overlap is given as the log2 of the dot product on their +/-1 representation"""
-        super(RandomDichotomies,self).__init__()
-        
-        if d is None:
-            if c is None:
-                raise ValueError('Must supply either (c,n), or d')
-            if n>c:
-                raise ValueError('Cannot have more dichotomies than conditions!!')
-
-            if overlap == 0:
-                # generate uncorrelated dichotomies, only works for powers of 2
-                H = la.hadamard(c)[:,1:]
-                pos = np.nonzero(H[:,np.random.choice(c-1,n,replace=False)]>0)
-                self.positives = [pos[0][pos[1]==d] for d in range(n)]
-            elif overlap == 1:
-                prot = 2*(np.random.permutation(c)>=(c/2))-1
-                pos = np.where(prot>0)[0]
-                neg = np.where(prot<0)[0]
-                idx = np.random.choice((c//2)**2, n-1, replace=False)
-                # print(idx)
-                swtch = np.stack((pos[idx%(c//2)],neg[idx//(c//2)])).T
-                # print(swtch)
-                ps = np.ones((n-1,1))*prot
-                ps[np.arange(n-1), swtch[:,0]] *= -1
-                ps[np.arange(n-1), swtch[:,1]] *= -1
-                pos = [np.nonzero(p>0)[0] for p in ps]
-                pos.append(np.nonzero(prot>0)[0])
-                self.positives = pos
-        else:
-            self.positives = d
-            n = len(self.positives)
-            c = 2*len(self.positives[0])
-
-        self.__name__ = 'RandomDichotomies_%d-%d-%d'%(c, n, overlap)
-        self.num_var = n
-        self.dim_output = n
-        self.num_cond = c
-
-        if use_mse:
-            self.obs_distribution = students.GausId(n)
-        else:
-            self.obs_distribution = students.Bernoulli(n)
-        self.link = None
-    
-    def __call__(self, labels):
-        these = torch.tensor([np.isin(labels, p) for p in self.positives]).float()
-        return these.T
-
-class RandomDichotomiesCategorical(Classification):
-    def __init__(self, c, n, overlap=0, use_mse=False):
-        """overlap is given as the log2 of the dot product on their +/-1 representation"""
-        super(RandomDichotomiesCategorical,self).__init__()
-        self.__name__ = 'RandomDichotomiesCat_%d-%d-%d'%(c, n, overlap)
-        self.num_var = 1
-        self.dim_output = 2**n
-        self.num_cond = c
-        self.use_mse = use_mse
-
-        if n>c:
-            raise ValueError('Cannot have more dichotomies than conditions!!')
-
-        if overlap == 0:
-            # generate uncorrelated dichotomies, only works for powers of 2
-            H = la.hadamard(c)[:,1:]
-            pos = np.nonzero(H[:,np.random.choice(c-1,n,replace=False)]>0)
-            self.positives = [pos[0][pos[1]==d] for d in range(n)]
-        elif overlap == 1:
-            prot = 2*(np.random.permutation(c)>=(c/2))-1
-            pos = np.where(prot>0)[0]
-            neg = np.where(prot<0)[0]
-            idx = np.random.choice((c//2)**2, n-1, replace=False)
-            # print(idx)
-            swtch = np.stack((pos[idx%(c//2)],neg[idx//(c//2)])).T
-            # print(swtch)
-            ps = np.ones((n-1,1))*prot
-            ps[np.arange(n-1), swtch[:,0]] *= -1
-            ps[np.arange(n-1), swtch[:,1]] *= -1
-            pos = [np.nonzero(p>0)[0] for p in ps]
-            pos.append(np.nonzero(prot>0)[0])
-            self.positives = pos
-
-        if use_mse:
-            self.obs_distribution = students.GausId(self.dim_output)
-        else:
-            self.obs_distribution = students.Categorical(self.dim_output)
-        self.link = None
-    
-    def __call__(self, labels):
-        these = np.array([np.isin(labels, p) for p in self.positives]).astype(float)
-        if self.use_mse:
-            return assistants.Indicator(self.dim_output, self.dim_output)(decimal(these.T).astype(int)).float()
-        else:
-            return torch.tensor(decimal(these.T)).int()
-
-    def correct(self, pred, targets):
-        if self.use_mse:
-            return (targets.detach().numpy().argmax(-1)==pred.detach().numpy().argmax(-1)).mean(0, keepdims=True)[None,:]
-        else:
-            return super(RandomDichotomiesCategorical,self).correct(pred, targets)
 #%%
 def discrete_metric(x,y):
     return np.abs(x - y).sum(0)
 
-def dependence_statistics(x, dist_x=None):
-    """Assume x is (n_feat, ..., n_sample)"""
-    
-    n = x.shape[-1]
-    if dist_x is None:
-        x_kl = la.norm(x[...,None] - x[...,None,:],2,axis=0)
+#%% Factorization
+def decompose_covariance(Z, X, compute_signal=True, only_var=False):
+    """
+    Compute the signal covariance and noise covariance matrices of Z w.r.t. X
+
+    Z is size N_feat x N_sample
+    X is length N_sample 
+    """
+
+    # values of X for conditioning
+    unq, unq_idx = np.unique(X, return_inverse=True)
+    Z_given_x = np.array([Z[:,X==x].mean(1) for x in unq])[unq_idx,:].T    
+
+    if only_var:
+        noise_cov = np.var(Z - Z_given_x, axis=1) 
     else:
-        x_kl = dist_x(x[...,None], x[...,None,:])
+        # equivalent to mean([cov(Z[:,X==x]) for x in unq])
+        noise_cov = np.cov(Z - Z_given_x)
+    if compute_signal:
+        if only_var:
+            sig_cov = np.var(Z, axis=1) - noise_cov + np.ones(len(Z))*1e-3
+        else:
+            sig_cov = np.cov(Z) - noise_cov + np.eye(len(Z))*1e-5
+            # sig_cov = np.cov(Z_given_x)
+        return noise_cov, sig_cov
+    else:
+        return noise_cov
+
+def projected_variance(Z, X, Y=None, cutoff=None, only_var=False):
+    """
+    Project Z onto noise covariance of X, and compare
+
+    optionally project onto the signal covariance of Y
+    """
+
+    if Y is None:
+        noise_cov, sig_cov = decompose_covariance(Z,X,only_var=only_var)
+        # noise_var = np.trace(noise_cov)
+    else: # compare the noise covariances of X and Y
+        _, sig_cov = decompose_covariance(Z,X, only_var=only_var)
+        _, noise_cov = decompose_covariance(Z,Y, only_var=only_var)
+        # sig_cov, _ = decompose_covariance(Z,X)
+        # noise_cov, _ = decompose_covariance(Z,Y)
+
+    if cutoff is not None:
+        vals, eigs = la.eigh(noise_cov)
+        these_vals = (np.cumsum(np.flip(np.sort(vals)))/np.sum(vals))<cutoff
+        # return vals
+        # print(eigs.shape)
+        noise_cov = eigs[:,these_vals]@eigs[:,these_vals].T
+
+    if only_var:
+        return 1-np.sum(noise_cov*sig_cov)/(la.norm(noise_cov)*la.norm(sig_cov))
+    else:
+        return 1- np.trace(noise_cov.T@sig_cov)/(la.norm(noise_cov,'fro')*la.norm(sig_cov,'fro'))
+    # noise = noise_cov@Z/(np.mean(np.diag(noise_cov)))
+    # noise = noise_cov@Z/(np.sqrt(np.trace(noise_cov)))
+    # noise = noise_cov@Z
+    # _, proj_sig_cov = decompose_covariance(noise, X, only_var=True)
+    # print(np.sum(proj_sig_cov))
+
+    # return 1 - np.sum(proj_sig_cov)/(sig_var)
+    # return 1 - np.sum(proj_sig_cov)/(sig_var*np.trace(noise_cov))
+
+def diagonality(Z, X, cutoff=0.9):
+    """ 
+    Ratio of top n signal-variance neurons, to the top n signal variance components
+    """
+
+    _, sig_cov = decompose_covariance(Z,X)
+
+    vals = la.eigvalsh(sig_cov)
+    # print(np.flip(np.sort(vals))/np.sum(vals))
+    # print((np.cumsum(np.flip(np.sort(vals)))/np.sum(vals)))
+    # print(np.sum(vals))
+    n = np.argmax((np.cumsum(np.flip(np.sort(vals)))/np.sum(vals))<cutoff) + 1
+    # print(n)
+
+    comp_sum = np.sum(((np.flip(np.sort(vals))))[:n])
+    # print(comp_sum)
+    neur_sum = np.sum(((np.flip(np.sort(np.diag(sig_cov)))))[:n])
+
+
+    return neur_sum/comp_sum
+
+#%% Distance correlation functions
+def dependence_statistics(x=None, dist_x=None):
+    """
+    Assume x is (n_feat, ..., n_sample), or dist_x is (...,n_sample, n_sample)
+    """
+    
+    if x is not None:
+        n = x.shape[-1]
+        x_kl = la.norm(x[...,None] - x[...,None,:],2,axis=0)
+    elif dist_x is not None:
+        n = dist_x.shape[-1]
+        x_kl = dist_x
+    else:
+        raise ValueError('Gotta supply something!!!')
     x_k = x_kl.sum(-2, keepdims=True)/(n-2)
     x_l = x_kl.sum(-1, keepdims=True)/(n-2)
     x_ = x_kl.sum((-2,-1), keepdims=True)/((n-2)*(n-1))
@@ -316,11 +145,14 @@ def dependence_statistics(x, dist_x=None):
 
     return D
 
-def distance_covariance(x, y, dist_x=None, dist_y=None):    
+def distance_covariance(x=None, y=None, dist_x=None, dist_y=None):    
     A = dependence_statistics(x, dist_x)
     B = dependence_statistics(y, dist_y)
-    n = x.shape[-1]
-    dCov = np.sum(A*B)/(n*(n-3))
+    if x is None:
+        n = dist_x.shape[-1]
+    else:
+        n = x.shape[-1]
+    dCov = np.sum(A*B, axis=(-2,-1))/(n*(n-3))
     # return np.max([0, dCov]) # this should be non-negative anyway ...
     return dCov
 
@@ -335,19 +167,23 @@ def distance_covariance(x, y, dist_x=None, dist_y=None):
 #     else:
 #         return (D*D).mean((-2,-1))
 
-def distance_correlation(x, y, dist_x=None, dist_y=None):
-    """Assume x is (n_feat, ..., n_sample)"""
+def distance_correlation(x=None, y=None, dist_x=None, dist_y=None):
+    """
+    Assume x is (n_feat, ..., n_sample), or dist_x is (...,n_sample, n_sample)
+    """
     V_xy = distance_covariance(x, y, dist_x, dist_y)
     V_x = distance_covariance(x, x, dist_x, dist_x)
     V_y = distance_covariance(y, y, dist_y, dist_y)
     # print([V_x, V_y, V_xy])
-    if 0 in [V_x, V_y]:
-        return 0
-    else:
+    sing = V_x*V_y > 0
+    return sing*V_xy/(np.sqrt(V_x*V_y)+1e-5)
+    # if 0 in [V_x, V_y]:
+        # return 0
+    # else:
         # return np.sqrt(V_xy/np.sqrt(V_x*V_y))
-        return V_xy/np.sqrt(V_x*V_y)
+        # return V_xy/np.sqrt(V_x*V_y)
 
-def partial_distance_correlation(x, y, z, dist_x=None, dist_y=None, dist_z=None):
+def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=None, dist_z=None):
     R_xy = distance_correlation(x, y, dist_x=dist_x, dist_y=dist_y)
     R_xz = distance_correlation(x, z, dist_x=dist_x, dist_y=dist_z)
     R_yz = distance_correlation(y, z, dist_x=dist_y, dist_y=dist_z)
@@ -395,10 +231,123 @@ def gauss_process(xs, var=1):
 
 #     def __call__(self, ):
 
+#%% Mobius strip (maybe this belongs as a class?)
+def noose_curve(x, l=2):
+    """the curve h(x) from Sabitov (2007) section 8 ... """
+    # For specific choices of g1 and g2
+
+    # if np.abs(x)>(l/2):
+    #     return np.array([l/2 - np.abs(x), 0])
+    # else:
+    g1 = l/4 - (x**2)/l
+    # g1 = 2*x - 2*np.log(1+np.exp(2*x)) - (2 - 2*np.log(1+np.exp(l)))
+    g2 = 2*l*x*np.exp(-2*(l**2)*(x**2))
+
+    extrm = np.abs(x)>(l/2)
+
+    h1 = np.where(np.abs(x)>(l/2), (l/2)-np.abs(x), g1)
+    h2 = np.where(np.abs(x)>(l/2), 0, g2)
+
+    return np.stack([h1,h2])
+
+        # return np.array([g1, g2])
+
+def open_curve(t, l=2):
+
+    # odd, bounded by +/- (l/2)*sin(pi/6)
+    f1 = (l/3)*np.sin(np.pi/6)*np.tanh(t)
+
+    # even, monotonic in |t|
+    f2 = 2*np.log(1+np.exp(t)) - t
+    
+    return np.stack([f1,f2])
+
+def flat_mobius_strip(s, t, l=2, A=0.5):
+    """The insanely convoluted computation of a flat mobius strip"""
+
+    A = (4+A)*l*np.sqrt(3)/12
+    # print(A)
+
+    costh = np.cos(np.pi/6)
+    sinth = np.sin(np.pi/6)
+
+    r32 = np.sqrt(3)/2 # this gets used a lot
+
+    f = open_curve(t, l)
+    
+    # this is X1(s, -t), so I change f1 and f2 appropriately
+    X1_12 = noose_curve(s*costh - f[0,:]*sinth) # f1 is an odd function
+    X1_3 = -s*sinth - f[0,:]*costh
+    X1_4 = f[1,:] # f2 is an even function
+    X1 = np.concatenate([X1_12, X1_3[None,:], X1_4[None,:]], axis=0)
+
+    # X2(2A+s, t)
+    h_x2 = noose_curve(r32*(2*A+s) + f[0,:]/2)
+    X2_1 = -0.5*h_x2[0,:] + r32*(2*A+s)/2 - r32*f[0,:]/2 + r32*l/2 - np.sqrt(3)*A
+    X2_2 = h_x2[1,:]
+    X2_3 = r32*h_x2[0,:] + (2*A+s)/4 - r32*f[0,:]/2 - r32*l/2 + A
+    X2_4 = f[1,:]
+    X2 = np.stack([X2_1, X2_2, X2_3, X2_4])
+
+    # X3(-2*A+3, t)
+    h_x3 = noose_curve(r32*(-2*A+3) + f[0,:]/2)
+    h1_x3 = noose_curve(r32 + f[0,:]/2)[0,:]
+    X3_1 = -0.5*h1_x3 - r32*(-2*A+3)/2 + r32*f[0,:]/2 + r32*l/2 - np.sqrt(3)*A
+    X3_2 = h_x3[1,:]
+    X3_3 = -r32*h_x3[0,:] + (-2*A+3)/4 - r32*f[0,:]/2 + r32*l/2 - A
+    X3_4 = f[1,:]
+    X3 = np.stack([X3_1, X3_2, X3_3, X3_4])
+
+    use_x2 = (s < -A).astype(int)
+    use_x3 = (s > A).astype(int)
+    use_x1 = ((use_x2==0)*(use_x3==0)).astype (int)
+
+    # print(np.sum(use_x2))
+    # print(np.sum(use_x3))
+    # print(use_x1)
+
+    return use_x1*X1 + use_x2*X2 + use_x3*X3
+
+#%% A better moebius strip
+def little_h(rho):
+    return np.sqrt(4+rho**2)/16
+
+def big_h(rho):
+    return 1/(2*np.sqrt(4-rho**2) + 1e-3) + np.sqrt(4-rho**2)/8
+
+def isom_t(rho):
+    return (7/8)*rho + (1/8)*np.log((2-rho)/(2+rho+1e-3))
+
+def flat_moebius(rho, u):
+
+    x1 = rho*np.cos(u/2 + little_h(rho))
+    x2 = rho*np.sin(u/2 + little_h(rho))
+    x3 = np.sqrt(4-rho**2)*np.cos(u + big_h(rho))/2
+    x4 = np.sqrt(4-rho**2)*np.sin(u + big_h(rho))/2
+
+    return np.stack([x1,x2,x3,x4])
+
+#%% Yet another moebius strip
+def big_f(rho, R=2):
+    return np.log(R**2 - rho**2) + (R**2)/(R**2 - rho**2 )
+
+def blanusa_moebius(rho, u, R=2):
+
+    F = big_f(rho, R)
+    x1 = rho*np.cos(u/2 + F/2 - 2/(R**2 - rho**2 ))
+    x2 = rho*np.sin(u/2 + F/2 - 2/(R**2 - rho**2 ))
+    x3 = np.sqrt(4-rho**2)*np.cos(u + F)/2
+    x4 = np.sqrt(4-rho**2)*np.sin(u + F)/2
+
+    return np.stack([x1,x2,x3,x4])
+
 #%% miscellaneous functions
 def decimal(binary):
-    """ convert binary vector to dedimal number (i.e. enumerate) """
-    d = (binary*(2**np.arange(binary.shape[1]))[None,:]).sum(1)
+    """ 
+    convert binary vector to dedimal number (i.e. enumerate) 
+    assumes second axis is the bits
+    """
+    d = (binary*(2**np.arange(binary.shape[1]))[None,:,None]).sum(1)
     return d
 
 def group_mean(X, mask, axis=-1, **mean_args):
@@ -414,11 +363,15 @@ def group_std(X, mask, axis=-1, **mean_args):
     return np.nanstd(X*exclude, axis=axis, **mean_args)
 
 def cosine_sim(x,y):
-    """Assume features are in last axis"""
+    """Assume features are in first axis"""
 
-    x_ = x/(la.norm(x,axis=-1,keepdims=True)+1e-5)
-    y_ = y/(la.norm(y,axis=-1,keepdims=True)+1e-5)
-    return np.einsum('ik...,jk...->ij...', x_, y_)
+    x_ = x/(la.norm(x,axis=0,keepdims=True)+1e-5)
+    y_ = y/(la.norm(y,axis=0,keepdims=True)+1e-5)
+    return np.einsum('k...i,k...j->...ij', x_, y_)
+
+def dot_product(x,y):
+    """Assume features are in first axis"""
+    return np.einsum('k...i,k...j->...ij', x, y)
 
 def set_axes_equal(ax):
     '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
@@ -455,6 +408,7 @@ def diverging_clim(ax):
         cmax = np.max(np.abs(im.get_clim()))
         im.set_clim(-cmax,cmax)
 
+
 class ContinuousEmbedding(object):
     def __init__(self, dim, f):
         """f in [0,1]"""
@@ -475,6 +429,7 @@ class ContinuousEmbedding(object):
         return (self.basis@rot)@(self.basis.T)
         
     def __call__(self, labels, newf=None):
+        ''' labels of shape (..., n_variable) '''
         if newf is not None:
             self.rotator = self.rotation_mat(newf)
             self.offset = newf*(1-np.sqrt(1-2*(0.5**2)))

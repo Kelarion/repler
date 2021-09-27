@@ -24,7 +24,7 @@ class Feedforward(nn.Module):
     """
     Generic feedforward module, can be, e.g., the encoder or decoder of VAE
     """
-    def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True):
+    def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True, layer_type=None):
         super(Feedforward, self).__init__()
         
         onion = OrderedDict()
@@ -32,6 +32,11 @@ class Feedforward(nn.Module):
         
         if type(nonlinearity) is str:
             nonlinearity = [nonlinearity for _ in dim_layers[1:]]
+
+        if layer_type is None:
+            self.layer_type = nn.Linear
+        else:
+            self.layer_type = layer_type
         
         if encoder is not None:
             # optionally include a pre-network encoder, e.g. if inputs are indices
@@ -39,7 +44,7 @@ class Feedforward(nn.Module):
         
         for l in range(len(dim_layers)-1):
             # onions have layers
-            onion['layer%d'%l] = nn.Linear(dim_layers[l], dim_layers[l+1], bias=bias)
+            onion['layer%d'%l] = self.layer_type(dim_layers[l], dim_layers[l+1], bias=bias)
             if nonlinearity[l] is not None:
                 if 'softmax' in nonlinearity[l].lower():
                     onion['link%d'%l] = getattr(nn, nonlinearity[l])(dim=-1)
@@ -54,6 +59,122 @@ class Feedforward(nn.Module):
         # for layer in self.layers[1:]:
         #     h = self.activation(layer(h))
         return h
+
+class ClusteredConnections(nn.Module):
+    """
+    Single layer, but input dimensions have exclusive connections with specific output dimensions
+    """
+    def __init__(self, dim_inp, dim_out, nonlinearity='ReLU', embedding=None, bias=True):
+        """
+        dim_inp and dim_out are lists of the same length, where dim_inp[i] connects to dim_out[i]
+
+        the full layer will be a mapping of dimension sum(dim_inp) -> sum(dim_out)
+        """
+        super(ClusteredConnections, self).__init__()
+        
+        self.n_inp = sum(dim_inp)
+        self.n_out = sum(dim_out)
+        
+        if type(nonlinearity) is str:
+            nonlinearity = [nonlinearity for _ in dim_layers[1:]]
+
+        if layer_type is None:
+            self.layer_type = nn.Linear
+        else:
+            self.layer_type = layer_type
+        
+        if embedding is not None:
+            # optionally include a pre-network encoder, e.g. if inputs are indices
+            self.embedding = embedding
+        
+        self.weight_list = []
+        for d_i, d_o in zip(dim_inp, dim_out):
+            self.weight_list.append(self.layer_type(d_i, d_o, bias=True))
+        self.activation = getattr(nn, nonlinearity[l])()
+        # for l in range(len(dim_layers)-1):
+        #     # onions have layers
+        #     onion['layer%d'%l] = self.layer_type(dim_layers[l], dim_layers[l+1], bias=bias)
+        #     if nonlinearity[l] is not None:
+        #         if 'softmax' in nonlinearity[l].lower():
+        #             onion['link%d'%l] = getattr(nn, nonlinearity[l])(dim=-1)
+        #         else:
+        #             onion['link%d'%l] = getattr(nn, nonlinearity[l])()
+        
+        self.network = nn.Sequential(onion)
+        
+    def forward(self, x):
+        
+        return h
+
+#%% Custom GRU, originally by Miguel but substantially changed
+class CustomGRU(nn.Module):
+    """
+    A GRU class which gives access to the gate activations during a forward pass
+
+    Supposed to mimic the organisation of torch.nn.GRU -- same parameter names
+    """
+    def __init__(self, input_size, hidden_size, num_layers, nonlinearity=torch.tanh):
+        """Mimics the nn.GRU module. Currently num_layers is not supported"""
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        # input weights
+        self.weight_ih_l0 = Parameter(torch.Tensor(3*hidden_size, input_size))
+
+        # hidden weights
+        self.weight_hh_l0 = Parameter(torch.Tensor(3*hidden_size, hidden_size))
+
+        # bias
+        self.bias_ih_l0 = Parameter(torch.Tensor(3*hidden_size)) # input
+        self.bias_hh_l0 = Parameter(torch.Tensor(3*hidden_size)) # hidden
+
+        self.f = nonlinearity
+
+        self.init_weights()
+
+    def __repr__(self):
+        return "CustomGRU(%d,%d)"%(self.input_size,self.hidden_size)
+
+    def init_weights(self):
+        for p in self.parameters():
+            k = np.sqrt(self.hidden_size)
+            nn.init.uniform_(p.data, -k, k)
+
+    def forward(self, x, init_state, give_gates=False):
+        """Assumes x is of shape (len_seq, batch, input_size)"""
+        seq_sz, bs, _ = x.size()
+
+        update_gates = torch.empty(seq_sz, bs, self.hidden_size)
+        reset_gates = torch.empty(seq_sz, bs, self.hidden_size)
+        hidden_states = torch.empty(seq_sz, bs, self.hidden_size)
+
+        h_t = init_state
+
+        for t in range(seq_sz): # iterate over the time steps
+            x_t = x[t, :, :]
+
+            gi = F.linear(x_t, self.weight_ih_l0, self.bias_ih_l0) # do the matmul all together
+            gh = F.linear(h_t, self.weight_hh_l0, self.bias_hh_l0)
+
+            i_r, i_z, i_n = gi.chunk(3,1) # input currents
+            h_r, h_z, h_n = gh.chunk(3,2) # hidden currents
+
+            r_t = torch.sigmoid(i_r + h_r)
+            z_t = torch.sigmoid(i_z + h_z)
+            n = self.f(i_n + r_t*h_n)
+            h_t = n + z_t*(h_t - n)
+
+            update_gates[t,:,:] = z_t
+            reset_gates[t,:,:] = r_t
+            hidden_states[t,:,:] = h_t
+
+        output = hidden_states
+
+        if give_gates:
+            return output, h_t, (update_gates, reset_gates)
+        else:
+            return output, h_t
 
 # Layers with random weights
 class LinearRandom(object):
@@ -147,6 +268,46 @@ class LinearRandomProportional(LinearRandom):
         coords[0,np.all(coords>0, axis=0)] *= self.coef
         coords[0,np.all(coords<0, axis=0)] /= self.coef
         return torch.tensor(coords).float()
+
+class BinaryWeights(nn.Linear):
+    """
+    Abstract class for linear layers with binary weights
+    """
+    def __init__(self, *args, **kwargs):
+        super(BinaryWeights, self).__init__(*args, bias=False, **kwargs)
+        self.__name__ = self.__class__.__name__
+        #     self.w = self.draw_weights()
+
+class PositiveReadout(BinaryWeights):
+    def __init__(self, N_in, N_out, bias=None):
+
+        super(PositiveReadout, self).__init__(N_in, N_out)
+
+        self.weight = Parameter(torch.ones(N_out, N_in).float())
+
+class BinaryReadout(BinaryWeights):
+    def __init__(self, N_in, N_out, shuffle=False, bias=None, rotated=False):
+
+        super(BinaryReadout, self).__init__(N_in, N_out)
+
+        num_pop = 2**N_out
+        num_per_pop = N_in//num_pop
+
+
+        if rotated:
+            bits = np.concatenate([np.eye(N_out)*i for i in [1,-1]])
+        else:
+            bits = 2*(np.mod(np.arange(num_pop)[:,None]//(2**np.arange(N_out)[None,:]),2)) - 1
+
+        which_pop = np.arange(num_per_pop*num_pop)//num_per_pop
+        leftovers = np.random.choice(num_pop, N_in - num_per_pop*num_pop, replace=False)
+        if shuffle:
+            which_pop = np.random.permutation(np.append(which_pop, leftovers))
+        else:
+            which_pop = np.append(which_pop, leftovers)
+
+        self.weight = Parameter(torch.tensor(bits[which_pop,:].T).float())
+
 
 #%% Latent variable distribution families !!!
 class DeepDistribution(nn.Module):
@@ -467,6 +628,174 @@ class MultiGLM(NeuralNet):
 
             # optimise
             loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            
+        return running_loss/(i+1)
+
+class GenericRNN(NeuralNet):
+    def __init__(self, ninp, nhid, out_dist, nlayers=1, rnn_type='relu',
+        recoder=None, decoder=None, fix_decoder=True):
+        super(GenericRNN,self).__init__()
+
+        self.recoder = recoder
+        nout = out_dist.ndim
+        self.obs = out_dist
+        
+        if rnn_type in ['LSTM', 'GRU']:
+            self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
+        elif rnn_type in ['tanh-GRU', 'relu-GRU']:
+            nlin = getattr(torch, rnn_type.split('-GRU')[0])
+            self.rnn = CustomGRU(ninp, nhid, nlayers, nonlinearity=nlin) # defined below
+        else:
+            try:
+                self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=rnn_type.lower())
+            except:
+                raise ValueError("Invalid rnn_type: give from {'LSTM', 'GRU', 'tanh', 'relu'}")
+
+        if decoder is None:
+            self.decoder = nn.Linear(nhid, nout)
+        else:
+            self.decoder = decoder
+        # self.softmax = nn.LogSoftmax(dim=2)
+
+        self.rnn_type = rnn_type
+        self.nhid = nhid
+        self.nlayers = nlayers
+
+        self.init_weights()
+
+    def init_weights(self):
+        self.decoder.bias.data.zero_()
+        # self.decoder.weight.data.uniform_()
+        self.rnn.weight_hh_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
+        self.rnn.bias_hh_l0.data.zero_()
+        self.rnn.weight_ih_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
+        self.rnn.bias_ih_l0.data.zero_()
+
+    def forward(self, emb, hidden=None, give_gates=False, debug=False, readout_time=None):
+        """
+        Run the RNN forward. Expects input to be (lseq,nseq,...)
+        Only set give_gates=True if it's the custom GRU!!!
+        use `debug` argument to return also the embedding the input
+        """
+
+        # if self.recoder is None:
+        #     emb = inp
+        # else:
+        #     emb = self.recoder(inp)
+
+        if hidden is None:
+            hidden = self.init_hidden(emb.shape[1])
+        # if emb.dim()<3:
+        #     emb = emb.unsqueeze(0)
+
+        if give_gates:
+            output, hidden, extras = self.rnn(emb, hidden, give_gates)
+        else:
+            output, hidden = self.rnn(emb, hidden)
+        # print(output.shape)
+
+        # decoded = self.softmax(self.decoder(output))
+        decoded = self.decoder(output)
+        if readout_time is None:
+            decoded = decoded[-1,...] # assume only final timestep matters
+
+        if give_gates:
+            return decoded, hidden, extras
+        else:
+            return decoded, hidden
+
+    def transparent_forward(self, inp, hidden=None, give_gates=False, debug=False):
+        """
+        Run the RNNs forward function, but returning hidden activity throughout the sequence
+
+        it's slower than regular forward, but often necessary
+        """
+
+        lseq = inp.shape[0]
+        nseq = inp.shape[1]
+        # ispad = (input == self.padding)
+
+        if hidden is None:
+            hidden = self.init_hidden(nseq)
+
+        H = torch.zeros(lseq, self.nhid, nseq)
+        if give_gates:
+            Z = torch.zeros(lseq, self.nhid, nseq)
+            R = torch.zeros(lseq, self.nhid, nseq)
+        
+        # because pytorch only returns hidden activity in the last time step,
+        # we need to unroll it manually. 
+        O = torch.zeros(lseq, nseq, self.decoder.out_features)
+        if self.recoder is None:
+            emb = inp
+        else:
+            emb = self.recoder(inp)
+        for t in range(lseq):
+            if give_gates:
+                out, hidden, ZR = self.rnn(emb[t:t+1,...], hidden, give_gates=True)
+                Z[t,:,:] = ZR[0].squeeze(0).T
+                R[t,:,:] = ZR[1].squeeze(0).T
+            else:
+                out, hidden = self.rnn(emb[t:t+1,...], hidden)
+            dec = self.decoder(out)
+            # naan = torch.ones(hidden.squeeze(0).shape)*np.nan
+            # H[t,:,:] = torch.where(~ispad[t:t+1,:].T, hidden.squeeze(0), naan).T
+            H[t,:,:] = hidden.squeeze(0).T
+            O[t,:,:] = dec.squeeze(0)
+
+        if give_gates:
+            if debug:
+                return O, H, Z, R, emb
+            else:
+                return O, H, Z, R
+        else:
+            if debug:
+                return O, H, emb
+            else:
+                return O, H
+
+    def init_hidden(self, bsz):
+        if self.rnn_type == 'LSTM':
+            return (torch.zeros(1, bsz, self.nhid),
+                    torch.zeros(1, bsz, self.nhid))
+        else:
+            return torch.zeros(1, bsz, self.nhid)
+
+    def grad_step(self, data, optimizer):
+        """ Single step of maximum likelihood over the data """
+
+        running_loss = 0
+        
+        for i, batch in enumerate(data):
+            optimizer.zero_grad()
+            
+            # print(batch)
+
+            nums, labels = batch
+            nums = nums.transpose(0,1)
+            # nums = nums.squeeze(1).reshape((-1, 784))
+            hidden = self.init_hidden(nums.size(1))
+            # print(nums.shape)
+            # # forward
+            out, _ = self(nums, hidden)
+            # print(out.shape)
+            # print(labels.shape)
+            # print(out)
+            # print(labels)
+            loss = nn.BCEWithLogitsLoss()(out.squeeze(), labels.squeeze())
+            # loss = -self.obs.distr(out).log_prob(labels).mean()
+            
+            # loss = -loglihood(self, nums, labels)
+            # foo = self(nums)[0]
+            # loss = nn.NLLLoss(reduction='sum')(foo, labels)
+
+            # optimise
+            loss.backward()
+            # print(self.rnn.weight_hh_l0.grad.abs().max())
+            # print(self.rnn.weight_ih_l0.grad.abs().max())
             optimizer.step()
             
             running_loss += loss.item()

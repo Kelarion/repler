@@ -49,50 +49,52 @@ import experiments as exp
 import plotting as dicplt
 
 #%% data
-num_var = 3
-dim_inp = 25 # dimension per variable
+dim_inp = 32 # dimension per variable
 num_data = 5000 # total
-noise = 0.1
+noise = 0.05
 
-apply_rotation = False
-# apply_rotation = True
+switch_fraction = 0.1
 
-input_task = util.RandomDichotomies(d=[(0,1,2,3),(0,2,4,6),(0,1,4,5)])
+input_task = util.StandardBinary(3)
 # output_task = util.RandomDichotomies(d=[(0,1,6,7), (0,2,5,7)]) # xor of first two
 output_task = util.RandomDichotomies(d=[(0,3,5,6)]) # 3d xor
-# output_task = util.RandomDichotomies(d=[(0,1,6,7), (0,4,5,6)]) # 3d xor
-# output_task = util.RandomDichotomies(d=[(0,1,2,3),(0,2,4,6)])
-# output_task = util.RandomDichotomies(d=[(0,1,4,5),(0,2,5,7),(0,1,6,7)]) # 3 incompatible dichotomies
-# input_task = util.RandomDichotomies(d=[(0,1),(0,2)])
-# output_task = util.RandomDichotomies(d=[(0,1)])
 
-# generate inputs
-inp_condition = np.random.choice(2**num_var, num_data)
-# var_bit = (np.random.rand(num_var, num_data)>0.5).astype(int)
+inp_condition = np.random.choice(2**3, num_data)
 var_bit = input_task(inp_condition).numpy().T
+action_outcome = var_bit[:2,:]
+context = var_bit[2,:]
 
-means = np.random.randn(num_var, dim_inp)
+stimulus = util.decimal(action_outcome.T).astype(int)
+stimulus[context==1] = np.mod(stimulus[context==1]+1,4) # effect of context
 
-mns = (means[:,None,:]*var_bit[:,:,None]) - (means[:,None,:]*(1-var_bit[:,:,None]))
-        
-clus_mns = np.reshape(mns.transpose((0,2,1)), (dim_inp*num_var,-1)).T
+means_pos = np.random.randn(2, dim_inp)
+means_neg = np.random.randn(2, dim_inp)
+stim_pattern = np.random.randn(4, dim_inp)
 
+mns = (means_pos[:,None,:]*action_outcome[:,:,None]) + (means_neg[:,None,:]*(1-action_outcome[:,:,None]))
 
-if apply_rotation:
-    C = np.random.rand(num_var*dim_inp, num_var*dim_inp)
-    clus_mns = clus_mns@la.qr(C)[0][:num_var*dim_inp,:]
+ao_t = np.reshape(mns.transpose((0,2,1)), (dim_inp*2,-1)).T
+s_t = stim_pattern[stimulus,:]
 
-inputs = torch.tensor(clus_mns + np.random.randn(num_data, num_var*dim_inp)*noise).float()
+prev_trial = np.arange(num_data)
+next_trial = np.arange(num_data)
+next_trial[context==1] = np.random.permutation(next_trial[context==1])
+next_trial[context==0] = np.random.permutation(next_trial[context==0])
+
+cat_inp = np.concatenate([s_t[prev_trial,:], ao_t[prev_trial,:], s_t[next_trial,:]], axis=1)
+
+inputs = torch.tensor(cat_inp + np.random.randn(num_data, 4*dim_inp)*noise).float()
 
 # generate outputs
-outputs = output_task(inp_condition)
+outputs = torch.tensor(action_outcome[:,next_trial].T)
+
 
 #%%
 U, S, V = la.svd(inputs.numpy()-inputs.numpy().mean(0)[None,:],full_matrices=False)
 
 # colorby = inp_condition
-# colorby = util.decimal(outputs).numpy()
-colorby = np.isin(inp_condition, output_task.positives[0])
+colorby = stimulus
+# colorby = np.isin(inp_condition[:-1], input_task.positives[2])
 
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
@@ -106,27 +108,27 @@ util.set_axes_equal(ax)
 # plt.title('PCA dimension: %.2f'%((np.sum(S**2)**2)/np.sum(S**4)))
 
 #%%
-N = 100
+N = 200
 
 # net = students.Feedforward([inputs.shape[1],100,2],['ReLU',None])
 # net = students.MultiGLM(students.Feedforward([inputs.shape[1], N], ['ReLU']),
 #                         students.Feedforward([N, targets.shape[1]], [None]),
 #                         students.GausId(targets.shape[1]))
-net = students.MultiGLM(students.Feedforward([dim_inp*num_var,N], ['ReLU']),
-                        students.Feedforward([N,output_task.dim_output], [None]),
-                        students.Bernoulli(output_task.dim_output))
+net = students.MultiGLM(students.Feedforward([dim_inp*4,N,N], ['ReLU','ReLU']),
+                        students.Feedforward([N,2], [None]),
+                        students.Bernoulli(2))
 # net = students.MultiGLM(students.Feedforward([inputs.shape[1],N], ['ReLU']),
 #                         students.Feedforward([N, p], [None]),
 #                         students.Categorical(p))
 
-n_trn = int(0.8*num_data)   
+n_trn = int(0.8*num_data)
 trn = np.random.choice(num_data,n_trn,replace=False)
 tst = np.setdiff1d(range(num_data),trn)
 
 optimizer = optim.Adam(net.enc.parameters(), lr=1e-4)
 dset = torch.utils.data.TensorDataset(inputs[trn,:].float(),
                                       outputs[trn,:].float())
-dl = torch.utils.data.DataLoader(dset, batch_size=64, shuffle=True)
+dl = torch.utils.data.DataLoader(dset, batch_size=128, shuffle=True)
 
 n_compute = np.min([len(tst),1000])
 
@@ -137,7 +139,7 @@ out_PS = []
 test_loss = []
 lin_dim = []
 min_dist = []
-for epoch in tqdm(range(2000)):
+for epoch in tqdm(range(10000)):
     # check whether outputs are in the correct class centroid
     idx2 = np.random.choice(tst, n_compute, replace=False)
     zee, _, z = net(inputs[idx2,:].float())
@@ -173,7 +175,7 @@ for epoch in tqdm(range(2000)):
     # inp_PS.append(PS)
     
     D = assistants.Dichotomies(len(np.unique(inp_condition)),
-                                [(0,2,3,4),(0,4,6,7),(0,1,3,7),(0,1,2,6)], extra=0)
+                                input_task.positives, extra=0)
     PS = [D.parallelism(z.detach().numpy(), inp_condition[idx], clf) for _ in D]
     inp_PS.append(PS)
     
@@ -256,8 +258,8 @@ z = rep(inputs.float()).detach().numpy()
 N = z.shape[1]
 max_dichs = 50 # the maximum number of untrained dichotomies to test 
 
-# this_task = input_task
-this_task = output_task
+this_task = input_task
+# this_task = output_task
 
 all_PS = []
 all_CCGP = []
@@ -285,7 +287,7 @@ num_cond = len(np.unique(cond))
 # D = assistants.Dichotomies(num_cond, args['dichotomies']+[xor], extra=50)
 
 # choose dichotomies to have a particular order
-Q = num_var
+Q = 3
 D_fake = assistants.Dichotomies(num_cond, this_task.positives, extra=7000)
 mi = np.array([this_task.information(p) for p in D_fake])
 midx = np.append(range(Q),np.flip(np.argsort(mi[Q:]))+Q)
@@ -437,7 +439,6 @@ for i,d in enumerate(output_task.positives):
 plt.legend(inps+outs, ['input %d'%(i+1) for i in range(len(inps))] + ['output %d'%(i+1) for i in range(len(outs))])
 
 # plt.legend(outs, ['output %d'%(i+1) for i in range(len(outs))])
-
 #%%
 # mask = (R.max(2)==1) # context must be an output variable   
 # mask = (np.abs(R).sum(2)==0) # context is uncorrelated with either output variable

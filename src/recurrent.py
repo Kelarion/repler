@@ -29,19 +29,13 @@ class RNNModel(nn.Module):
     The final two (tanh-GRU and relu-GRU) use the custom GRU class.
     """
     
-    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, nout=None,
-        embed=False, persistent=False, padding=-1):
+    def __init__(self, rnn_type, ninp, nhid, nout, nlayers=1,
+        recoder=None, persistent=False, padding=-1):
         super(RNNModel,self).__init__()
 
         if nout is None:
             nout = ntoken
-        if embed:
-            self.encoder = nn.Embedding(ntoken, ninp, padding_idx=padding)
-        else:
-            if persistent:
-                self.encoder = ContextIndicator(ntoken, ninp, padding_idx=padding) # defined below
-            else:
-                self.encoder = Indicator(ntoken, ninp, padding_idx=padding) # defined below
+        self.recoder = recoder
             
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
@@ -57,7 +51,6 @@ class RNNModel(nn.Module):
         self.decoder = nn.Linear(nhid, nout)
         # self.softmax = nn.LogSoftmax(dim=2)
         
-        self.embed = embed
         self.init_weights()
 
         self.rnn_type = rnn_type
@@ -365,6 +358,167 @@ class RNNModel(nn.Module):
         ## package #################################################################
         self.metrics = m
         warnings.filterwarnings('default')
+
+class GenericRNN(nn.Module):
+    def __init__(self, ninp, nhid, out_dist, nlayers=1, rnn_type='relu',
+        recoder=None, decoder=None, persistent=False, fix_decoder=True):
+        super(GenericRNN,self).__init__()
+
+        self.recoder = recoder
+        nout = out_dist.ndim
+        self.obs = out_dist
+            
+        if rnn_type in ['LSTM', 'GRU']:
+            self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
+        elif rnn_type in ['tanh-GRU', 'relu-GRU']:
+            nlin = getattr(torch, rnn_type.split('-GRU')[0])
+            self.rnn = CustomGRU(ninp, nhid, nlayers, nonlinearity=nlin) # defined below
+        else:
+            try:
+                self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=rnn_type.lower())
+            except:
+                raise ValueError("Invalid rnn_type: give from {'LSTM', 'GRU', 'tanh', 'relu'}")
+
+        if decoder is None:
+            self.decoder = nn.Linear(nhid, nout)
+        else:
+            self.decoder = decoder
+        # self.softmax = nn.LogSoftmax(dim=2)
+        
+        self.init_weights()
+
+        self.rnn_type = rnn_type
+        self.nhid = nhid
+        self.nlayers = nlayers
+
+    def init_weights(self):
+        self.decoder.bias.data.zero_()
+        # self.decoder.weight.data.uniform_()
+
+    def forward(self, inp, hidden=None, give_gates=False, debug=False, readout_time=None):
+        """
+        Run the RNN forward. Expects input to be (lseq,nseq,...)
+        Only set give_gates=True if it's the custom GRU!!!
+        use `debug` argument to return also the embedding the input
+        """
+
+        if self.recoder is None:
+            emb = inp
+        else:
+            emb = self.recoder(inp)
+
+        if hidden is None:
+            hidden = self.init_hidden(inp.shape[1])
+        # if emb.dim()<3:
+        #     emb = emb.unsqueeze(0)
+
+        if give_gates:
+            output, hidden, extras = self.rnn(emb, hidden, give_gates)
+        else:
+            output, hidden = self.rnn(emb, hidden)
+        # print(output.shape)
+
+        # decoded = self.softmax(self.decoder(output))
+        decoded = self.decoder(output)
+        if readout_time is None:
+            decoded = decoded[-1,...] # assume only final timestep matters
+
+        if give_gates:
+            return decoded, hidden, extras
+        else:
+            return decoded, hidden
+
+    def transparent_forward(self, inp, hidden=None, give_gates=False, debug=False):
+        """
+        Run the RNNs forward function, but returning hidden activity throughout the sequence
+
+        it's slower than regular forward, but often necessary
+        """
+
+        lseq = inp.shape[0]
+        nseq = inp.shape[1]
+        # ispad = (input == self.padding)
+
+        if hidden is None:
+            hidden = self.init_hidden(nseq)
+
+        H = torch.zeros(lseq, self.nhid, nseq)
+        if give_gates:
+            Z = torch.zeros(lseq, self.nhid, nseq)
+            R = torch.zeros(lseq, self.nhid, nseq)
+        
+        # because pytorch only returns hidden activity in the last time step,
+        # we need to unroll it manually. 
+        O = torch.zeros(lseq, nseq, self.decoder.out_features)
+        if self.recoder is None:
+            emb = inp
+        else:
+            emb = self.recoder(inp)
+        for t in range(lseq):
+            if give_gates:
+                out, hidden, ZR = self.rnn(emb[t:t+1,...], hidden, give_gates=True)
+                Z[t,:,:] = ZR[0].squeeze(0).T
+                R[t,:,:] = ZR[1].squeeze(0).T
+            else:
+                out, hidden = self.rnn(emb[t:t+1,...], hidden)
+            dec = self.decoder(out)
+            # naan = torch.ones(hidden.squeeze(0).shape)*np.nan
+            # H[t,:,:] = torch.where(~ispad[t:t+1,:].T, hidden.squeeze(0), naan).T
+            H[t,:,:] = hidden.squeeze(0).T
+            O[t,:,:] = dec.squeeze(0)
+
+        if give_gates:
+            if debug:
+                return O, H, Z, R, emb
+            else:
+                return O, H, Z, R
+        else:
+            if debug:
+                return O, H, emb
+            else:
+                return O, H
+
+    def init_hidden(self, bsz):
+        if self.rnn_type == 'LSTM':
+            return (torch.zeros(1, bsz, self.nhid),
+                    torch.zeros(1, bsz, self.nhid))
+        else:
+            return torch.zeros(1, bsz, self.nhid)
+
+    def grad_step(self, data, optimizer):
+        """ Single step of maximum likelihood over the data """
+
+        running_loss = 0
+        
+        for i, batch in enumerate(data):
+            optimizer.zero_grad()
+            
+            # print(batch)
+
+            nums, labels = batch
+            nums = nums.transpose(0,1)
+            # nums = nums.squeeze(1).reshape((-1, 784))
+            hidden = self.init_hidden(nums.size(1))
+            # print(nums.shape)
+            # # forward
+            out, _ = self(nums, hidden)
+            # loss = -self.obs.distr(out).log_prob(labels).mean()
+            # print(out.shape)
+            # print(labels.shape)
+            loss = nn.BCEWithLogitsLoss()(out.squeeze(), labels.squeeze())
+            # loss = -self.obs.distr(out).log_prob(labels).sum()
+            
+            # loss = -loglihood(self, nums, labels)
+            # foo = self(nums)[0]
+            # loss = nn.NLLLoss(reduction='sum')(foo, labels)
+
+            # optimise
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            
+        return running_loss/(i+1)
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 #%% Custom GRU, originally by Miguel but substantially changed

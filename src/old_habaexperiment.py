@@ -26,10 +26,8 @@ elif socket.gethostname() == 'openmind7':
     SAVE_DIR = '/om2/user/malleman/abstraction/'
     openmind = True
 else:    
-    # CODE_DIR = '/rigel/home/ma3811/repler/'
-    # SAVE_DIR = '/rigel/theory/users/ma3811/'
-    CODE_DIR = '/burg/home/ma3811/repler/'
-    SAVE_DIR = '/burg/theory/users/ma3811/'
+    CODE_DIR = '/rigel/home/ma3811/repler/'
+    SAVE_DIR = '/rigel/theory/users/ma3811/'
     openmind = False
 
 sys.path.append(CODE_DIR)
@@ -42,12 +40,12 @@ import numpy as np
 
 import experiments # my code packages
 import util
-import tasks
 import students
 
 #%% parse arguments (need to remake this for each kind of experiment)
 allargs = sys.argv
 
+# aid = all_args[1] # array ID
 arglist = allargs[1:]
 
 unixOpts = "vmgn:i:h:c:q:o:f:r:e:t:"
@@ -68,6 +66,8 @@ for op, val in opts:
     if op in ('-v','--verbose'):
         verbose = True
     if op in ('-n',):
+        if val is 'it':
+            N = 
         N = int(val)
     if op in ('-i',):
         if openmind:
@@ -98,8 +98,8 @@ for op, val in opts:
         gaus_obs = True
 
 #%% run experiment (put the code you want to run here!)
-# sample_dichotomies = 4
-sample_dichotomies = None
+sample_dichotomies = 4
+# sample_dichotomies = None
 
 fixed_decoder = True
 # fixed_decoder = False
@@ -115,14 +115,14 @@ latent_dist = None
 
 H = 100 # number of hidden units
 
-# nonlinearity = 'ReLU'
-nonlinearity = 'Tanh'
+nonlinearity = 'ReLU'
+# nonlinearity = 'Tanh'
 # nonlinearity = 'Sigmoid'
 # nonlinearity = 'LeakyReLU'
 
 print('- - - - - - - - - - - - - - - - - - - - - - - - - - ')        
 if this_task == 'mnist': 
-    task = tasks.RandomDichotomies(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
+    task = util.RandomDichotomies(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
     exp = experiments.mnist_multiclass(N=N, 
                                       task=task, 
                                       SAVE_DIR=SAVE_DIR, 
@@ -141,7 +141,7 @@ if this_task == 'mnist':
                                       fix_decoder=fixed_decoder,
                                       rot=rot)
 elif this_task == 'mog':
-    task = tasks.RandomDichotomies(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
+    task = util.RandomDichotomies(num_class, num_dich, overlap=ovlp, use_mse=gaus_obs)
     exp = experiments.random_patterns(N=N,
                                       task=task, 
                                       SAVE_DIR=SAVE_DIR,
@@ -165,18 +165,16 @@ elif this_task == 'mog':
                                       fix_decoder=fixed_decoder,
                                       rot=rot)
 elif this_task == 'structured':
-    # bits = np.nonzero(1-np.mod(np.arange(num_class)[:,None]//(2**np.arange(np.log2(num_class))[None,:]),2))
-    # pos_conds = np.split(bits[0][np.argsort(bits[1])],int(np.log2(num_class)))
-    # inp_task = tasks.StandardBinary(int(np.log2(num_class)))
-    # inp_task = tasks.TwistedCube(tasks.StandardBinary(2), 100, f=coding_level, noise_var=0.1)
-    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=coding_level, noise_var=0.1)
-    # task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)])
-    task = tasks.RandomDichotomies(d=[(0,3)])
-    # task = tasks.LogicalFunctions(d=pos_conds, function_class=num_dich)
+    bits = np.nonzero(1-np.mod(np.arange(num_class)[:,None]//(2**np.arange(np.log2(num_class))[None,:]),2))
+    pos_conds = np.split(bits[0][np.argsort(bits[1])],int(np.log2(num_class)))
+    inp_task = util.RandomDichotomies(d=pos_conds) 
+    # task = util.RandomDichotomies(d=[np.array([0,3,5,6])])
+    task = util.LogicalFunctions(d=pos_conds, function_class=num_dich)
     exp = experiments.structured_inputs(N=N,
                                       task=task,
                                       input_task=inp_task,
                                       SAVE_DIR=SAVE_DIR,
+                                      dim_inputs=25,
                                       noise_var=0.1,
                                       H=H,
                                       nonlinearity=nonlinearity,
@@ -189,12 +187,15 @@ elif this_task == 'structured':
                                       sample_dichotomies=sample_dichotomies,
                                       init=init,
                                       skip_metrics=skip_metrics,
+                                      init_coding=coding_level,
+                                      good_start=ols_initialised,
                                       fix_decoder=fixed_decoder)
 elif this_task == 'dlog':
     bits = np.nonzero(1-np.mod(np.arange(num_class)[:,None]//(2**np.arange(np.log2(num_class))[None,:]),2))
     pos_conds = np.split(bits[0][np.argsort(bits[1])],int(np.log2(num_class)))
-    inp_task = tasks.RandomDichotomies(d=pos_conds) 
-    task = tasks.LogicalFunctions(d=pos_conds, function_class=num_dich)
+    inp_task = util.RandomDichotomies(d=pos_conds) 
+    # task = util.RandomDichotomies(d=[np.array([0,3,5,6])])
+    task = util.LogicalFunctions(d=pos_conds, function_class=num_dich)
     exp = experiments.delayed_logic(N=N,
                                   task=task, 
                                   input_task=inp_task,
@@ -205,7 +206,6 @@ elif this_task == 'dlog':
                                   decoder=readout_weights,
                                   bsz=200,
                                   nepoch=nepoch,
-                                  init=init,
                                   sample_dichotomies=sample_dichotomies,
                                   nonlinearity=nonlinearity,
                                   num_layer=num_layer,

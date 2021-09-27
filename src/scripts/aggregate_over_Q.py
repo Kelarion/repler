@@ -36,17 +36,22 @@ mse_loss = False
 # categorical = True
 categorical = False
 
-num_cond = 128
-these_Q = [1,2,3,4,5,6,7,8,9,10]
+num_cond = 8
+these_Q = [0,1,2,3,4,5]
 # these_Q = [1,2,3,4,5,6,7]
 
 latent_dist = None
 # latent_dist = GausId
 nonlinearity = 'ReLU'
+# nonlinearity = 'Tanh'
 # nonlinearity = 'LeakyReLU'
 
-# num_layer = 0
-num_layer = 1
+# which_task = 'mnist'
+# which_task = 'mog'
+which_task = 'structured'
+
+num_layer = 0
+# num_layer = 1
 
 # good_start = True
 good_start = False
@@ -58,7 +63,7 @@ rotation = 0.0
 decay = 0.0
 
 H = 100
-n = 100
+n = 50
 
 # random_decoder = students.LinearRandomSphere(radius=0.2, eps=0.05, 
 #                                               fix_weights=True,
@@ -70,9 +75,9 @@ n = 100
 #                                                     fix_weights=True, 
 #                                                     coef=2,
 #                                                     nonlinearity=task.link)
-random_decoder = None
-
-# find experiments 
+readout_weights = None
+# readout_weights = students.BinaryReadout
+# readout_weights = students.PositiveReadout
 
 nets = [[] for _ in these_Q]
 all_nets = [[] for _ in these_Q]
@@ -86,34 +91,49 @@ for i,num_var in enumerate(these_Q):
     use_mnist = False
     
     # task = util.ParityMagnitude()
-    if categorical:
-        task = util.RandomDichotomiesCategorical(num_cond,num_var,0, mse_loss)
-    else:
-        task = util.RandomDichotomies(num_cond,num_var,0, mse_loss)
+    # if categorical:
+    #     task = util.RandomDichotomiesCategorical(num_cond,num_var,0, mse_loss)
+    # else:
+    #     task = util.RandomDichotomies(num_cond,num_var,0, mse_loss)
     # task = util.ParityMagnitudeEnumerated()
     # task = util.Digits()
     # task = util.DigitsBitwise()
     
-    if use_mnist:
+    if which_task == 'mnist': 
         this_exp = exp.mnist_multiclass(task, SAVE_DIR, 
                                         z_prior=latent_dist,
                                         num_layer=num_layer,
                                         weight_decay=decay,
-                                        decoder=random_decoder,
+                                        decoder=readout_weights,
                                         good_start=good_start,
                                         init_coding=coding_level)
-    else:
+    elif which_task == 'mog':
         this_exp = exp.random_patterns(task, SAVE_DIR, 
-                                       num_class=num_cond,
-                                       dim=100,
-                                       var_means=1,
-                                       z_prior=latent_dist,
-                                       num_layer=num_layer,
-                                       weight_decay=decay,
-                                       decoder=random_decoder,
-                                       good_start=good_start,
-                                       init_coding=coding_level,
-                                       rot=rotation)
+                                        num_class=num_cond,
+                                        dim=100,
+                                        var_means=1,
+                                        z_prior=latent_dist,
+                                        num_layer=num_layer,
+                                        weight_decay=decay,
+                                        decoder=readout_weights,
+                                        good_start=good_start,
+                                        init_coding=coding_level,
+                                        rot=rotation)
+    elif which_task == 'structured':
+        bits = np.nonzero(1-np.mod(np.arange(num_cond)[:,None]//(2**np.arange(np.log2(num_cond))[None,:]),2))
+        decs = np.split(bits[0][np.argsort(bits[1])],int(np.log2(num_cond)))
+        inp_task = util.RandomDichotomies(d=decs)
+        task = util.LogicalFunctions(d=decs, function_class=num_var)
+        this_exp = exp.structured_inputs(task, input_task=inp_task,
+                                          SAVE_DIR=SAVE_DIR,
+                                          dim_inputs=25,
+                                          noise_var=0.1,
+                                          num_layer=num_layer,
+                                          z_prior=latent_dist,
+                                          weight_decay=decay,
+                                          decoder=readout_weights,
+                                          nonlinearity=nonlinearity,
+                                          init_coding=coding_level)
        
     this_folder = SAVE_DIR + this_exp.folder_hierarchy()
 
@@ -187,9 +207,11 @@ train_dat = this_exp.train_data
 n_compute = 2500
 
 pr = []
+num_comp = []
 for i,q in enumerate(these_Q):
     
     pr_net = []
+    num_comp_net = []
     for j in tqdm(range(len(all_args[i]))):
         this_exp.load_other_info(all_args[i][j])
         this_exp.load_data(SAVE_DIR)
@@ -201,18 +223,30 @@ for i,q in enumerate(these_Q):
         _, S, _ = la.svd(z-z.mean(1)[:,None], full_matrices=False)
         eigs = S**2
         pr_net.append((np.sum(eigs)**2)/np.sum(eigs**2))
+        
+        centroids = np.array([z[this_exp.train_conditions[idx]==c].mean(0) for c in np.unique(this_exp.train_conditions)])
+        _, S, _ = la.svd(centroids-centroids.mean(1)[:,None], full_matrices=False)
+        eigs = S**2
+        num_comp_net.append(np.argmax(np.cumsum(eigs)/np.sum(eigs) > 0.9)+1)
     
     pr.append(pr_net)
+    num_comp.append(num_comp_net)
 
 #%% Plot them 
 
-pr_mean = np.array([np.mean(p) for p in pr])/np.log2(num_cond)
-pr_err = np.array([np.std(p) for p in pr])/np.log2(num_cond)
+# pr_mean = np.array([np.mean(p) for p in pr])#/np.log2(num_cond)
+# pr_err = np.array([np.std(p) for p in pr])#/np.log2(num_cond)
 
-normalized_Q = np.array(these_Q)/np.log2(num_cond)
+pr_mean = np.array([np.mean(p) for p in num_comp])#/np.log2(num_cond)
+pr_err = np.array([np.std(p) for p in num_comp])#/np.log2(num_cond)
 
-plt.plot(normalized_Q, pr_mean)
-plt.fill_between(normalized_Q, pr_mean-pr_err, pr_mean+pr_err, alpha=0.5)
+
+normalized_Q = np.array(these_Q)#/np.log2(num_cond)
+
+plt.errorbar(these_Q, pr_mean, pr_err, linestyle='', marker='o')
+
+# plt.plot(normalized_Q, pr_mean)
+# plt.fill_between(normalized_Q, pr_mean-pr_err, pr_mean+pr_err, alpha=0.5)
 
 #%% Make the plot tidy
 newlims = [np.min([plt.ylim(), plt.xlim()]), np.max([plt.ylim(), plt.xlim()])]

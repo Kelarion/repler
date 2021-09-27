@@ -68,6 +68,7 @@ class LinearDecoder(object):
             for p in self.tokens:
                 clf[p][t].fit(H[t_==t,:], labels[t_==t,p])
             # clf[-1][t].fit(H_flat.T, t_.flatten()>=L) # last decoder is always context
+        # foo = [[clf[p][t].fit(H[t_==t,:], labels[t_==t,p]) for p in self.tokens] for t in t_lbs]
 
         # package
         coefs = np.zeros((len(self.tokens), self.nhid, len(t_lbs)))*np.nan
@@ -75,8 +76,8 @@ class LinearDecoder(object):
         for p in self.tokens:
             for t in t_lbs:
                 if ~np.all(np.isnan(clf[p][t].coef_)):
-                    coefs[p,:,t] = clf[p][t].coef_/(la.norm(clf[p][t].coef_)+1e-3)
-                    thrs[p,t] = -clf[p][t].intercept_/(la.norm(clf[p][t].coef_)+1e-3)
+                    coefs[p,:,t] = clf[p][t].coef_#/(la.norm(clf[p][t].coef_)+1e-3)
+                    thrs[p,t] = -clf[p][t].intercept_#/(la.norm(clf[p][t].coef_)+1e-3)
 
         self.clf = clf
         self.nclfr = len(self.tokens)
@@ -107,6 +108,7 @@ class LinearDecoder(object):
 
         # evaluate
         # correct = labels.transpose((2,0,1)) == (proj>=0)
+        # print(np.moveaxis(labels,-1,0).shape)
         correct = np.moveaxis(labels,-1,0) == (proj>=0)
         perf = np.array([correct[:,t_==i].mean(1) for i in np.unique(t_)]).T
 
@@ -158,7 +160,7 @@ class LinearDecoder(object):
             # which_clf = np.ones(self.nclfr)>0
             which_clf = ~np.any(np.isnan(self.coefs),axis=(1,2))
 
-        C = self.coefs[which_clf, ...]
+        C = self.coefs[which_clf, ...]/(la.norm(self.coefs[which_clf, ...],axis=1,keepdims=True)+1e-6)
         # C = np.where(np.isnan(C), 0, C)
         csin = (np.einsum('ik...,jk...->ij...', C, C))
         PS = np.triu(csin.transpose(2,1,0),1).sum((1,2))
@@ -293,32 +295,6 @@ class Dichotomies:
                 x.append(np.sort(np.append(trn, np.random.choice(neg, K, replace=False))))
         return x
 
-    # def parallelism(self, H, cond, clf):
-    #     """
-    #     Computes the parallelism of H under the current coloring. It's admittedly weird 
-    #     to include this as a method on the iterator, but here we are
-        
-    #     H is shape (N, ..., N_feat)
-    #     clf is an instance of a LinearDecoder, with a method clf.orthogonality()
-    #     """
-
-    #     coloring = np.isin(cond, self.pos)
-
-    #     ps = []
-    #     for neg in permutations(np.unique(cond[~coloring])):
-    #         # for a given pairing of positive and negative conditions, I need to
-    #         # generate labels for a classifier.
-    #         whichone = np.array([(cond==self.pos[n])|(cond==neg[n]) \
-    #                      for n, _ in enumerate(neg)]).argmax(0)
-
-    #         clf.fit(H, coloring[:,None], t_=whichone)
-    #         clf.coefs = clf.coefs.transpose(2,1,0)
-    #         ps.append(clf.avg_dot()[0])
-
-    #     PS = np.max(ps)
-
-    #     return PS
-
     def parallelism(self, H, cond, clf, debug=False):
         """
         Computes the parallelism of H under the current coloring. It's admittedly weird 
@@ -349,29 +325,9 @@ class Dichotomies:
         else:
             return PS
 
-    # def CCGP(self, H, cond, clf, K, **cfargs):
-    #     """
-    #     Cross-condition generalisation performance, computed on representation H using
-    #     classifier clf, with K conditions (on each side) in the training set.
-    #     """
-    #     coloring = np.isin(cond, self.pos)
-    #     # pos = np.unique(self.cond[self.coloring])
-    #     # pos = self.pos
-    #     neg = np.unique(cond[~coloring])
-        
-    #     ntot = spc.binom(int(self.num_cond/2), K)**2
-    #     ccgp = 0
-    #     for p in combinations(self.pos,K):
-    #         for n in combinations(neg,K):
-    #             train_set = np.append(p,n)
-    #             is_trn = np.isin(cond, train_set)
-                
-    #             clf.fit(H[is_trn,...], coloring[is_trn][:,None], **cfargs)
-    #             perf = clf.test(H[~is_trn,...], coloring[~is_trn][:,None])[0]
-    #             ccgp += perf/ntot
-    #     return ccgp
 
-    def CCGP(self, H, cond, clf, these_vars=None, twosided=False, debug=False, **cfargs):
+    def CCGP(self, H, cond, clf, these_vars=None, twosided=False, 
+        debug=False, return_weights=False, **cfargs):
         """
         Cross-condition generalisation performance, computed on representation H using
         classifier clf, with K conditions (on each side) in the training set.
@@ -386,20 +342,29 @@ class Dichotomies:
             x = these_vars
         # ntot = spc.binom(int(self.num_cond/2), K)**2
         ccgp = []
+        ws = []
         for train_set in x:
             is_trn = np.isin(cond, train_set)
 
             clf.fit(H[is_trn,...], coloring[is_trn][:,None], **cfargs)
+            # print(clf.thrs)
             perf = clf.test(H[~is_trn,...], coloring[~is_trn][:,None])[0]
             ccgp.append(perf)
+            if return_weights:
+                ws.append(np.append(clf.coefs, clf.thrs))
             if twosided:
                 clf.fit(H[~is_trn,...], coloring[~is_trn][:,None], **cfargs)
                 perf = clf.test(H[is_trn,...], coloring[is_trn][:,None])[0]
                 ccgp.append(perf)
+                if return_weights:
+                    ws.append(np.append(clf.coefs, clf.thrs))
+        outs = [ccgp]
         if debug:
-            return ccgp, x
-        else:
-            return ccgp
+            outs.append(x)
+        if return_weights:
+            outs.append(ws)
+
+        return outs
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 class Indicator(nn.Module):
