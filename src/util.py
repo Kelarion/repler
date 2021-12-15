@@ -1,9 +1,6 @@
-CODE_DIR = '/home/matteo/Documents/github/repler/src/'
-SAVE_DIR = '/home/matteo/Documents/uni/columbia/bleilearning/'
 
 import os, sys
 import pickle
-sys.path.append(CODE_DIR)
 
 import torch
 import torchvision
@@ -11,23 +8,24 @@ import torch.optim as optim
 import numpy as np
 import scipy
 import scipy.linalg as la
+import numpy.linalg as nla
 from scipy.spatial.distance import pdist, squareform
 from itertools import permutations, combinations
 import itertools as itt
 
-import students
-import assistants
-
 #%%
 def pca(X,**kwargs):
-    '''assume X is (n_feat, n_sample)'''
-    U,S,_ = la.svd((X-X.mean(1, keepdims=True)), full_matrices=False, **kwargs)
-    return U, S**2
+    '''assume X is (..., n_feat, n_sample)'''
+    U,S,_ = nla.svd((X-X.mean(-2, keepdims=True)), full_matrices=False, **kwargs)
+    return U, S**2/X.shape[-2]
 
-def pca_reduce(X, thrs, **kwargs):
+def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
 
     U,S = pca(X, **kwargs)
-    these_comps = np.cumsum(S)/np.sum(S) <=  thrs
+    if thrs is not None:
+        these_comps = np.cumsum(S)/np.sum(S) <=  thrs
+    elif num_comp is not None:
+        these_comps = np.arange(len(S)) < num_comp
     return X.T@U[:,these_comps]
 
 #%%
@@ -176,7 +174,7 @@ def distance_correlation(x=None, y=None, dist_x=None, dist_y=None):
     V_y = distance_covariance(y, y, dist_y, dist_y)
     # print([V_x, V_y, V_xy])
     sing = V_x*V_y > 0
-    return sing*V_xy/(np.sqrt(V_x*V_y)+1e-5)
+    return sing*V_xy/(np.sqrt(V_x*V_y)+1e-30)
     # if 0 in [V_x, V_y]:
         # return 0
     # else:
@@ -219,17 +217,7 @@ def gauss_process(xs, var=1):
     ys = np.array([np.random.multivariate_normal(mean, gram) for _ in xs])
     return ys
 
-# Random pattern tasks
-# class GaussGaussBern(IndependentBinary):
-#     def __init__(self, n):
-#         super(GaussGaussBern,self).__init__()
-#         self.num_var = n
-#         self.dim_output = n
-        
-#         self.obs_distribution = students.Bernoulli(n)
-#         self.link = None
 
-#     def __call__(self, ):
 
 #%% Mobius strip (maybe this belongs as a class?)
 def noose_curve(x, l=2):
@@ -342,12 +330,12 @@ def blanusa_moebius(rho, u, R=2):
     return np.stack([x1,x2,x3,x4])
 
 #%% miscellaneous functions
-def decimal(binary):
+def decimal(binary, base=2):
     """ 
     convert binary vector to dedimal number (i.e. enumerate) 
     assumes second axis is the bits
     """
-    d = (binary*(2**np.arange(binary.shape[1]))[None,:,None]).sum(1)
+    d = (binary*(base**np.arange(binary.shape[1]))[None,:]).sum(1)
     return d
 
 def group_mean(X, mask, axis=-1, **mean_args):
@@ -407,6 +395,15 @@ def diverging_clim(ax):
     for im in ax.get_images():
         cmax = np.max(np.abs(im.get_clim()))
         im.set_clim(-cmax,cmax)
+
+def significant_figures(nums, sig_figs):
+    '''Because for some reason numpy doesnt do this ?????????'''
+    digis = np.log10(np.abs(nums))
+    sgn = np.sign(digis)
+    mag = np.floor(np.abs(digis))
+
+    pwr = 10**(sgn*mag + sgn*(sgn<0))
+    return np.round(nums/pwr, sig_figs-1)*pwr
 
 
 class ContinuousEmbedding(object):

@@ -39,6 +39,8 @@ import plotting as dicplt
 num_cond = 5
 num_var = 1
 
+noise = 0.3
+
 # which_task = 'mnist'
 # which_task = 'mog'
 which_task = 'structured'
@@ -64,22 +66,21 @@ basins = [[0],[1],[2],[3],[0,3],[1,2]]
 agg_nets = []
 agg_mets = []
 agg_args = []
-pred_prob = []
-actual_prob = []
-which_basin = []
+
 lin_dim = []
-ps = []
+PPS = []
+Pnrm = []
 weights_proj = []
 for r in nudges:
     # inp_task = tasks.StandardBinary(np.log2(num_cond))
     # inp_task = tasks.TwistedCube(tasks.StandardBinary(2), 100, f=rotation, noise_var=0.1)
-    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=np.round(r,2), noise_var=0.1, random=False)
+    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=np.round(r,2), noise_var=noise, random=False)
     # task = tasks.LogicalFunctions(d=decs, function_class=num_var)
     # task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)])
     task = tasks.RandomDichotomies(d=[(0,3)])
     this_exp = exp.structured_inputs(task, input_task=inp_task,
                                       SAVE_DIR=SAVE_DIR,
-                                      noise_var=0.1,
+                                      noise_var=noise,
                                       num_layer=num_layer,
                                       weight_decay=0,
                                       nonlinearity=nonlinearity)
@@ -89,10 +90,12 @@ for r in nudges:
     
     all_nets, mets, all_args = this_exp.aggregate_nets(SAVE_DIR, N_list)
     
-    wba = []
-    ppro = []
-    apro = []
+    # wba = []
+    # ppro = []
+    # apro = []
     wp = []
+    pps = []
+    pnrm = []
     for args, met, net in zip(all_args[0], mets[0], all_nets[0]):
         this_exp.load_other_info(args)
         
@@ -100,32 +103,41 @@ for r in nudges:
         x_pos = np.concatenate([x_pos,args['class_means'][2].flatten()[:,None]], axis=1)
         x_pos /= la.norm(x_pos,axis=0, keepdims=True)
         
-        x_ = this_exp.input_task(np.arange(4), noise=0).T
+        x_ = this_exp.input_task(np.arange(4), noise=0)
+        y_ = this_exp.task(np.arange(4), noise=0).squeeze().numpy() - 0.5
         
-        basin_prototype = np.stack([x_[:,p].sum(1) for p in basins]).T
-        apro.append([np.sum((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1)==4),
-                    np.sum((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1)==5)])
+        # basin_prototype = np.stack([x_[:,p].sum(1) for p in basins]).T
+        # apro.append([np.sum((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1)==4),
+        #             np.sum((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1)==5)])
+        reps = net.enc.network(x_).detach().numpy().T
+        pps.append(np.sum([np.sign(y_[i]*y_[j])*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0))
+        pnrm.append(la.norm(reps, 2, axis=-1)**2)
         
-        wba.append((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1))
+        # wba.append((net.enc.network.layer0.weight.detach().numpy()@basin_prototype).argmax(1))
         
-        ppro.append([np.arccos(-util.cosine_sim(x_[:,p],x_[:,p])[0,1])/(np.pi*2) for p in [[0,3],[1,2]]])
+        # ppro.append([np.arccos(-util.cosine_sim(x_[:,p],x_[:,p])[0,1])/(np.pi*2) for p in [[0,3],[1,2]]])
 
         wp.append(net.enc.network.layer0.weight.detach().numpy()@x_pos)
 
-    which_basin.append(wba)
-    pred_prob.append(ppro)
-    actual_prob.append(apro)
+    PPS.append(pps)
+    Pnrm.append(pnrm)
     weights_proj.append(wp)
     
     agg_nets.append(all_nets)
     agg_mets.append(mets)
     agg_args.append(all_args)
     
+PPS = np.array(PPS)
+Pnrm = np.array(Pnrm)
+
+
+local_PS = (2*PPS/(Pnrm+1e-6)).mean(-1)
 
 #%%
 
 
 
+plt.errorbar(nudges, local_PS.mean(1), yerr=local_PS.std(1), marker='.')
 
 
 

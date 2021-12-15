@@ -6,8 +6,6 @@ Current classes:
 """
 
 #%%
-CODE_DIR = '/home/matteo/Documents/github/repler/src/'
-svdir = '/home/matteo/Documents/uni/columbia/bleilearning/'
 
 import torch
 import torch.nn as nn
@@ -24,7 +22,8 @@ class Feedforward(nn.Module):
     """
     Generic feedforward module, can be, e.g., the encoder or decoder of VAE
     """
-    def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True, layer_type=None):
+    def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True, 
+        layer_type=None):
         super(Feedforward, self).__init__()
         
         onion = OrderedDict()
@@ -52,13 +51,141 @@ class Feedforward(nn.Module):
                     onion['link%d'%l] = getattr(nn, nonlinearity[l])()
         
         self.network = nn.Sequential(onion)
+
         
     def forward(self, x):
         h = self.network(x)
-        # h = self.activation(self.layers[0](x))
-        # for layer in self.layers[1:]:
-        #     h = self.activation(layer(h))
         return h
+
+class AttentionLayer(nn.Module):
+    def __init__(self, N_in, n_head=1, N_qk=None, N_v=None, queries=False):
+        """ Scaled dot-product attention, optional key, query, and value maps """
+        super(AttentionLayer, self).__init__()
+
+        self.h = n_head
+        self.n_qk = N_qk
+        self.n_v = N_v
+        self.dim = N_in
+
+        if N_qk is None: ## implement key matrix
+            self.K = nn.Identity(N_in, N_in*n_head)
+            self.Q = nn.Identity(N_in, N_in*n_head)
+        else:
+            self.K = nn.Linear(N_in, N_qk*n_head)
+            if queries:
+                self.Q = nn.Linear(N_in, N_qk*n_head)
+            else:
+                self.Q = self.K
+        if N_v is None:
+            self.V = nn.Identity(N_in, N_in*n_head)
+        else:
+            self.V = nn.Linear(N_in, N_v*n_head)
+
+    def weights(self, x, mask):
+        """ 
+        x is shape (num_tok, *, dim_inp) 
+        expects padded inputs to be nans!
+        """
+
+        # mask = x.mask
+        # x_msk = torch.where(mask, torch.tensor(0.0), x)
+
+        keys = self.K(x).view(*x.shape[:-1], self.h, self.n_qk)
+        queries = self.Q(x).view(*x.shape[:-1], self.h, self.n_qk)
+
+        kern = torch.einsum('i...j,k...j->...ik',keys,queries)/np.sqrt(self.dim)
+        attn_mask = mask[...,None,None,:]
+
+        kern = torch.where(attn_mask,kern,torch.tensor(-np.inf))
+        return nn.Softmax(-1)(kern)
+
+    def forward(self, x, mask):
+        """ x is shape (num_tok, *, dim_inp) """
+        # x = inps[0]
+        # mask = inps[1]
+        # print(len(inps))
+
+        A = self.weights(x, mask)
+        values = self.V(x).view(*x.shape[:-1], self.h, self.n_v)
+
+        out = torch.einsum('...ij,j...k->i...k', A, values).reshape(*x.shape[:-1], self.h*self.n_v)
+        return out
+
+class ResNorm(nn.Module):
+    """ a simple wrapper of another module with residual connection and layer norm """
+    def __init__(self, module):
+        super(ResNorm, self).__init__()
+        self.module = module
+
+    def forward(self, x, *args, **kwargs):
+        fx = x + self.module(x, *args, **kwargs)
+        out = (fx - fx.mean(-1, keepdims=True))/(fx.std(-1, keepdims=True) + 1e-6)
+        return out
+
+class TinyTransformer(nn.Module):
+    def __init__(self, dim_ff, num_layer, N_head, N_qk=None, N_v=None, queries=False, 
+        linear_link=False, resnorm=True, **mlp_args):
+        """ Separate linear maps for the keys, queries, and values are optional """
+
+        super(TinyTransformer, self).__init__()
+
+        if N_v is None:
+            dim_out = dim_ff[-1]*N_head
+        else:
+            dim_out = N_v*N_head
+        dim_in = dim_ff[0]
+
+        self.linear_link = linear_link
+        self.num_layer = num_layer
+        self.h = N_head
+        self.dim_ff = dim_ff
+
+        # onion = OrderedDict()
+        # for l in range(num_layer):
+        #     if resnorm:
+        #         onion['MLP%d'%l] = ResNorm(Feedforward(dim_ff, **mlp_args))
+        #         onion['Attention%d'%l] = ResNorm(AttentionLayer(dim_ff[-1], 
+        #             n_head=N_head, N_qk=N_qk, N_v=N_v, queries=queries))
+        #     else:
+        #         onion['MLP%d'%l] = Feedforward(dim_ff, **mlp_args)
+        #         onion['Attention%d'%l] = AttentionLayer(dim_ff[-1], 
+        #             n_head=N_head, N_qk=N_qk, N_v=N_v, queries=queries)
+
+        #     if self.linear_link:
+        #         onion['Linear%d'%l] = nn.Linear(dim_out, dim_in)
+
+        # self.network = nn.Sequential(onion)
+        self.mlps = []
+        self.attn = []
+        self.lins = []
+        for l in range(num_layer):
+            if resnorm:
+                self.mlps.append(ResNorm(Feedforward(dim_ff, **mlp_args)))
+                self.attn.append( ResNorm(AttentionLayer(dim_ff[-1], 
+                    n_head=N_head, N_qk=N_qk, N_v=N_v, queries=queries)))
+            else:
+                self.mlps.append( Feedforward(dim_ff, **mlp_args))
+                self.attn.append( AttentionLayer(dim_ff[-1], 
+                    n_head=N_head, N_qk=N_qk, N_v=N_v, queries=queries))
+
+            if self.linear_link:
+                self.lins.append( nn.Linear(dim_out, dim_in))
+
+    # def apply_mask(self, x, mask):
+    #     return torch.where(mask.unsqueeze(-1), x, torch.tensor(np.nan))
+
+    def forward(self, x, mask=None):
+        """ the mask tells you which inputs are considered padding """
+        
+        for l in range(self.num_layer):
+            z = self.mlps[l](x)
+            x = self.attn[l](z, mask)
+
+            if self.linear_link:
+                x = self.lins[l](x)
+
+        return x
+
 
 class ClusteredConnections(nn.Module):
     """
@@ -290,14 +417,13 @@ class BinaryReadout(BinaryWeights):
 
         super(BinaryReadout, self).__init__(N_in, N_out)
 
-        num_pop = 2**N_out
-        num_per_pop = N_in//num_pop
-
-
         if rotated:
             bits = np.concatenate([np.eye(N_out)*i for i in [1,-1]])
         else:
-            bits = 2*(np.mod(np.arange(num_pop)[:,None]//(2**np.arange(N_out)[None,:]),2)) - 1
+            bits = 2*(np.mod(np.arange(2**N_out)[:,None]//(2**np.arange(N_out)[None,:]),2)) - 1
+
+        num_pop = len(bits)
+        num_per_pop = N_in//num_pop
 
         which_pop = np.arange(num_per_pop*num_pop)//num_per_pop
         leftovers = np.random.choice(num_pop, N_in - num_per_pop*num_pop, replace=False)
@@ -409,6 +535,53 @@ class GausId(DeepDistribution):
         
         eps = torch.randn_like(mu) 
         z = mu + eps
+        
+        return z
+
+class GausIdMixture(DeepDistribution):
+    """
+    A family of distributions for deep generative models:
+    Mixture of Gaussians with identity covariance
+    
+    This module relates the output of a neural net to the parameters of a 
+    gaussian distribution, assuming first N are the mean, and second N are
+    the log-variances of each dimension.
+    """
+    
+    def __init__(self, dim_z, gaus_prior_params=None, cat_prior_params=None):
+        
+        super(GausIdMixture, self).__init__()
+        
+        self.ndim = dim_z
+        
+        if prior_params is None:
+            prior_params = {'loc': torch.zeros(dim_z),
+                         'covariance_matrix': torch.eye(dim_z)}
+        if cat_prior_params is None:
+            prior_params = {'logits': torch.zeros(dim_z)}
+
+        comp = D.categorical.Categorical(**cat_prior_params)
+        mix = D.multivariate_normal.MultivariateNormal(**gaus_prior_params)
+        
+        self.prior = D.mixture_same_family.MixtureSameFamily(**prior_params)
+        
+    def distr(self, theta):
+        """Return instance(s) of distribution, with parameters theta"""
+        mu1, mu2 = theta.chunk(2, dim=1)
+        sigma = std[...,None]*torch.eye(self.ndim)[None,...]
+        
+        d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
+        return d
+        
+    def sample(self, theta):
+        """
+        Sample from posterior, given parameters theta, using reparameterisation
+        """
+        mu, logvar = theta.chunk(2, dim=1) # decompose into mean and variance
+        std = torch.exp(0.5*logvar)
+        
+        eps = torch.randn_like(mu) 
+        z = mu + std*eps
         
         return z
 
@@ -636,12 +809,16 @@ class MultiGLM(NeuralNet):
 
 class GenericRNN(NeuralNet):
     def __init__(self, ninp, nhid, out_dist, nlayers=1, rnn_type='relu',
-        recoder=None, decoder=None, fix_decoder=True):
+        recoder=None, decoder=None, fix_decoder=True, z_dist=None):
         super(GenericRNN,self).__init__()
 
         self.recoder = recoder
         nout = out_dist.ndim
         self.obs = out_dist
+        if z_dist is not None: # implement activity regularization
+            self.hidden_dist = z_dist
+        else:
+            self.hidden_dist = None
         
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
@@ -658,6 +835,8 @@ class GenericRNN(NeuralNet):
             self.decoder = nn.Linear(nhid, nout)
         else:
             self.decoder = decoder
+        if fix_decoder:
+            self.decoder.requires_grad = False
         # self.softmax = nn.LogSoftmax(dim=2)
 
         self.rnn_type = rnn_type
@@ -667,14 +846,14 @@ class GenericRNN(NeuralNet):
         self.init_weights()
 
     def init_weights(self):
-        self.decoder.bias.data.zero_()
+        # self.decoder.bias.data.zero_()
         # self.decoder.weight.data.uniform_()
         self.rnn.weight_hh_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
         self.rnn.bias_hh_l0.data.zero_()
         self.rnn.weight_ih_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
         self.rnn.bias_ih_l0.data.zero_()
 
-    def forward(self, emb, hidden=None, give_gates=False, debug=False, readout_time=None):
+    def forward(self, emb, hidden=None, give_gates=False, debug=False, only_final=True):
         """
         Run the RNN forward. Expects input to be (lseq,nseq,...)
         Only set give_gates=True if it's the custom GRU!!!
@@ -699,7 +878,7 @@ class GenericRNN(NeuralNet):
 
         # decoded = self.softmax(self.decoder(output))
         decoded = self.decoder(output)
-        if readout_time is None:
+        if only_final:
             decoded = decoded[-1,...] # assume only final timestep matters
 
         if give_gates:
@@ -764,7 +943,7 @@ class GenericRNN(NeuralNet):
         else:
             return torch.zeros(1, bsz, self.nhid)
 
-    def grad_step(self, data, optimizer):
+    def grad_step(self, data, optimizer, init_state=False, only_final=True):
         """ Single step of maximum likelihood over the data """
 
         running_loss = 0
@@ -772,35 +951,36 @@ class GenericRNN(NeuralNet):
         for i, batch in enumerate(data):
             optimizer.zero_grad()
             
-            # print(batch)
+            if init_state:
+                nums, labels, hidden = batch
+                hidden = hidden[None,...]
+            else:
+                nums, labels = batch
+                hidden = self.init_hidden(nums.size(0))
 
-            nums, labels = batch
+            if not only_final:
+                labels = labels.transpose(0,1)
+
             nums = nums.transpose(0,1)
-            # nums = nums.squeeze(1).reshape((-1, 784))
-            hidden = self.init_hidden(nums.size(1))
-            # print(nums.shape)
+
             # # forward
-            out, _ = self(nums, hidden)
-            # print(out.shape)
-            # print(labels.shape)
-            # print(out)
-            # print(labels)
-            loss = nn.BCEWithLogitsLoss()(out.squeeze(), labels.squeeze())
-            # loss = -self.obs.distr(out).log_prob(labels).mean()
-            
-            # loss = -loglihood(self, nums, labels)
-            # foo = self(nums)[0]
-            # loss = nn.NLLLoss(reduction='sum')(foo, labels)
+            if self.hidden_dist is None:
+                out, _ = self(nums, hidden, only_final=only_final)
+                loss = -self.obs.distr(out).log_prob(labels).mean()
+            else:
+                out, hid = self.transparent_forward(nums, hidden)
+                loss = -self.obs.distr(out).log_prob(labels).mean() \
+                - self.hidden_dist.prior.log_prob(hid.transpose(-1,-2)).mean()
 
             # optimise
             loss.backward()
-            # print(self.rnn.weight_hh_l0.grad.abs().max())
-            # print(self.rnn.weight_ih_l0.grad.abs().max())
+
             optimizer.step()
             
             running_loss += loss.item()
             
         return running_loss/(i+1)
+
 
 #%% custom loss functions
 def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):

@@ -367,6 +367,15 @@ class Dichotomies:
         return outs
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+class MaskedTensor(torch.Tensor):
+    """ A Tensor wrapper which adds a mask feature, and other things """
+    def __init__(self, *args, **kwargs):
+        super(MaskedTensor, self).__init__()
+        # self.mask = mask
+
+    def add_mask(self, mask):
+        self.mask = mask
+
 class Indicator(nn.Module):
     """
     class to implement indicator function (i.e. one-hot encoding)
@@ -454,3 +463,4 @@ class ContextIndicator(nn.Module):
         # rep = [np.diff(np.cumsum(x==t, axis=1).astype(int) % 2, prepend=0)<0 for t in range(self.ntoken)]
         rep = [find_reps(x,t) for t in range(self.ntoken)]
         return np.any(rep, axis=0).astype(int)
+

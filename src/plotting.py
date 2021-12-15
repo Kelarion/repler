@@ -13,6 +13,7 @@ import matplotlib.pyplot as pl
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import cm
+import matplotlib.gridspec as gsp
 import matplotlib.colors as mpc
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import animation as anime
@@ -21,11 +22,11 @@ import scipy
 import scipy.linalg as la
 from scipy.spatial.distance import pdist, squareform
 from itertools import permutations, combinations
+import itertools as itt
 
 import students
 import assistants
 import util
-import experiments as exp
 
 #%%
 
@@ -244,7 +245,7 @@ class LineAnime3D(object):
             self.focus_period = focus_period
 
         if frames is None:
-            frames = x.shape[-1] + view_period
+            frames = x.shape[-1] + 2*view_period
 
         # Setup the figure and axes...
         if fig is None and ax is None:
@@ -646,6 +647,113 @@ class QuiverSlices(SliceViewer):
         self.quiv.axes.figure.canvas.draw()
 
 #%%
+def hierarchical_labels(row_labels, col_labels, row_names=None, col_names=None, hmarg=0.1,wmarg=0.1, **text_args):
+    """
+    
+    """
+
+    if row_names is None:
+        label_rows = False
+        row_names = np.arange(len(row_labels))
+    else:
+        label_rows = True
+    if col_names is None:
+        label_cols = False
+        col_names = np.arange(len(col_labels))
+    else:
+        label_cols = True
+
+    n_row = len(list(itt.product(*row_labels)))
+    n_col = len(list(itt.product(*col_labels)))
+
+    fig, axes = plt.subplots(n_row,n_col)
+    axes = np.reshape(axes, (n_row, n_col))
+
+    w_rat = [0.025,]*len(row_names) + [(1-0.025*len(row_names))/n_col,]*n_col
+    h_rat = [0.025,]*len(col_names) + [(1-0.025*len(col_names))/n_row,]*n_row
+
+    gs = gsp.GridSpec(n_row+len(col_names), n_col+len(row_names), 
+                      width_ratios=w_rat, height_ratios=h_rat)
+    gs.update(left=0.1, right=0.9, bottom=0.15, wspace=wmarg, hspace=hmarg)
+    fig.subplots_adjust(left=.1)
+
+    for i in range(n_row):
+        for j in range(n_col):
+            # if n_row == 1:
+            #     axes[j].set_subplotspec(gs[i+len(col_names),j+len(row_names)])
+            # elif n_col == 1:
+            #     axes[i].set_subplotspec(gs[i+len(col_names),j+len(row_names)])
+            # else:
+            axes[i,j].set_subplotspec(gs[i+len(col_names),j+len(row_names)])
+
+    row_lab_axs = []
+    num_lab = n_row
+    for i,lab in enumerate(row_names):
+        num_lab = num_lab//len(row_labels[i])
+        # gs_idx = np.arange(n_row)//num_lab
+        
+        tmp_axs = []
+        for j in range(n_row//num_lab):
+            idx0 = num_lab*j + len(col_names)
+            idx1 = num_lab*(j+1) + len(col_names)
+            tmp_axs.append(fig.add_subplot(gs[idx0:idx1,i]))
+        
+        lab_idx = np.mod(np.arange(n_row//num_lab),len(row_labels[i]))
+        for j,ax in enumerate(tmp_axs):
+            if label_rows:
+                ax.set_ylabel('%s = %s'%(lab,row_labels[i][lab_idx[j]]), 
+                              **text_args)
+            else:
+                ax.set_ylabel('%s'%(row_labels[i][lab_idx[j]]), 
+                              **text_args)
+        
+        row_lab_axs += tmp_axs
+
+    col_lab_axs = []
+    num_lab = n_col
+    for i,lab in enumerate(col_names):
+        num_lab = num_lab//len(col_labels[i])
+        
+        tmp_axs = []
+        for j in range(n_col//num_lab):
+            idx0 = num_lab*j + len(row_names)
+            idx1 = num_lab*(j+1) + len(row_names)
+            tmp_axs.append(fig.add_subplot(gs[i,idx0:idx1]))
+        
+        lab_idx = np.mod(np.arange(n_col//num_lab),len(col_labels[i]))
+        for j,ax in enumerate(tmp_axs):
+            if label_cols:
+                ax.set_title('%s = %s'%(lab,col_labels[i][lab_idx[j]]),
+                              **text_args)
+            else:
+                ax.set_title('%s'%(col_labels[i][lab_idx[j]]),
+                              **text_args)
+        
+        col_lab_axs += tmp_axs
+
+
+    for ax in row_lab_axs:
+        ax.tick_params(size=0)
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_facecolor("none")
+        for pos in ["right", "top", "bottom"]:
+            ax.spines[pos].set_visible(False)
+        ax.spines["left"].set_linewidth(3)
+        ax.spines["left"].set_color("crimson")
+
+    for ax in col_lab_axs:
+        ax.tick_params(size=0)
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+        ax.set_facecolor("none")
+        for pos in ["right", "left", "bottom"]:
+            ax.spines[pos].set_visible(False)
+        ax.spines["top"].set_linewidth(3)
+        ax.spines["top"].set_color("crimson")
+
+    return axes
+
 def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None, 
     mutinfo_cmap='copper', var_cmap='tab10', include_legend=True, include_cbar=True, 
     input_dics=None, output_dics=None, other_dics=None, out_MI=None, s=31, **scatter_args):
@@ -767,7 +875,12 @@ def scatter3d(X, ax=None, **scat_args):
 
     util.set_axes_equal(ax)
 
-    return scat
+    return ax
+
+def diverging_clim(ax):
+    for im in ax.get_images():
+        cmax = np.max(np.abs(im.get_clim()))
+        im.set_clim(-cmax,cmax)
 
 def pairwise_lines(X, col=(0.5,0.5,0.5), ax=None):
 
@@ -781,3 +894,5 @@ def color_cycle(cmap, num_col):
     # return getattr(cm,cmap)(np.linspace(0,1,num_col))
     these_cols = ['r','b','g','y','c','m']
     return [mpc.to_rgb(these_cols[i]) for i in range(num_col)]
+
+

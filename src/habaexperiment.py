@@ -89,7 +89,7 @@ for op, val in opts:
     if op in ('-f',):
         coding_level = float(val)
     if op in ('-r',):
-        rot = int(val)
+        rot = float(val)
     if op in ('-e',):
         nepoch = int(val)
     if op in ('-g',):
@@ -167,9 +167,9 @@ elif this_task == 'mog':
 elif this_task == 'structured':
     # bits = np.nonzero(1-np.mod(np.arange(num_class)[:,None]//(2**np.arange(np.log2(num_class))[None,:]),2))
     # pos_conds = np.split(bits[0][np.argsort(bits[1])],int(np.log2(num_class)))
-    # inp_task = tasks.StandardBinary(int(np.log2(num_class)))
+    # inp_task = tasks.EmbeddedCube(tasks.StandardBinary(int(np.log2(num_class))))
     # inp_task = tasks.TwistedCube(tasks.StandardBinary(2), 100, f=coding_level, noise_var=0.1)
-    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=coding_level, noise_var=0.1)
+    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=coding_level, noise_var=rot)
     # task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)])
     task = tasks.RandomDichotomies(d=[(0,3)])
     # task = tasks.LogicalFunctions(d=pos_conds, function_class=num_dich)
@@ -177,7 +177,7 @@ elif this_task == 'structured':
                                       task=task,
                                       input_task=inp_task,
                                       SAVE_DIR=SAVE_DIR,
-                                      noise_var=0.1,
+                                      noise_var=rot,
                                       H=H,
                                       nonlinearity=nonlinearity,
                                       num_layer=num_layer,

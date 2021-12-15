@@ -33,7 +33,7 @@ class MultiClassification():
     to run the experiment, and save and load it.
     """
     def __init__(self, task, SAVE_DIR, N=None, H=100,
-                 nonlinearity='ReLU', num_layer=1, z_prior=None,
+                 nonlinearity='ReLU', num_layer=1, z_prior=None, bias=True,
                  bsz=64, nepoch=1000, lr=1e-4, opt_alg=optim.Adam, weight_decay=0,
                  init=None, skip_metrics=False, sample_dichotomies=0, fix_decoder=False,
                  decoder=None, init_from_saved=False, good_start=False, init_coding=None, rot=0.0):
@@ -444,7 +444,6 @@ class MultiClassification():
         for i,n in enumerate(N_list):
             files = os.listdir(this_folder)
             param_files = [f for f in files if ('parameters' in f and '_N%d_%s'%(n,self.nonlinearity) in f)]
-            
             # j = 0
             num = len(param_files)
             all_metrics = {}
@@ -629,20 +628,6 @@ class structured_inputs(MultiClassification):
         # self.test_conditions = self.abstracts(Y[trn:])
         self.test_conditions = Y[trn:].detach().numpy()
         self.ntest = n_total - trn
-
-    # def aggregate_exp(self, SAVE_DIR, N_list, inp_task_param={}, out_task_param={}):
-
-    #     all_nets = [[] for _ in out_task_param]
-    #     all_mets = [[] for _ in out_task_param]
-    #     all_args = [[] for _ in out_task_param]
-
-    #     for out_key, out_val in out_task_param:
-    #         for in_key, in_val in inp_task_param:
-    #             setattr(self.task, out_key, out_val)
-    #             setattr(self.input_task, in_key, in_val)
-    #             nets, mets, args = self.aggregate_nets(self, SAVE_DIR, N_list)
-    #             all_nets.
-
 
     def save_other_info(self, arg_dict):
         arg_dict['class_means'] = self.means

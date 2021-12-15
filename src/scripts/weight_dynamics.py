@@ -122,57 +122,76 @@ class Iden(nn.Identity):
         else:
             return torch.ones(x.shape)
 
-#%% Pick data format
-# which_data = 'assoc'
+# %% Pick data format
+which_data = 'assoc'
 # which_data = 'class'
-which_data = 'struc_class'
+# which_data = 'struc_class'
 
 ndat = 1000
 
 # Associative task 
 if which_data == 'assoc':
+    num_var = 3
+    num_var_task = 3
+    dim_inp = 100 # dimension 
+    noise = 0.2
     
-    p = 2**num_var
-    allowed_actions = [0,1,2]
-    # allowed_actions = [0,1,2,4]
+    # p = 2**num_var
+    # allowed_actions = [0,1,2]
+    allowed_actions = [0,1,2,4]
     # allowed_actions = [0]
-    p_action = [0.7,0.15,0.15]
-    # p_action = [0.61, 0.13, 0.13, 0.13]
+    # p_action = [0.7,0.15,0.15]
+    p_action = [0.61, 0.13, 0.13, 0.13]
     # p_action = [1.0]
     
-    output_states = (this_exp.train_data[0][:ndat,:].data+1)/2
-    # output_states = this_exp.train_data[1][:ndat,:].data
+    input_task = tasks.RandomPatterns(2**num_var, dim_inp, noise)
+    task = tasks.RandomTransisions(input_task, allowed_actions, p_action, num_var=num_var_task)
     
-    input_states = (this_exp.train_data[0][:ndat,:].data+1)/2
+    inp_condition = np.random.choice(2**num_var, ndat)
+    abstract_conds = np.mod(inp_condition, 2**num_var_task)
     
-    abstract_conds = util.decimal(this_exp.train_data[1])[:ndat]
-    cond_set = np.unique(abstract_conds)
+    inputs = input_task(inp_condition)
+    targets = task(abstract_conds)
+
+    x_pos = input_task.means.T
+
+    inputs -= inputs.mean(0,keepdims=True)
     
-    # draw the "actions" for each data point
-    actns = torch.tensor(np.random.choice(allowed_actions, ndat, p=p_action)).int()
-    actions = torch.stack([(actns&(2**i))/2**i for i in range(num_var)]).float().T
+    inp_condition = abstract_conds
     
-    # act_rep = assistants.Indicator(p,p)(util.decimal(actions).int())
-    act_rep = actions.data
+    # output_states = (this_exp.train_data[0][:ndat,:].data+1)/2
+    # # output_states = this_exp.train_data[1][:ndat,:].data
     
-    # inputs = np.concatenate([input_states,act_rep], axis=1)
-    # # inputs = np.concatenate([input_states, this_exp.train_data[1]], axis=1)
-    inputs = input_states.float()
+    # input_states = (this_exp.train_data[0][:ndat,:].data+1)/2
     
-    # # sample the successor states, i.e. input + action
-    successors = np.mod(this_exp.train_data[1][:ndat,:]+actions, 2)
+    # abstract_conds = util.decimal(this_exp.train_data[1])[:ndat]
+    # cond_set = np.unique(abstract_conds)
     
-    succ_conds = util.decimal(successors)
-    succ_counts = np.unique(succ_conds, return_counts=True)[1]
+    # # draw the "actions" for each data point
+    # actns = torch.tensor(np.random.choice(allowed_actions, ndat, p=p_action)).int()
+    # actions = torch.stack([(actns&(2**i))/2**i for i in range(num_var)]).float().T
     
-    # should the targets be sampled from the training set, or another set? 
-    # train set would be like an autoencoder training, so maybe that's fine
-    samps = np.concatenate([np.random.choice(np.where(abstract_conds==c)[0],n) \
-                            for c,n in zip(cond_set,succ_counts)])
+    # # act_rep = assistants.Indicator(p,p)(util.decimal(actions).int())
+    # act_rep = actions.data
     
-    unscramble = np.argsort(np.argsort(succ_conds))
-    successor_idx = samps[unscramble]
-    targets = output_states[successor_idx,:]
+    # # inputs = np.concatenate([input_states,act_rep], axis=1)
+    # # # inputs = np.concatenate([input_states, this_exp.train_data[1]], axis=1)
+    # inputs = input_states.float()
+    
+    # # # sample the successor states, i.e. input + action
+    # successors = np.mod(this_exp.train_data[1][:ndat,:]+actions, 2)
+    
+    # succ_conds = util.decimal(successors)
+    # succ_counts = np.unique(succ_conds, return_counts=True)[1]
+    
+    # # should the targets be sampled from the training set, or another set? 
+    # # train set would be like an autoencoder training, so maybe that's fine
+    # samps = np.concatenate([np.random.choice(np.where(abstract_conds==c)[0],n) \
+    #                         for c,n in zip(cond_set,succ_counts)])
+    
+    # unscramble = np.argsort(np.argsort(succ_conds))
+    # successor_idx = samps[unscramble]
+    # targets = output_states[successor_idx,:]
     
     # targets = output_state
 
@@ -180,32 +199,30 @@ if which_data == 'assoc':
 elif which_data == 'class':
     num_cond = 4
     num_var = 2
-    dim_inp = 100 # dimension per variable
-    noise = 0.2
+    dim_inp = 200 # dimension per variable
+    noise = 0.1
     
     task = tasks.RandomDichotomies(d=[(0,1),(0,2)])
-    this_exp = exp.random_patterns(task, SAVE_DIR, 
-                                    num_class=num_cond,
-                                    dim=dim_inp,
-                                    var_noise=noise)
-    input_task = tasks.RandomDichotomies(d=[()])
+    # task = tasks.RandomDichotomies(d=[(0,1,2,3)])
+    # task = tasks.StandardBinary(3)
+    # this_exp = exp.random_patterns(task, SAVE_DIR, 
+    #                                 num_class=num_cond,
+    #                                 dim=dim_inp,
+    #                                 var_noise=noise)
+    input_task = tasks.RandomPatterns(num_cond, dim_inp, noise)
     
-    abstract_conds = util.decimal(this_exp.train_data[1])[:ndat]
-    inp_condition = this_exp.train_conditions[:ndat]
+    # abstract_conds = util.decimal(this_exp.train_data[1])[:ndat]
+    # inp_condition = this_exp.train_conditions[:ndat]
+    inp_condition = np.random.choice(num_cond, ndat)
+    abstract_conds = inp_condition
     
-    input_states = this_exp.train_data[0][:ndat,:].data #- this_exp.train_data[0][:ndat,:].data.mean(0,keepdims=True)
-    output_states = this_exp.train_data[1][:ndat,:].data
-    # input_states = torch.tensor((np.eye(4)[inp_condition,:]))
-    
-    min_num = np.unique(inp_condition,return_counts=True)[1].min()
-    idx = np.sort(np.concatenate([np.random.choice(np.where(inp_condition==i)[0], min_num, replace=False) for i in range(4)]))
-    
-    inputs = input_states[idx,:].float()
-    targets = output_states[idx,:]
-    inp_condition = inp_condition[idx]
-    ndat = inputs.shape[0]
+    inputs = input_task(inp_condition)
+    targets = task(inp_condition)
 
-    x_pos = this_exp.means.T
+    x_pos = input_task.means.T
+
+    inputs -= inputs.mean(0,keepdims=True)
+    # x_pos = this_exp.means.T
     # x_pos = np.eye(4) - 0.25
     # x_pos /= la.norm(x_pos,axis=0, keepdims=True)
 
@@ -213,7 +230,7 @@ elif which_data == 'class':
 elif which_data == 'struc_class':
     num_var = 2
     dim_inp = 100 # dimension per variable
-    noise = 0.1
+    noise = 0.2
     
     ndat = 2000
     
@@ -225,7 +242,7 @@ elif which_data == 'struc_class':
     # input_task = tasks.RandomDichotomies(d=[(0,1,2,3),(0,2,4,6),(0,1,4,5)])
     # input_task = tasks.RandomDichotomies(d=[(0,1),(0,2)])
     # input_task = tasks.TwistedCube(tasks.StandardBinary(2), dim_inp, f=0.2, noise_var=noise)
-    # input_task = tasks.EmbeddedCube(tasks.StandardBinary(2), dim_inp, noise_var=noise, rotated=apply_rotation)
+    # input_task = tasks.EmbeddedCube(tasks.StandardBinary(3), dim_inp, noise_var=noise, rotated=False)
     # task = tasks.RandomDichotomies(d=[(0,3,5,6)]) # 3d xor
     # task = tasks.RandomDichotomies(d=[(0,1,6,7)]) # 2d xor
     # task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)]) # 3 corners
@@ -233,11 +250,11 @@ elif which_data == 'struc_class':
     task = tasks.RandomDichotomies(d=[(1,2)])
     # task = tasks.RandomDichotomies(d=[(0,1)])
     # input_task = tasks.NudgedCube(tasks.StandardBinary(2), task, dim_inp, nudge_mag=0.2, noise_var=noise)
-    input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim_inp, nudge_mag=0.8, noise_var=noise, random=False)
+    input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim_inp, nudge_mag=0.2, noise_var=noise, random=False)
     
     # generate inputs
-    # inp_condition = np.random.choice(2**num_var, ndat)
-    inp_condition = np.tile(np.arange(num_cond),ndat//num_cond)
+    inp_condition = np.random.choice(2**num_var, ndat)
+    # inp_condition = np.tile(np.arange(num_cond),ndat//num_cond)
     # var_bit = (np.random.rand(num_var, num_data)>0.5).astype(int)
     # var_bit = input_task(inp_condition).numpy().T
     
@@ -258,10 +275,15 @@ elif which_data == 'struc_class':
     
     x_pos = la.block_diag(*np.diff(input_task.means[:2],axis=1).squeeze().tolist()).T
     x_pos = np.concatenate([x_pos,input_task.means[2].flatten()[:,None]], axis=1)
+    # 
+    # x_pos = la.block_diag(*np.diff(input_task.means,axis=1).squeeze().tolist()).T
+    
     x_pos /= la.norm(x_pos,axis=0, keepdims=True)
+    # x_pos = np.concatenate([x_pos, np.zeros((1,x_pos.shape[1]))], axis=0)
     
     inputs = input_task(inp_condition)
-    # inputs -= inputs.mean(0,keepdims=True)
+    inputs -= inputs.mean(0,keepdims=True)
+    # inputs = torch.cat([inputs, torch.ones((inputs.shape[0],1))], axis=1)
     
     # generate outputs
     targets = task(inp_condition)
@@ -274,7 +296,7 @@ elif which_data == 'struc_class':
 
 manual = True
 # manual = False
-ppp = 1 # 0 is MSE, 1 is cross entropy
+ppp = 0 # 0 is MSE, 1 is cross entropy
 # theoretical = True
 theoretical = False
 
@@ -287,16 +309,18 @@ rms_beta = 0.99
 
 two_layers = False
 # two_layers = True
+
 # nonneg = True
 nonneg = False
-# train_out = True
-train_out = False
+
+train_out = True
+# train_out = False
 
 linear_grad = False
 # linear_grad = True
 
-# average_grad = False
-# average_grad = True
+# train_biases = False
+train_biases = True
 
 nonlinearity = RayLou(linear_grad)
 # nonlinearity = TanAytch(linear_grad)
@@ -306,10 +330,11 @@ nonlinearity = RayLou(linear_grad)
 correct_mse = False # if True, rescales the MSE targets to be more like the log odds
 
 N = 100
+# N = 264
 
-nepoch = 10000
-lr = 1e-2
-bsz = 100
+nepoch = 2000
+lr = 1e-3
+bsz = 200
 
 # n_trn = int(ndat*0.8)
 # idx_trn = np.random.choice(ndat, n_trn, replace=False)
@@ -318,22 +343,24 @@ bsz = 100
 idx_trn = np.arange(ndat)
 idx_tst = np.arange(ndat)
 
-dset = torch.utils.data.TensorDataset(inputs[idx_trn], targets[idx_trn])
+dset = torch.utils.data.TensorDataset(inputs[idx_trn], targets[idx_trn], torch.tensor(abstract_conds)[idx_trn])
 dl = torch.utils.data.DataLoader(dset, batch_size=bsz, shuffle=True)
 
-# set up network (2 layers)
+# set up network (2 layers) 
 ba = 1/np.sqrt(dim_inp)
-# ba = 1
+# ba = 1e-10
 W1 = torch.FloatTensor(N,inputs.shape[1]).uniform_(-ba,ba)
 # W1 = torch.FloatTensor(N,num_var).uniform_(-ba,ba)@torch.FloatTensor(x_pos.T)
 # W1 = students.Feedforward([inputs.shape[1],N], nonlinearity='Tanh').network.layer0.weight.data
 # W1 = torch.FloatTensor([[1,1],[1,-1],[-1,1],[-1,-1]]).repeat_interleave(N//4,0).repeat_interleave(dim_inp,1)
 # W1 = torch.FloatTensor([[1,-1],[-1,1]]).repeat_interleave(N//2,0)
 # W1 = torch.FloatTensor(torch.zeros(N,inputs.shape[1]))
-# b1 = torch.FloatTensor(N,1).uniform_(-ba,ba)
+if train_biases:
+    b1 = torch.FloatTensor(N,1).uniform_(-ba,ba)
+else:
 # b1 = students.Feedforward([inputs.shape[1],N], nonlinearity='Tanh').network.layer0.bias.data[:,None]
-b1 = torch.FloatTensor(torch.zeros(N,1))
-# b1 = torch.FloatTensor(torch.ones(N,1)*2)
+    b1 = torch.FloatTensor(torch.zeros(N,1))
+# b1 = torch.FloatTensor(torch.ones(N,1)*1)
 # b1 = torch.FloatTensor(N,1).uniform_(0,2)
 # W1.requires_grad_(True)
 # b1.requires_grad_(True)
@@ -345,21 +372,27 @@ if two_layers:
     W2.requires_grad_(True)
     b2.requires_grad_(True)
 
-ba = 1/np.sqrt(targets.shape[1])
+# ba = 1/np.sqrt(targets.shape[1])
+ba = 10/N
 
 if nonneg:
     W = torch.FloatTensor(targets.shape[1],N).uniform_(0,2*ba)
     b = torch.FloatTensor(targets.shape[1],1).uniform_(0,2*ba)
 else:
-    # W = torch.FloatTensor(targets.shape[1],N).uniform_(-ba,ba)
+    W = torch.FloatTensor(targets.shape[1],N).uniform_(-ba,ba)
     # W = torch.FloatTensor([1,-1]).repeat(N//2)[None,:]
     # W *= (W>0)
     # W = torch.FloatTensor(torch.ones(targets.shape[1],N))
-    W = students.BinaryReadout(N, targets.shape[1], rotated=False).weight.detach()*10/N
+    # W = students.BinaryReadout(N, targets.shape[1], rotated=True).weight.detach()*10/N
+    # W = torch.cat([students.BinaryReadout(N//2, targets.shape[1], rotated=False).weight.detach(),
+    #                 students.BinaryReadout(N//2, targets.shape[1], rotated=True).weight.detach()], dim=-1)*10/N
+    # W_bin = torch.cat([students.BinaryReadout(256, 2**num_var, rotated=False).weight.detach(),
+    #                 students.BinaryReadout(8, 2**num_var, rotated=True).weight.detach()], dim=-1)*10/N
+    # W = torch.tensor(x_pos).float()@W_bin
     # W = students.Feedforward([N,targets.shape[1]], nonlinearity=[None]).network.layer0.weight.data
-    # b = torch.FloatTensor(targets.shape[1],1).uniform_(-ba,ba)
-    b = torch.FloatTensor(torch.zeros(targets.shape[1],1))
-    # b = students.Feedforward([N,targets.shape[1]], nonlinearity=[None]).network.layer0.bias.data
+    b = torch.FloatTensor(targets.shape[1],1).uniform_(-ba,ba)
+    # b = torch.FloatTensor(torch.zeros(targets.shape[1],1))
+    # b = students.Feedforward([N,targets.shape[1]], nonlinearity=[None]).network.layer0.bias.data[:,None]
 
 if use_adam:
     if two_layers:
@@ -370,8 +403,13 @@ if use_adam:
             b.requires_grad = True
             optimizer = optim.Adam([W1, b1, W, b], lr=lr)
         else:
-            # optimizer = optim.Adam([W1], lr=lr)
-            optimizer = optim.Adam([W1,b1], lr=lr)
+            if train_biases:
+                optimizer = optim.Adam([W1,b1], lr=lr)
+            else:
+                optimizer = optim.Adam([W1], lr=lr)
+
+x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+y_ = task(np.unique(inp_condition)).detach().numpy().T.squeeze()
 
 train_loss = []
 test_perf = []
@@ -381,6 +419,8 @@ SD = []
 lindim = []
 gradz_sim = []
 gradlin_sim = []
+err_m = []
+err_v = []
 weights = []
 weights2 = []
 biases = []
@@ -388,6 +428,7 @@ adam_m = []
 adam_v = []
 w_rms = []
 b_rms = []
+local_ps = []
 # grad_mag = []
 for epoch in tqdm(range(nepoch)):
 
@@ -420,9 +461,9 @@ for epoch in tqdm(range(nepoch)):
     clf = assistants.LinearDecoder(N, 1, assistants.MeanClassifier)
     gclf = assistants.LinearDecoder(N, 1, svm.LinearSVC)
     # D = assistants.Dichotomies(len(np.unique(inp_condition)),
-    #                             input_task.positives+task.positives, extra=5)
+                                # input_task.positives+task.positives, extra=0)
     D = assistants.Dichotomies(len(np.unique(inp_condition)),
-                                task.positives, extra=5)
+                                task.positives, extra=0)
     
     ps = []
     ccgp = [] 
@@ -432,6 +473,11 @@ for epoch in tqdm(range(nepoch)):
     PS.append(ps)
     CCGP.append(ccgp)
     
+    # reps = nonlinearity(torch.tensor(W1.numpy()@x_)).numpy()
+    # pps = np.sum([np.sign((y_[i]-y_.mean())*(y_[j]-y_.mean()))*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0)
+    # pnrm = (la.norm(reps,2,axis=-1)**2) # local norm
+    # local_ps.append(pps/pnrm)
+        
     _, S, _ = la.svd(z.detach()-z.mean(1).detach()[:,None], full_matrices=False)
     eigs = S**2
     lindim.append((np.sum(eigs)**2)/np.sum(eigs**2))
@@ -449,7 +495,7 @@ for epoch in tqdm(range(nepoch)):
         conds = abstract_conds[idx_tst]
         cond_grad = np.array([d2[:,conds==i].mean(1).detach().numpy() for i in np.unique(conds)])
         gradz_sim.append(util.cosine_sim(cond_grad-cond_grad.mean(0),cond_grad-cond_grad.mean(0)))
-        
+         
         # cond_grad = np.array([(W.T@err)[:,conds==i].mean(1).detach().numpy() for i in np.unique(conds)])
         cond_grad = np.array([(d2[:,conds==i]@inputs[idx_tst,:][conds==i,:]).detach().numpy().T for i in np.unique(conds)])
         gradlin_sim.append(util.cosine_sim(cond_grad-cond_grad.mean(0),cond_grad-cond_grad.mean(0)))
@@ -462,7 +508,7 @@ for epoch in tqdm(range(nepoch)):
     # for j in range(ndat//bsz):
         # optimizer.zero_grad()
         
-        inps, outs = btch
+        inps, outs, labs = btch
         # inps = input_task(np.repeat(np.arange(num_cond),bsz))
         # outs = task(np.repeat(np.arange(num_cond),bsz))
         
@@ -486,12 +532,23 @@ for epoch in tqdm(range(nepoch)):
         if manual:
             if theoretical:
                 # err = (outs.T - y_.mean())*(np.exp(-epoch/150)+0.01)
-                err = (outs.T - task(np.arange(num_cond)).mean(0,keepdims=True).T)#*(outs.T - nn.Sigmoid()(pred)).abs().mean()
+                # err = (outs.T - task(np.arange(num_cond)).mean(0,keepdims=True).T)#*(outs.T - nn.Sigmoid()(pred)).abs().mean()
+                # err += torch.randn(*err.shape)*0.2
+                # fake_z = nonlinearity(torch.matmul(W1,input_task(labs, noise=0).T) + b1)
+                # fake_pred = torch.matmul(W,fake_z) + b
+                # err = outs.T - nn.Sigmoid()(fake_pred)
+                # err += torch.randn(*err.shape)*0.2
+                err = (outs.T - nn.Sigmoid()(pred)).numpy()
             else:
                 errb = (outs.T - nn.Sigmoid()(pred)) # bernoulli
                 errg = (outs.T - pred) # gaussian
                 
                 err = ppp*errb + (1-ppp)*errg # convex sum, in case you want that
+            
+            err_m.append([err[0,labs==i].mean() for i in range(4)])
+            err_v.append([err[0,labs==i].std() for i in range(4)])
+            
+            # dir_update = input_task(labs, noise=0)
             
             d2 = (W.T@err)*nonlinearity.deriv(curr) # gradient of the currents
             if two_layers:
@@ -519,13 +576,14 @@ for epoch in tqdm(range(nepoch)):
                     else:
                         w_rms[epoch] = rms_beta*w_rms[epoch] + (1-rms_beta)*W1.grad.pow(2)
                         b_rms[epoch] = rms_beta*b_rms[epoch] + (1-rms_beta)*b1.grad.pow(2)
-                    w_alr = 1/np.sqrt((w_rms[epoch]/0.1)+1e-8)
-                    b_alr = 1/np.sqrt((b_rms[epoch]/0.1)+1e-8)
+                    w_alr = 1/np.sqrt((w_rms[epoch]/(1-rms_beta))+1e-8)
+                    b_alr = 1/np.sqrt((b_rms[epoch]/(1-rms_beta))+1e-8)
                 else:
                     w_alr = 1
                     b_alr = 1
                 W1 -= lr*w_alr*W1.grad
-                # b1 -= lr*b_alr*b1.grad
+                if train_biases:
+                    b1 -= lr*b_alr*b1.grad
             # W1 += lr*dw
             # b1 += lr*db
         else:
@@ -553,8 +611,10 @@ biases = np.squeeze(biases)
 adam_m = np.array(adam_m)
 adam_v = np.array(adam_v)
 
+weights_proj = np.einsum('ijk,kl->ijl',weights,x_pos/la.norm(x_pos,axis=0, keepdims=True))
+W = W.detach().numpy()
 
- #%%
+     #%%
 if two_layers:
     z1 = nonlinearity(torch.matmul(W1,inputs.T) + b1).detach().numpy()
     z = nonlinearity(torch.matmul(W2,torch.tensor(z1)) + b2).detach().numpy().T
@@ -612,10 +672,12 @@ else:
 # x_ = inputs.detach().numpy().T
 # y_ = targets.detach().numpy().T
 x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+# x_ = np.concatenate([x_, np.ones((1,4))], axis=0)
+# x_ = x_pos
 y_ = task(np.unique(inp_condition)).detach().numpy().T
 
 rep = np.einsum('abi,ic->abc',weights,x_)
-pred = np.einsum('aib,ci->acb',nonlinearity(torch.tensor(rep)+torch.tensor(biases)[:,:,None]),W)+b.detach().numpy()
+pred = np.einsum('aib,ci->acb',nonlinearity(torch.tensor(rep)+torch.tensor(biases)[:,:,None]),W)#+b.detach().numpy()
 f_z = nonlinearity.deriv(torch.tensor(rep+biases[:,:,None]))
 delta = torch.tensor(y_) - nn.Sigmoid()(torch.tensor(pred))
 
@@ -626,60 +688,80 @@ dw_lin = lin_grad[...,None]*x_.T[None,:,None,:]
 dw_nonlin = nonlin_grad[...,None]*x_.T[None,:,None,:]
 
 
-#%%
+#%% Hand-picked basis
+this_nonlin = nonlinearity
 # this_nonlin = RayLou()
 # this_nonlin = TanAytch()
 # this_nonlin = NoisyTanAytch(noise)
 # this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
 # this_nonlin = Iden()
 # this_nonlin = Poftslus(1)
-this_nonlin = NoisyRayLou(noise)
+# this_nonlin = NoisyRayLou(noise)
+
 this_group = 1
 
-these_vars = [0,2]
+these_vars = [1,0]
 
-basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
-# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars]
+# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
+# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))
 
-grp_weights, grp = np.unique(W,axis=1, return_inverse=True)
+# grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+grp_weights, grp = np.unique(np.sign(W_bin),axis=1, return_inverse=True)
+grp_weights = x_pos@grp_weights 
 
 fake_J = grp_weights[:,this_group]
+# fake_J = grp_weights[:,this_group]
 # fake_J = 1
 
-weights_proj = np.einsum('ijk,kl->ijl',weights,basis) #+ biases[:,-1:,None]
+dic = assistants.Dichotomies(num_cond)
+all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+
+# weights_proj = np.einsum('ijk,kl->ijl',weights,basis) #+ biases[:,-1:,None]
 x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
 # x_ = x_pos
 y_ = task(np.unique(inp_condition)).detach().numpy().T
-
-# get the basis vectors for looking at the weights
-# labels = input_task.latent_task(np.unique(inp_condition)).numpy()
-# x_pos = (x_[...,None]*labels[None,...]).sum(1)/labels.sum(0) - (x_[...,None]*(1-labels[None,...])).sum(1)/labels.sum(0)
-# x_pos = la.block_diag(*np.diff(input_task.means,axis=1).squeeze().tolist()).T
-# x_pos /= la.norm(x_pos,axis=0, keepdims=True)
-
-N_grid = 21
-# this_range = np.abs(weights_proj[0]).max() + 0.1
-# up_range = np.abs((weights_proj[...,these_vars]).max())*1.1 #+ 0.1
-# down_range = np.abs((weights_proj[...,these_vars]).min())*1.1 #+ 0.1
-this_range=0.3
-# this_range = np.max([up_range, down_range])
-up_range = this_range
-down_range = this_range
-        
-# this_bias = np.random.randn(N_grid**2,1)*0.1
-this_bias = np.ones((N_grid**len(these_vars),1))*0.0#b1.detach().numpy().mean()
-# this_bias = b1.detach().numpy()
 
 err_avg = y_ - y_.mean(1,keepdims=True)
 # err_avg = targets.numpy().T - y_.mean(1,keepdims=True)
 # err_avg = delta[0].numpy()
 # x_avg = (x_) - (x_).mean(1,keepdims=True)
 
+# good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
+# good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
+good_dir = (grp_weights.T@err_avg@x_.T)[this_group,:]
+good_dir /= la.norm(good_dir)
+bad_dirs = all_col[((all_col@err_avg.T)@fake_J)==0].T@all_col[((all_col@err_avg.T)@fake_J)==0]
+bad_dir = x_@bad_dirs[(fake_J@err_avg>0)][0].squeeze()
+bad_dir /= la.norm(bad_dir)
+
+# good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
+# good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
+# bad_dir = (x_@(grp_weights[:,grp]*err_avg).prod(0))
+# bad_dir /= la.norm(bad_dir)
+
+basis = np.stack([good_dir,bad_dir]).T
+
+weights_proj = np.einsum('ijk,kl->ijl',weights,basis)
+
+N_grid = 31
+# this_range = np.abs(weights_proj[0]).max() + 0.1
+up_range = np.abs((weights_proj[...,these_vars]).max())*1.1 #+ 0.1
+down_range = np.abs((weights_proj[...,these_vars]).min())*1.1 #+ 0.1
+# this_range=0.7
+this_range = np.max([up_range, down_range])
+# up_range = this_range
+# down_range = this_range
+        
+# this_bias = np.random.randn(N_grid**2,1)*0.1
+this_bias = np.ones((N_grid**len(these_vars),1))*-2#b1.detach().numpy().mean()
+# this_bias = b1.detach().numpy()
+
+
 wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*len(these_vars))
 
 # fake_W = np.stack([w.flatten() for w in wawa]+[np.ones(N_grid**len(these_vars))*0 for _ in np.setdiff1d(range(x_pos.shape[-1]),these_vars)]).T
 fake_W = np.stack([w.flatten() for w in wawa]).T
-WW = fake_W@basis[:,these_vars].T + x_pos[:,np.setdiff1d(range(x_pos.shape[-1]),these_vars)].T*0
+WW = fake_W@basis[:,these_vars].T #+ x_pos[:,np.setdiff1d(range(x_pos.shape[-1]),these_vars)].T*0
 fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + this_bias))).numpy()
 # fake_fz = this_nonlin.deriv(torch.tensor((WW@inputs.numpy().T + this_bias))).numpy()
 # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T@inputs.numpy().T + this_bias))).numpy()
@@ -697,6 +779,15 @@ nya = plt.quiver(fake_W[:,0],fake_W[:,1],
 # plt.quiver(fake_W[:,0],fake_W[:,1],
 #            fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
 
+# reps = this_nonlin(torch.tensor(WW@x_ + this_bias)).numpy()
+# pps = np.sum([np.sign(err_avg.squeeze()[i]*err_avg.squeeze()[j])*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0)
+# pnrm = (la.norm(reps,2,axis=-1)**2) # local norm
+
+
+# plt.imshow((pps/pnrm).reshape((N_grid,N_grid)),'bwr', 
+#            extent=[-this_range,this_range,-this_range,this_range])
+# dicplt.diverging_clim(plt.gca())
+
 
 plt.plot(weights_proj[:,grp==this_group,these_vars[0]],weights_proj[:,grp==this_group,these_vars[1]], 'r', linewidth=1)
 # plt.plot(weights_proj[:,np.sign(W.squeeze())<0,these_vars[0]],weights_proj[:,np.sign(W.squeeze())<0,these_vars[1]], 'b', linewidth=1)
@@ -713,6 +804,83 @@ plt.axis('square')
 plt.xlim([-down_range,up_range])
 plt.ylim([-down_range,up_range])
 
+#%% All neurons on one plot
+
+# this_nonlin = RayLou()
+# this_nonlin = TanAytch()
+# this_nonlin = NoisyTanAytch(noise)
+# this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
+# this_nonlin = Iden()
+# this_nonlin = Poftslus(1)
+this_nonlin = NoisyRayLou(noise)
+
+N_grid = 21
+
+num_out = (np.sign(W)!=0).sum(0)
+
+# these_neur = num_out>1 # plot all conjunctive-output neurons
+these_neur = num_out==1 # plot all abstract-output neurons
+
+x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+y_ = task(np.unique(inp_condition)).detach().numpy().T
+err_avg = y_ - y_.mean(1,keepdims=True)
+
+grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+
+# compute relevant directions
+dic = assistants.Dichotomies(num_cond)
+all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+
+corr_dir = W.T@err_avg
+# corr_dir/=la.norm(corr_dir, axis=-1, keepdims=True)
+corr_dir/=np.max(corr_dir, axis=-1, keepdims=True)
+lin_dir = corr_dir@x_.T
+lin_dir /= la.norm(lin_dir, axis=-1, keepdims=True)
+
+kernels = ((all_col@err_avg.T)@grp_weights==0)
+bad_dirs = np.stack([all_col[k,:].T@all_col[k,:] for k in kernels.T])[grp,:,:]
+anticorr_dir = 1.0*bad_dirs[np.arange(N),np.argmax(corr_dir>0,axis=1),:]
+# anticorr_dir/=la.norm(anticorr_dir, axis=-1, keepdims=True)
+anticorr_dir/=np.max(anticorr_dir, axis=-1, keepdims=True)
+bad_dir = anticorr_dir@x_.T
+bad_dir /= la.norm(bad_dir, axis=-1, keepdims=True)
+
+neur_basis = np.stack([bad_dir,lin_dir])
+neur_weights = np.einsum('ilk,jlk->jli', neur_basis, weights)
+
+up_range = np.abs((neur_weights[:,these_neur,:]).max())*1.1 #+ 0.1
+down_range = np.abs((neur_weights[:,these_neur,:]).min())*1.1 #+ 0.1
+this_range = np.max([up_range, down_range])
+# this_range=6.7
+
+
+plt.figure()
+
+
+nidx = np.where(these_neur)[0][0] # plot all conjunctive-output neurons
+
+wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*len(these_vars))
+
+fake_W = np.stack([w.flatten() for w in wawa]).T
+WW = fake_W@neur_basis[:,nidx,:] 
+fake_fz = this_nonlin.deriv(torch.tensor((WW@x_))).numpy()
+
+fake_grads = neur_basis[:,nidx,:]@(x_@(corr_dir[nidx,:]*fake_fz).T)
+
+# corr_grad = fake_fz@((x_.T@x_)*corr_dir[nidx]**2).sum(0)
+# anticorr_grad = fake_fz@((x_.T@x_)*(anticorr_dir[nidx]*corr_dir[nidx])).sum(0)
+# corr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@corr_dir[nidx]
+# anticorr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@anticorr_dir[nidx]
+
+plt.quiver(fake_W[:,0],fake_W[:,1], fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
+# plt.quiver(fake_W[:,0],fake_W[:,1], anticorr_grad,corr_grad, color=(0.5,0.5,0.5))
+
+dicplt.square_axis()
+
+cols = cm.viridis(np.unique(grp)/7)
+for this_grp in np.unique(grp[these_neur]):
+    plt.scatter(neur_weights[0,grp==this_grp,0],neur_weights[0,grp==this_grp,1],marker='o', c=cols[this_grp])
+    plt.plot(neur_weights[:,grp==this_grp,0],neur_weights[:,grp==this_grp,1], color=cols[this_grp])
 
 #%%
 # basins = list(itt.chain(*([combinations(range(num_cond), i) for i in range(1,3)])))
@@ -738,18 +906,64 @@ an2 = dicplt.LineAnime(weights_proj[:,:,0].T,weights_proj[:,:,1].T, colors=cm.bw
 
 dicplt.AnimeCollection(an1, an2).save(SAVE_DIR+'/vidya/tempmovie.mp4', fps=30)
 
-# basin_probs = 
 
+#%% 
+this_grp = 0
+
+ax = dicplt.scatter3d(8*inp_coefs.T, s=200, marker='*', c=cm.viridis(util.decimal(y_.T)/7))
+dicplt.LineAnime3D(weights_proj[:,grp==this_grp,0].T,
+                   weights_proj[:,grp==this_grp,1].T,
+                   weights_proj[:,grp==this_grp,2].T, 
+                   view_period=100, ax=ax, 
+                   colors=cm.viridis(grp[grp==this_grp]/7),
+                   rotation_period=500).save(SAVE_DIR+'vidya/tempmovie_%s.mp4'%grp_weights[:,this_grp])
+
+#%%
+
+p_abs = 0.0
+
+inp_align = []
+out_align = []
+for p_abs in np.linspace(0,1,100):
+    p_conj = 1-p_abs
+    
+    fake_N = 1000
+    
+    n_abs = int(fake_N*p_abs)
+    n_conj = fake_N - n_abs
+    
+    abs_labs = 2*tasks.StandardBinary(3)(np.arange(8)).numpy() - 1
+    
+    abs_weights = np.concatenate([np.eye(3),np.eye(3)*-1])[np.random.choice(6,n_abs)]
+    conj_weights = abs_labs[np.random.choice([0,1,2,5,6,7],n_conj)]
+    fake_weights = np.concatenate([abs_weights,conj_weights],axis=0)*10
+    
+    fake_rep = this_nonlin(torch.tensor(fake_weights@abs_labs.T))
+    
+    Kx = util.dot_product(abs_labs.T, abs_labs.T)
+    Ky = util.dot_product(y_-y_.mean(1,keepdims=True), y_-y_.mean(1,keepdims=True))
+    Kz = util.dot_product(fake_rep, fake_rep)
+    
+    inp_align.append(np.sum(Kz*Kx)/np.sqrt(np.sum(Kx*Kx)*np.sum(Kz*Kz)))
+    out_align.append(np.sum(Kz*Ky)/np.sqrt(np.sum(Ky*Ky)*np.sum(Kz*Kz)))
+
+c_xy = np.sum(Ky*Kx)/np.sqrt(np.sum(Kx*Kx)*np.sum(Ky*Ky))
+
+cos_foo = np.linspace(c_xy,1,1000)
+ub = c_xy*cos_foo + np.sqrt(1-c_xy**2)*np.sqrt(1-cos_foo**2)
+plt.plot(cos_foo, ub, 'k--')
+plt.scatter(inp_align, out_align, c=np.linspace(0,1,100))
+plt.colorbar()
 
 #%%
 # this_nonlin = RayLou()
-this_nonlin = TanAytch() 
+this_nonlin = TanAytch()
 # this_nonlin = Iden()
 # this_nonlin = Poftslus(1)
 # this_nonlin = NoisyRayLou(noise)
 
 grp_weights, grp = np.unique(W,axis=1, return_inverse=True)
-grp_weights = - grp_weights
+grp_weights = grp_weights
 num_grp = grp_weights.shape[-1]
 
 weights_proj = np.einsum('ijk,kl->ijl',weights,x_pos/la.norm(x_pos,axis=0, keepdims=True)) #+ biases.mean(1)[:,None,None]
@@ -757,8 +971,9 @@ x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
 # x_ = x_pos
 y_ = task(np.unique(inp_condition)).detach().numpy().T
 
+arr_scl = 1e1
 
-N_grid = 11
+N_grid = 21
 # this_range = np.abs(weights_proj[0]).max() + 0.1
 up_range = np.abs((weights_proj).max())*1.1 #+ 0.1
 down_range = np.abs((weights_proj).min())*1.1 #+ 0.1
@@ -768,7 +983,7 @@ this_range = np.max([up_range, down_range])
 # down_range = this_range
 
 # this_bias = np.random.randn(N_grid**2,1)*0.1
-this_bias = np.ones((N_grid**2,1))*-1#b1.detach().numpy().mean()
+this_bias = np.ones((N_grid**2,1))*0#b1.detach().numpy().mean()
 # this_bias = b1.detach().numpy()
 
 err_avg = y_ - y_.mean(1,keepdims=True)
@@ -777,22 +992,22 @@ err_avg = y_ - y_.mean(1,keepdims=True)
 wawa = np.meshgrid(*(np.linspace(-this_range,up_range,N_grid),)*2)
 
 plt.figure()
-for j,these_vars in enumerate([[0,1],[0,2]]):
+for j,these_vars in enumerate(np.split(np.arange(x_pos.shape[-1]),x_pos.shape[-1]//2)):
     
     
-    fake_W = np.stack([w.flatten() for w in wawa]+[np.ones(N_grid**len(these_vars))*0 for _ in np.setdiff1d(range(x_pos.shape[-1]),these_vars)]).T
+    fake_W = np.stack([w.flatten() for w in wawa]).T
     # fake_W = np.stack([w.flatten() for w in wawa]).T
-    WW = fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True)).T
+    WW = fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T
 
     fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + this_bias))).numpy()
     # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T@inputs.numpy().T + this_bias))).numpy()
     # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@x_pos.T@x_ + this_bias))).numpy()
     
-    
-    cols = dicplt.color_cycle('brg', num_grp)
+    # cols = dicplt.color_cycle('brg', num_grp)
+    cols = cm.jet(np.arange(num_grp)/num_grp)
     for i in range(num_grp):
         
-        plt.subplot(2,num_grp,(i+1)+j*num_grp)
+        plt.subplot(x_pos.shape[-1]//2,num_grp,(i+1)+j*num_grp)
         fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(x_@(grp_weights[:,i]@err_avg*fake_fz).T)
         # fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(inputs.numpy().T@(grp_weights[:,i]@err_avg*fake_fz).T)
         
@@ -801,7 +1016,7 @@ for j,these_vars in enumerate([[0,1],[0,2]]):
                     # color=cols[i],
                     color=(0.5,0.5,0.5),
                     scale_units='xy',
-                    scale=3e-1)
+                    scale=arr_scl)
         
         plt.plot(weights_proj[:,grp==i,these_vars[0]],weights_proj[:,grp==i,these_vars[1]], color=cols[i], linewidth=2)
         

@@ -40,8 +40,8 @@ mse_loss = False
 # categorical = True
 categorical = False
 
-num_cond = 5
-num_var = 1
+num_cond = 8
+num_var = 3
 
 # use_mnist = True
 use_mnist = False
@@ -61,8 +61,8 @@ which_task = 'structured'
 
 latent_dist = None
 # latent_dist = GausId
-nonlinearity = 'ReLU'
-# nonlinearity = 'Tanh'
+# nonlinearity = 'ReLU'
+nonlinearity = 'Tanh'
 # nonlinearity = 'LeakyReLU'
 
 num_layer = 0
@@ -74,7 +74,7 @@ good_start = False
 # coding_level = 1.0
 coding_level = None
 
-rotation = 0.0
+rotation = 1.0
 # rotation = np.linspace(0.0,2.0,11)
 
 decay = 0.0
@@ -126,12 +126,12 @@ elif which_task == 'mog':
                                     init_coding=coding_level,
                                     rot=rotation)
 elif which_task == 'structured':
-    # inp_task = tasks.StandardBinary(np.log2(num_cond))
+    inp_task = tasks.EmbeddedCube(tasks.StandardBinary(int(np.log2(num_cond))),100,noise_var=0.1)
     # inp_task = tasks.TwistedCube(tasks.StandardBinary(2), 100, f=rotation, noise_var=0.1)
-    inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=rotation, noise_var=0.1, random=True)
+    # inp_task = tasks.NudgedXOR(tasks.StandardBinary(2), 100, nudge_mag=rotation, noise_var=0.1, random=True)
     # task = tasks.LogicalFunctions(d=decs, function_class=num_var)
-    # task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)])
-    task = tasks.RandomDichotomies(d=[(0,3)])
+    task = tasks.RandomDichotomies(d=[(0,1,3,5),(0,2,3,6),(0,1,2,4)])
+    # task = tasks.RandomDichotomies(d=[(0,3)])
     this_exp = exp.structured_inputs(task, input_task=inp_task,
                                       SAVE_DIR=SAVE_DIR,
                                       noise_var=0.1,
@@ -201,7 +201,7 @@ plt.title('N=%d'%N)
 # %% Abstraction metrics
 show_me = 'test_PS'
 # show_me = 'shattering'
-# show_me = 'test_ccgp'
+# show_me = 'test_cacgp'
 
 has_val = np.array([m for m in mets[n_id][show_me] if len(m)>0])
 # shp = np.max([np.max(h.shape) ])

@@ -14,6 +14,7 @@ from scipy.spatial.distance import pdist, squareform
 from itertools import permutations, combinations
 import itertools as itt
 
+# my code
 import students
 import assistants
 import util
@@ -314,6 +315,46 @@ class LogicalFunctions(IndependentBinary):
         return a^b^c
 
 ## Tasks which produce continuous representations of the binary tasks
+class RandomPatterns(object):
+    def __init__(self, num_class, dim_pattern, noise_var=0.1):
+
+        self.dim_output = dim_pattern
+        self.noise_var = noise_var
+        self.num_class = num_class
+
+        means = np.random.randn(self.num_class, self.dim_output)
+        self.means = means
+
+    def __call__(self, labels, noise=None):
+
+        if noise is None:
+            noise = self.noise_var
+
+        means = self.means[labels,...]
+        return torch.tensor(means + np.random.randn(len(labels), self.dim_output)*noise).float()
+
+class RandomTransisions(object):
+    def __init__(self, rep_task, actions, p_action, num_var=2, num_val=2):
+
+        self.rep_task = rep_task
+        self.actions = actions
+        self.p_action = p_action
+        self.num_var = num_var
+        self.num_val = num_val
+        self.num_cond = num_val**num_var
+
+        x = np.arange(self.num_cond)
+        self.positives = [tuple(np.where(1-np.mod(x,num_val**(i+1))//(num_val**i))[0].tolist()) for i in range(num_var)]
+
+    def __call__(self, labels, **kwargs):
+
+        actions = np.random.choice(self.actions, len(labels), p=self.p_action)
+        # actions = torch.stack([(actns&(self.num_val**i))/self.num_val**i for i in range(self.num_var)]).float().T
+
+        successors = np.mod(labels+actions, self.num_val**self.num_var)
+        # succ_conds = util.decimal(successors)
+        return self.rep_task(successors, **kwargs)
+
 class EmbeddedCube(object):
     def __init__(self, latent_task, dim_factor, noise_var=0.1, rotated=False):
         super(EmbeddedCube,self).__init__()
