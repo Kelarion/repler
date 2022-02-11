@@ -18,6 +18,7 @@ import itertools as itt
 import students
 import assistants
 import util
+import grammars as gram
 
 ## Abstract classes
 class IndependentBinary(object):
@@ -53,6 +54,7 @@ class IndependentBinary(object):
         pa = np.unique(a, return_counts=True)[1]/self.num_cond
         Ha = -np.sum(pa*np.log2(pa))
 
+        # I(a,b) = H(a) - H(a | b)
         MI = Ha + 0.5*(np.sum(pab*np.log2(pab))+np.sum(pab_*np.log2(pab_)))
 
         return MI
@@ -60,37 +62,62 @@ class IndependentBinary(object):
     def subspace_information(self):
         """
         Computes the mutual information between each output, and the rest
-
         """
         MI = []
         outputs = self(range(self.num_cond)).numpy()
         # print(outputs)
         for i, pos in enumerate(self.positives):
-            # rest = [self.positives[p] for p in range(self.num_var) if p!=i]
-            # ab = decimal(np.array([np.isin(pos, p) for p in rest]).T)
-            not_i = ~np.isin(range(self.num_var), i)
-            if not_i.sum()==1:
-                a = util.decimal(outputs[:,not_i][:,None])
-            else:
-                a = util.decimal(outputs[:,not_i])
-            # print(a)
+            mi = []
+            for j, bos in enumerate(self.positives):
 
-            ab = a[outputs[:,i]>0]
-            # pab = np.array([np.mean(ab==c) for c in range(2**(self.num_var-1))])
-            # pab = np.unique(ab, return_counts=True)[1]/(2**(self.num_var-1))
-            pab = np.unique(ab, return_counts=True)[1]/np.sum(outputs[:,i])
+                a = outputs[:,j]
 
-            ab_ = a[outputs[:,i]==0]
-            # print(ab_)
-            # pab_ = np.array([np.mean(ab_==c) for c in range(2**(self.num_var-1))])
-            # pab_ = np.unique(ab_, return_counts=True)[1]/(2**(self.num_var-1))
-            pab_ = np.unique(ab_, return_counts=True)[1]/np.sum(outputs[:,i])
+                ab = a[outputs[:,i]>0]
+                pab = np.unique(ab, return_counts=True)[1]/np.sum(outputs[:,i]>0)
+                hab = -np.mean(outputs[:,i]>0)*np.sum(pab*np.log2(pab))
 
-            pa = np.unique(a, return_counts=True)[1]/self.num_cond  
-            ha = -np.sum(pa*np.log2(pa))
+                ab_ = a[outputs[:,i]==0]
+                pab_ = np.unique(ab_, return_counts=True)[1]/np.sum(outputs[:,i]==0)
+                hab_ = -np.mean(outputs[:,i]==0)*np.sum(pab_*np.log2(pab_))
 
-            # MI.append(ha + 0.5*(pab*np.ma.log2(pab)+(1-pab)*np.ma.log2(1-pab)).sum())
-            MI.append(ha + 0.5*(np.sum(pab*np.log2(pab))+np.sum(pab_*np.log2(pab_))))
+                pa = np.unique(a, return_counts=True)[1]/self.num_cond  
+                ha = -np.sum(pa*np.log2(pa))
+
+                # I(a,b) = H(a) - H(a|b) = H(a) - p(b=0)H(a|b=0) - p(b=1)H(a|b=1)
+                mi.append(ha - hab - hab_)
+            MI.append(mi)
+        return MI
+
+class IndependentCategorical(object):
+    def __init__(self, labels):
+        super(IndependentCategorical, self).__init__()
+        self.__name__ = self.__class__.__name__
+        self.labels = labels
+        self.num_val = int(labels.max()) + 1
+
+    def correct(self, pred, targets):
+        n = (targets.detach().numpy() == pred.detach().numpy().argmax(-1)).mean(0, keepdims=True)[None,:]
+        return n.astype(float)
+
+    def __call__(self, idx, noise=None):
+        return torch.tensor(self.labels[:,idx])
+
+    def subspace_information(self):
+        """
+        Computes the mutual information between each variable, and the rest
+        """
+        MI = []
+        pa = np.array([np.mean(self.labels==i, axis=1) for i in range(self.num_val)]).T
+        ha = -np.sum(pa*np.log2(np.where(pa, pa, 1)), axis=1)
+        for b in self.labels:
+            pab = np.array([[np.mean(self.labels[:,b==j]==i, axis=1) for i in range(self.num_val)] \
+                for j in np.unique(b)])
+            
+            pb = np.array([np.mean(b==i, keepdims=True) for i in np.unique(b)])
+
+            hab = -np.sum(pb*np.sum(pab*np.log2(np.where(pab, pab, 1)), axis=1), axis=0)
+
+            MI.append(ha - hab)
         return MI
 
 class Classification(object):
@@ -154,7 +181,8 @@ class RandomDichotomies(IndependentBinary):
         else:
             self.positives = d
             n = len(self.positives)
-            c = 2*len(self.positives[0])
+            if c is None:
+                c = 2*len(self.positives[0])
 
         self.__name__ = 'RandomDichotomies_%d-%d-%d'%(c, n, overlap)
         self.num_var = n
@@ -313,6 +341,9 @@ class LogicalFunctions(IndependentBinary):
     @staticmethod
     def xor3(a,b,c): # equiv = 5
         return a^b^c
+
+
+# class HierarchicalLabels(IndependentBinary):
 
 ## Tasks which produce continuous representations of the binary tasks
 class RandomPatterns(object):

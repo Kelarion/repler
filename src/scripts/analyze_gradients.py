@@ -934,7 +934,7 @@ dicplt.square_axis()
 
 
 #%%
-noise = 0.3
+noise = 0.0
 N_grid = 101
 n_epoch = 200
 fake_lr = 1e-1
@@ -942,11 +942,11 @@ dim_inp = 100
  
 # this_nonlin = RayLou()
 # this_nonlin = TanAytch()
-# this_nonlin = NoisyTanAytch(noise)
+this_nonlin = NoisyTanAytch(noise)
 # this_nonlin = HardTanAytch()
 # this_nonlin = Iden()
 # this_nonlin = Poftslus(1)
-this_nonlin = NoisyRayLou(noise)
+# this_nonlin = NoisyRayLou(noise)
 
 task = tasks.RandomDichotomies(d=[(1,2)])
 y_ = task(np.arange(4)).detach().numpy().T
@@ -1007,8 +1007,10 @@ for epsilon in np.linspace(0,1,20):
     # fake_weights_proj = fake_W@basis
     reps = this_nonlin(torch.tensor(fake_W@x_)).numpy()
     pps.append(np.sum([np.sign(delta[i]*delta[j])*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0))
-    pn1.append( np.abs(reps[:,0] - reps[:,1]))
-    pn2.append( np.abs(reps[:,2] - reps[:,3]))
+    # pn1.append( np.abs(reps[:,0] - reps[:,1]))
+    # pn2.append( np.abs(reps[:,2] - reps[:,3]))
+    pn1.append( (reps[:,0] - reps[:,1])**2)
+    pn2.append( (reps[:,2] - reps[:,3])**2)
     w_nrm.append(la.norm(reps, 2, axis=-1))
     
     abs_dir = x_@delta
@@ -1027,7 +1029,7 @@ pps = np.array(pps)
 pn1 = np.array(pn1)
 pn2 = np.array(pn2)
 w_nrm = np.array(w_nrm)
-
+    
 dem = np.where(pn1>0,pn1,1)*np.where(pn2>0,pn2,1)
 
 #%%

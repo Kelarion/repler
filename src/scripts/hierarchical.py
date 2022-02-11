@@ -118,12 +118,12 @@ K = 2
 # edges = define_graph([1,1,1,1], K, minimize=minimize)
 # edges = define_graph([K**0,K**1,K**2,K**3,K**4], K, minimize=minimize)
 # edges = define_graph([1,1,1,1,1], K, minimize=minimize)
-edges = define_graph([1,K,K,K**2,K**3,K**4,K**5], K, minimize=minimize)
-
+# edges = define_graph([1,1,K,K**2,K**3,K**4], K, minimize=minimize)
+edges = define_graph([1,K,K**2], K, minimize=minimize)
 
 g = nx.DiGraph()
 g.add_edges_from(edges)
-        
+
 pos = graphviz_layout(g, prog="dot")
 nx.draw(g, pos, with_labels=True)
 

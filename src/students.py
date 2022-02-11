@@ -186,6 +186,46 @@ class TinyTransformer(nn.Module):
 
         return x
 
+class NoisyRNN(nn.Module):
+    def __init__(self, N_in, N_hid, nonlinearity='ReLU', noise_cov=None):
+
+        super(NoisyRNN, self).__init__()
+        self.activation = getattr(nn,nonlinearity)()
+        self.hidden_size = N_hid
+        self.num_layers = 1
+
+        if noise_cov is None:
+            self.C = torch.eye(self.hidden_size)
+        else:
+            self.C = noise_cov
+
+        self.inp2hid = nn.Linear(N_in, N_hid)
+        self.hid2hid = nn.Linear(N_hid, N_hid)
+
+    def noise(self, x):
+        """ x is shape (*,n_seq, hidden_size) """
+        return torch.einsum('ik,...jk->...ji',self.C, torch.randn_like(x))
+
+    def recurrence(self, emb, hid, noise_rescale=1):
+        pre_ac = self.inp2hid(emb) + self.hid2hid(hid)
+        return self.activation(pre_ac + noise_rescale*self.noise(hid))
+
+    def forward(self, emb, hid, noise_scl=1, **kwinps):
+        lseq = emb.shape[0]
+        nseq = emb.shape[1]
+
+        H = torch.zeros(1,nseq, self.hidden_size)
+        O = torch.zeros(lseq, nseq, self.hidden_size)
+        # O = [hid]
+        # _ = [O.append(self.recurrence(emb[t:t+1,...], O[t], noise_scl)) for t in range(lseq)]
+        for t in range(lseq):
+            pre_ac = self.inp2hid(emb[t:t+1,...]) + self.hid2hid( hid)
+            hid = self.activation(pre_ac + noise_scl*self.noise(hid))
+
+            O[t,:,:] = hid.squeeze(0)
+        # O = torch.stack(O)
+
+        return O, hid
 
 class ClusteredConnections(nn.Module):
     """
@@ -522,7 +562,7 @@ class GausId(DeepDistribution):
         """Return instance(s) of distribution, with parameters theta"""
         mu = theta
         sigma = torch.ones(theta.shape + (1,))*torch.eye(self.ndim)[None,...]
-        
+            
         d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
         return d
         
@@ -535,53 +575,6 @@ class GausId(DeepDistribution):
         
         eps = torch.randn_like(mu) 
         z = mu + eps
-        
-        return z
-
-class GausIdMixture(DeepDistribution):
-    """
-    A family of distributions for deep generative models:
-    Mixture of Gaussians with identity covariance
-    
-    This module relates the output of a neural net to the parameters of a 
-    gaussian distribution, assuming first N are the mean, and second N are
-    the log-variances of each dimension.
-    """
-    
-    def __init__(self, dim_z, gaus_prior_params=None, cat_prior_params=None):
-        
-        super(GausIdMixture, self).__init__()
-        
-        self.ndim = dim_z
-        
-        if prior_params is None:
-            prior_params = {'loc': torch.zeros(dim_z),
-                         'covariance_matrix': torch.eye(dim_z)}
-        if cat_prior_params is None:
-            prior_params = {'logits': torch.zeros(dim_z)}
-
-        comp = D.categorical.Categorical(**cat_prior_params)
-        mix = D.multivariate_normal.MultivariateNormal(**gaus_prior_params)
-        
-        self.prior = D.mixture_same_family.MixtureSameFamily(**prior_params)
-        
-    def distr(self, theta):
-        """Return instance(s) of distribution, with parameters theta"""
-        mu1, mu2 = theta.chunk(2, dim=1)
-        sigma = std[...,None]*torch.eye(self.ndim)[None,...]
-        
-        d = D.multivariate_normal.MultivariateNormal(loc=mu, scale_tril=sigma)
-        return d
-        
-    def sample(self, theta):
-        """
-        Sample from posterior, given parameters theta, using reparameterisation
-        """
-        mu, logvar = theta.chunk(2, dim=1) # decompose into mean and variance
-        std = torch.exp(0.5*logvar)
-        
-        eps = torch.randn_like(mu) 
-        z = mu + std*eps
         
         return z
 
@@ -718,7 +711,7 @@ class VAE(NeuralNet):
             # forward
             px_params, qz_params, z = self(nums)
             
-            loss = -free_energy(self, nums, px_params, qz_params, regularise=beta, y=labels)
+            loss = -self.free_energy(self, nums, px_params, qz_params, regularise=beta, y=labels)
             
             # optimise
             loss.backward()
@@ -727,6 +720,35 @@ class VAE(NeuralNet):
             running_loss += loss.item()
                 
         return running_loss/(i+1)
+
+    # custom loss function
+    def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):
+        """Computes free energy, or evidence lower bound
+        If y is supplied, does a cheeky thing that isn't really the free energy
+        ToDo: add support for >1 MC sample in the cross-entropy estimation
+        """
+        btch_size = x.shape[0]
+        # z_post_params = model.enc(x)
+        
+        # z_samples = model.latent.sample(z_post_params)
+        # px_params = model.dec(z_samples)
+        
+        # reconstruction error (i.e. cross-entropy)
+        if y is not None:
+            xent = model.obs.distr(px_params).log_prob(y).sum()
+        else:
+            if xtrans is not None:
+                xent = model.obs.distr(px_params).log_prob(xtrans).sum()
+            else:
+                xent = model.obs.distr(px_params).log_prob(x).sum()
+        
+        # regularisation (i.e. KL-to-prior)
+        prior = model.latent.prior.expand([btch_size])
+        apprx = model.latent.distr(qz_params)
+        
+        dkl = regularise*(D.kl.kl_divergence(apprx, prior).sum())
+        
+        return xent-dkl
 
 class MultiGLM(NeuralNet):
     """A deep GLM model with multiple outputs"""
@@ -808,50 +830,30 @@ class MultiGLM(NeuralNet):
         return running_loss/(i+1)
 
 class GenericRNN(NeuralNet):
-    def __init__(self, ninp, nhid, out_dist, nlayers=1, rnn_type='relu',
-        recoder=None, decoder=None, fix_decoder=True, z_dist=None):
+    def __init__(self, rnn, out_dist, recoder=None, decoder=None, 
+        fix_decoder=False, z_dist=None, beta=1.0):
+
         super(GenericRNN,self).__init__()
 
         self.recoder = recoder
         nout = out_dist.ndim
         self.obs = out_dist
-        if z_dist is not None: # implement activity regularization
-            self.hidden_dist = z_dist
-        else:
-            self.hidden_dist = None
+        self.hidden_dist = z_dist # implements activity regularization
         
-        if rnn_type in ['LSTM', 'GRU']:
-            self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
-        elif rnn_type in ['tanh-GRU', 'relu-GRU']:
-            nlin = getattr(torch, rnn_type.split('-GRU')[0])
-            self.rnn = CustomGRU(ninp, nhid, nlayers, nonlinearity=nlin) # defined below
-        else:
-            try:
-                self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=rnn_type.lower())
-            except:
-                raise ValueError("Invalid rnn_type: give from {'LSTM', 'GRU', 'tanh', 'relu'}")
+        self.rnn = rnn
+
+        self.beta = beta
+
+        self.nhid = self.rnn.hidden_size
+        self.nlayers = self.rnn.num_layers
 
         if decoder is None:
-            self.decoder = nn.Linear(nhid, nout)
+            self.decoder = nn.Linear(self.nhid, nout)
         else:
             self.decoder = decoder
         if fix_decoder:
             self.decoder.requires_grad = False
         # self.softmax = nn.LogSoftmax(dim=2)
-
-        self.rnn_type = rnn_type
-        self.nhid = nhid
-        self.nlayers = nlayers
-
-        self.init_weights()
-
-    def init_weights(self):
-        # self.decoder.bias.data.zero_()
-        # self.decoder.weight.data.uniform_()
-        self.rnn.weight_hh_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
-        self.rnn.bias_hh_l0.data.zero_()
-        self.rnn.weight_ih_l0.data.normal_(0,1.0/np.sqrt(self.nhid))
-        self.rnn.bias_ih_l0.data.zero_()
 
     def forward(self, emb, hidden=None, give_gates=False, debug=False, only_final=True):
         """
@@ -859,11 +861,6 @@ class GenericRNN(NeuralNet):
         Only set give_gates=True if it's the custom GRU!!!
         use `debug` argument to return also the embedding the input
         """
-
-        # if self.recoder is None:
-        #     emb = inp
-        # else:
-        #     emb = self.recoder(inp)
 
         if hidden is None:
             hidden = self.init_hidden(emb.shape[1])
@@ -884,7 +881,7 @@ class GenericRNN(NeuralNet):
         if give_gates:
             return decoded, hidden, extras
         else:
-            return decoded, hidden
+            return decoded, output
 
     def transparent_forward(self, inp, hidden=None, give_gates=False, debug=False):
         """
@@ -937,11 +934,7 @@ class GenericRNN(NeuralNet):
                 return O, H
 
     def init_hidden(self, bsz):
-        if self.rnn_type == 'LSTM':
-            return (torch.zeros(1, bsz, self.nhid),
-                    torch.zeros(1, bsz, self.nhid))
-        else:
-            return torch.zeros(1, bsz, self.nhid)
+        return torch.zeros(1, bsz, self.nhid)
 
     def grad_step(self, data, optimizer, init_state=False, only_final=True):
         """ Single step of maximum likelihood over the data """
@@ -958,8 +951,8 @@ class GenericRNN(NeuralNet):
                 nums, labels = batch
                 hidden = self.init_hidden(nums.size(0))
 
-            if not only_final:
-                labels = labels.transpose(0,1)
+            # if not only_final:
+            labels = labels.transpose(0,1)
 
             nums = nums.transpose(0,1)
 
@@ -968,9 +961,11 @@ class GenericRNN(NeuralNet):
                 out, _ = self(nums, hidden, only_final=only_final)
                 loss = -self.obs.distr(out).log_prob(labels).mean()
             else:
-                out, hid = self.transparent_forward(nums, hidden)
+                out, hid = self(nums, hidden, only_final=only_final)
+                # print(hid.shape)
+
                 loss = -self.obs.distr(out).log_prob(labels).mean() \
-                - self.hidden_dist.prior.log_prob(hid.transpose(-1,-2)).mean()
+                    - self.beta*self.hidden_dist.prior.log_prob(hid).mean()
 
             # optimise
             loss.backward()
@@ -980,55 +975,6 @@ class GenericRNN(NeuralNet):
             running_loss += loss.item()
             
         return running_loss/(i+1)
-
-
-#%% custom loss functions
-def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):
-    """Computes free energy, or evidence lower bound
-    If y is supplied, does a cheeky thing that isn't really the free energy
-    ToDo: add support for >1 MC sample in the cross-entropy estimation
-    """
-    btch_size = x.shape[0]
-    # z_post_params = model.enc(x)
-    
-    # z_samples = model.latent.sample(z_post_params)
-    # px_params = model.dec(z_samples)
-    
-    # reconstruction error (i.e. cross-entropy)
-    if y is not None:
-        xent = model.obs.distr(px_params).log_prob(y).sum()
-    else:
-        if xtrans is not None:
-            xent = model.obs.distr(px_params).log_prob(xtrans).sum()
-        else:
-            xent = model.obs.distr(px_params).log_prob(x).sum()
-    
-    # regularisation (i.e. KL-to-prior)
-    prior = model.latent.prior.expand([btch_size])
-    apprx = model.latent.distr(qz_params)
-    
-    dkl = regularise*(D.kl.kl_divergence(apprx, prior).sum())
-    
-    return xent-dkl
-
-# def loglihood(model, x, y):
-#     """
-#     Log-likelihood of data (x,y) under model. 
-#     """
-    
-#     py_params, qz_params, z = model(x)
-    
-#     # data likelihood 
-#     # ll = model.obs.distr(py_params).log_prob(y).mean()
-#     ll = model.obs.distr(py_params).log_prob(y).sum()
-#     # regularisation (if distributions exist)
-#     if model.latent is not None:
-#         ll += model.latent.distr(qz_params).log_prob(z).sum()
-        
-#     # if model.data is not None:
-#     #     p_x = model.data.distr()
-    
-#     return ll
 
 
 

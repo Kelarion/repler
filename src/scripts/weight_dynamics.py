@@ -614,7 +614,7 @@ adam_v = np.array(adam_v)
 weights_proj = np.einsum('ijk,kl->ijl',weights,x_pos/la.norm(x_pos,axis=0, keepdims=True))
 W = W.detach().numpy()
 
-     #%%
+#%%
 if two_layers:
     z1 = nonlinearity(torch.matmul(W1,inputs.T) + b1).detach().numpy()
     z = nonlinearity(torch.matmul(W2,torch.tensor(z1)) + b2).detach().numpy().T

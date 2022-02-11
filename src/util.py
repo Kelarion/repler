@@ -8,16 +8,19 @@ import torch.optim as optim
 import numpy as np
 import scipy
 import scipy.linalg as la
+import scipy.special as spc
 import numpy.linalg as nla
 from scipy.spatial.distance import pdist, squareform
 from itertools import permutations, combinations
 import itertools as itt
+import mpmath as mpm
+
 
 #%%
 def pca(X,**kwargs):
     '''assume X is (..., n_feat, n_sample)'''
-    U,S,_ = nla.svd((X-X.mean(-2, keepdims=True)), full_matrices=False, **kwargs)
-    return U, S**2/X.shape[-2]
+    U,S,_ = nla.svd((X-X.mean(-1, keepdims=True)), full_matrices=False, **kwargs)
+    return U, S**2
 
 def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
 
@@ -28,8 +31,43 @@ def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
         these_comps = np.arange(len(S)) < num_comp
     return X.T@U[:,these_comps]
 
+def participation_ratio(X):
+    """ (..., n_feat, n_sample) """
+    _, evs = pca(X)
+    return (np.sum(evs)**2)/np.sum(evs**2)
+
+def sample_normalize(data, sigma, eps=1e-10):
+    """ 
+    data is (num_feat, num_sample)
+    sigma is (num_feat, num_feat)
+
+    Generates random data with a specified covariance eigenvalue spectrum, spec
+
+    This ensures that the *sample* covariance has a certain spectrum, not the population
+    """
+
+    data_cntr = data - data.mean(1, keepdims=True)
+
+    L = la.cholesky(np.cov(data) + np.eye(data.shape[0])*eps)
+    return la.cholesky(sigma+ np.eye(data.shape[0])*eps).T@la.inv(L).T@data_cntr
+
+def expo2part(p, N):
+    """ Predict the participation ratio of an N-neuron code with exponentially decaying spectrum """
+    numer = float((mpm.zeta(p) - mpm.zeta(p,N+1))**2)
+    denom = float((mpm.zeta(2*p) - mpm.zeta(2*p,N+1)))
+    return numer/denom
+
+def part2expo(pr,N):
+    """ Brute force inversion of expo2part """
+
+    exps = np.linspace(0,5,100)
+    parts = np.array([expo2part(p, N) for p in exps])
+    return exps[np.argmin(np.abs(parts-pr))]
+
 #%%
-# def 
+def random_basis(dim):
+    C = np.random.randn(dim, dim)
+    return la.qr(C)[0][:dim,:]
 
 #%%
 def discrete_metric(x,y):
@@ -217,7 +255,75 @@ def gauss_process(xs, var=1):
     ys = np.array([np.random.multivariate_normal(mean, gram) for _ in xs])
     return ys
 
+###########
 
+def uncorrelated_dichotomies(num_item, pos_items, num_max=None):
+
+    K = int(num_item/4)
+    n_tot = 0.5*spc.binom(int(num_item/2), K)**2
+    neg = np.setdiff1d(range(num_item),pos_items)
+    if (num_max is None) or (num_max>=n_tot):
+        x = np.concatenate([[np.sort(np.concatenate([p,n])) for n in combinations(neg,K)] \
+            for p in combinations(pos_items,K)])
+        x = x[:int(len(x)/2)]
+    else:
+        x = []
+        for ix in Dichotomies(len(neg)-1, [], num_max):
+            trn = np.array(pos_conds)[np.append(0,np.array(ix)+1)]
+            x.append(np.sort(np.append(trn, np.random.choice(neg, K, replace=False))))
+
+    return x
+
+def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False, 
+        debug=False, return_weights=False,num_max=None):
+
+    num_cond = len(np.unique(cond))
+    pos_conds = np.unique(cond[coloring==0])
+
+    if these_vars is None:
+        x = uncorrelated_dichotomies(num_cond, pos_conds, num_max=num_max)
+    else:
+        x = these_vars
+
+    # ntot = spc.binom(int(self.num_cond/2), K)**2
+    ccgp = []
+    ws = []
+    for train_set in x:
+        is_trn = np.isin(cond, train_set)
+
+        clf.fit(z[is_trn,...], coloring[is_trn])
+        # print(clf.thrs)
+        perf = clf.score(z[~is_trn,...], coloring[~is_trn])
+        ccgp.append(perf)
+        if return_weights:
+            ws.append(np.append(clf.coef_, clf.intercept_))
+        if twosided:
+            clf.fit(z[~is_trn,...], coloring[~is_trn][:,None])
+            perf = clf.score(z[is_trn,...], coloring[is_trn][:,None])
+            ccgp.append(perf)
+            if return_weights:
+                ws.append(np.append(clf.coef_, clf.intercept_))
+    outs = [ccgp]
+    if debug:
+        outs.append(x)
+    if return_weights:
+        outs.append(ws)
+
+    return outs
+
+# def restricted_ccgp(z, item_labs, var_labs, clf, restriction=None, **ccgp_args):
+#     """  """
+
+#     num_item = len(np.unique(item_labs))
+#     var_items = np.unique(var_labs)
+
+#     if restriction is None:
+#         x = list(combinations(var_items, 2))
+#     else:
+#         x = [restriction]
+
+#     ccgp = []
+#     for 
 
 #%% Mobius strip (maybe this belongs as a class?)
 def noose_curve(x, l=2):
@@ -361,41 +467,6 @@ def dot_product(x,y):
     """Assume features are in first axis"""
     return np.einsum('k...i,k...j->...ij', x, y)
 
-def set_axes_equal(ax):
-    '''Make axes of 3D plot have equal scale so that spheres appear as spheres,
-    cubes as cubes, etc..  This is one possible solution to Matplotlib's
-    ax.set_aspect('equal') and ax.axis('equal') not working for 3D.
-
-    From karlo on stack exchange
-
-    Input
-      ax: a matplotlib axis, e.g., as output from plt.gca().
-    '''
-
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim3d()
-
-    x_range = abs(x_limits[1] - x_limits[0])
-    x_middle = np.mean(x_limits)
-    y_range = abs(y_limits[1] - y_limits[0])
-    y_middle = np.mean(y_limits)
-    z_range = abs(z_limits[1] - z_limits[0])
-    z_middle = np.mean(z_limits)
-
-    # The plot bounding box is a sphere in the sense of the infinity
-    # norm, hence I call half the max range the plot radius.
-    plot_radius = 0.5*max([x_range, y_range, z_range])
-
-    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
-    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
-    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
-
-def diverging_clim(ax):
-    for im in ax.get_images():
-        cmax = np.max(np.abs(im.get_clim()))
-        im.set_clim(-cmax,cmax)
-
 def significant_figures(nums, sig_figs):
     '''Because for some reason numpy doesnt do this ?????????'''
     digis = np.log10(np.abs(nums))
@@ -406,34 +477,43 @@ def significant_figures(nums, sig_figs):
     return np.round(nums/pwr, sig_figs-1)*pwr
 
 
-class ContinuousEmbedding(object):
-    def __init__(self, dim, f):
-        """f in [0,1]"""
-        C = np.random.rand(dim, dim)
-        self.basis = torch.tensor(la.qr(C)[0]).float()
+def sinusoidal_encoding(seqs):
+
+    p = torch.arange(seqs.shape[0])[:,None,None]*torch.ones(1,1,seqs.shape[-1])
+    d = torch.arange(seqs.shape[-1])[None,None,:]*torch.ones(seqs.shape[0],1,1)
+
+    args = p/(1000**(2*(d//2)/seqs.shape[-1]))
+
+    return torch.where(np.mod(d,2)>0, np.cos(args), np.sin(args))
+
+# class ContinuousEmbedding(object):
+#     def __init__(self, dim, f):
+#         """f in [0,1]"""
+#         C = np.random.rand(dim, dim)
+#         self.basis = torch.tensor(la.qr(C)[0]).float()
         
-        self.emb_dim = dim
-        self.rotator = self.rotation_mat(f)
-        self.offset = f*(1-np.sqrt(1-2*(0.5**2)))
+#         self.emb_dim = dim
+#         self.rotator = self.rotation_mat(f)
+#         self.offset = f*(1-np.sqrt(1-2*(0.5**2)))
 
-    def rotation_mat(self, f):
-        """returns a matrix which rotates by angle theta in the x2-x3 plane"""
+#     def rotation_mat(self, f):
+#         """returns a matrix which rotates by angle theta in the x2-x3 plane"""
 
-        theta = f*np.pi/2
-        rot = torch.eye(self.emb_dim).float()
-        rot[1:3,1:3] = torch.tensor([[np.cos(theta),np.sin(theta)],[-np.sin(theta),np.cos(theta)]]).float()
+#         theta = f*np.pi/2
+#         rot = torch.eye(self.emb_dim).float()
+#         rot[1:3,1:3] = torch.tensor([[np.cos(theta),np.sin(theta)],[-np.sin(theta),np.cos(theta)]]).float()
 
-        return (self.basis@rot)@(self.basis.T)
+#         return (self.basis@rot)@(self.basis.T)
         
-    def __call__(self, labels, newf=None):
-        ''' labels of shape (..., n_variable) '''
-        if newf is not None:
-            self.rotator = self.rotation_mat(newf)
-            self.offset = newf*(1-np.sqrt(1-2*(0.5**2)))
+#     def __call__(self, labels, newf=None):
+#         ''' labels of shape (..., n_variable) '''
+#         if newf is not None:
+#             self.rotator = self.rotation_mat(newf)
+#             self.offset = newf*(1-np.sqrt(1-2*(0.5**2)))
                 
-        output = labels@(self.basis[:,:2].T)
-        output -= output.mean(0)
-        output[labels[:,0]==0,:] = output[labels[:,0]==0,:]@self.rotator
-        output[labels[:,0]==0,:] += self.offset*self.basis[:,0]
+#         output = labels@(self.basis[:,:2].T)
+#         output -= output.mean(0)
+#         output[labels[:,0]==0,:] = output[labels[:,0]==0,:]@self.rotator
+#         output[labels[:,0]==0,:] += self.offset*self.basis[:,0]
     
-        return output
+#         return output

@@ -42,8 +42,8 @@ K = 2
 respect = False
 # respect = True
 
-# layers = [K**0,K**1,K**2]
-layers = [1, 2, 3]
+layers = [K**0,K**1,K**2,K**3]
+# layers = [1, 2, 3]
 # layers = [1,1,1]
 
 child_prob = 0.7
@@ -65,6 +65,7 @@ seqs = []
 seq_toks = []
 bs = []
 i=0
+pbar = tqdm(total=num_seq)
 while i<num_seq:
     
     sent = Data.random_sequence(child_prob)
@@ -81,6 +82,8 @@ while i<num_seq:
     toks = np.array([Data.terminals.index(complex(sent.node_tags[i])) for i in sent.words])
     seqs.append( torch.tensor(x_[:,toks]).T ) #+ np.random.randn(dim_inp, )
     seq_toks.append(torch.tensor(toks))
+    
+    pbar.update(1)
     
 inputs = nn.utils.rnn.pad_sequence(seqs).float()
 input_tokens = nn.utils.rnn.pad_sequence(seq_toks)
@@ -179,6 +182,97 @@ for epoch in tqdm(range(nepoch)):
     
     train_loss.append(np.mean(epoch_lss))
     train_perf.append(np.mean(epoch_perf))
+
+
+#%%
+
+these_bounds = [0,2,4,6]
+
+all_vecs = []
+all_full_vecs = []
+for line_idx in np.random.choice(range(num_seq), 300):
+    
+    line = bs[line_idx]
+    sentence = gram.ParsedSequence(line)
+    
+    orig = sentence.words
+    ntok = sentence.ntok
+    
+    orig_idx = np.arange(ntok)
+    
+    swap_idx = np.random.permutation(orig_idx)
+    
+    orig_vecs = tiny_trans(inputs[:ntok,line_idx,:]+pos_enc[:ntok,line_idx,:], pad_mask[line_idx,:ntok]).detach().numpy()
+    swap_vecs = tiny_trans(inputs[swap_idx,line_idx,:]+pos_enc[:ntok,line_idx,:], pad_mask[line_idx,:ntok]).detach().numpy()
+    
+    catted = np.append(orig_vecs, swap_vecs, -2)
+    all_vecs.append(catted)
+    
+m = np.concatenate(all_vecs,0).mean(0,keepdims=True)
+s = np.concatenate(all_vecs,0).std(0,keepdims=True)
+
+#%%
+frob = []
+frob_full = []
+nuc = []
+inf = []
+csim = []
+whichline = []
+whichcond = []
+whichswap = []
+attn = []
+attn_orig = []
+concentration = []
+norms = []
+dist_avg = []
+
+
+t0 = time()
+pbar = tqdm(total=num_seq*max(these_bounds))
+
+for line_idx in range(num_seq):
+    
+    line = bs[line_idx]
+    sentence = gram.ParsedSequence(line)
+    if sentence.ntok<10:
+        continue
+    # orig = d[0]
+    orig = sentence.words
+    ntok = sentence.ntok
+    
+    crossings = np.diff(np.abs(sentence.brackets).cumsum()[sentence.term2brak])
+    if not np.any(np.isin(crossings, these_bounds)):
+        continue
+    
+    orig_vecs = tiny_trans(inputs[:ntok,line_idx,:] + pos_enc[:ntok,line_idx,:], pad_mask[line_idx,:ntok]).detach().numpy()
+    
+    orig_idx = np.array(range(ntok))
+    for i,c in enumerate(crossings):
+        
+        swap_idx = np.array(range(ntok))
+        swap_idx[i+1] = i
+        swap_idx[i] = i+1
+        
+        swapped = [orig[i] for i in swap_idx]
+        
+        # real
+        swap_vecs = tiny_trans(inputs[swap_idx,line_idx,:]+pos_enc[:ntok,line_idx,:], pad_mask[line_idx,:ntok]).detach().numpy()
+
+        orig_vecs_zscore = (orig_vecs-m)/s
+        swap_vecs_zscore = (swap_vecs-m)/s
+        
+        diff = orig_vecs_zscore-swap_vecs_zscore
+        # diff_full = (orig_full-swap_full)/s_full
+        frob.append(la.norm(diff,'fro', axis=(0,1))/np.sqrt(np.prod(diff.shape)))
+        # frob_full.append(la.norm(diff_full,'fro', axis=(1,2))/np.sqrt(np.prod(diff_full.shape[1:])))
+        
+        norms.append(la.norm(np.append(orig_vecs-m, swap_vecs-m, 0), 2, -1).mean(0))
+        
+        whichline.append(line_idx)
+        whichcond.append(c)
+        whichswap.append(np.repeat(len(whichline), ntok))
+        
+        pbar.update(1)
 
 
 
