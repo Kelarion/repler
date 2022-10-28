@@ -1,0 +1,570 @@
+"""
+Classes which implement experiments. They are what's called in the habanero
+experiment scripts. They standardise my experiments with a Byzantine web of 
+class inheritance and exchangeable modules. Not for human consumption.
+"""
+
+import os
+import pickle
+import warnings
+import re
+
+import torch
+import torchvision
+import torch.optim as optim
+import numpy as np
+import scipy.special as spc
+import scipy.linalg as la
+import scipy.special as spc
+from itertools import permutations
+from sklearn import svm, linear_model
+
+# this is my code base, this assumes that you can access it
+import util
+import pt_util
+import assistants as ta
+import dichotomies as dic
+
+from sklearn.exceptions import ConvergenceWarning
+import warnings # I hate convergence warnings so much never show them to me
+warnings.simplefilter("ignore", category=ConvergenceWarning)
+
+
+#%% Multi-classification tasks
+
+class FeedforwardExperiment():
+    """
+    Basic class for multi-classification experiments. To make an instance of such an experiment,
+    make a child class and define the `load_data` method. This contains all the methods
+    to run the experiment, and save and load it.
+    """
+    def __init__(self, inputs, outputs):
+        """
+        Everything required to fully specify an experiment.
+        
+        Failure to supply the N argument will create the class in 'task only mode',
+        which means that will not have a model. Call the `self.use_model` method
+        to later equip it with a particular model.
+        """
+        
+        self.inputs = inputs
+        self.outputs = outputs
+
+        self.__name__ = self.__class__.__name__
+
+    def draw_data(self, num_dat):
+
+        condition = np.random.choice(self.inputs.num_cond, num_dat, replace=True)
+        
+        inps = self.inputs(condition)
+        outs = self.outputs(condition)
+
+        return condition, (inps, outs)
+
+    def initialize_network(self, model, num_init=None, **net_args):
+        """ 
+        a method which allows you to tailor the model to the experiment
+        """
+
+        self.net_args = net_args
+
+        if num_init is None:
+            self.num_init = 1
+        else:
+            self.num_init = num_init
+
+        nets = []
+        for i in range(self.num_init):
+            nets.append( model(dim_inp=self.inputs.dim_output, 
+                                dim_out=self.outputs.dim_output, **net_args) )
+
+        return nets
+
+    # def train_network(self, model, verbose=False, skip_metrics=False,
+    #         bsz=64, nepoch=1000, n_train_dat=5000, n_test_dat=1000, 
+    #         init_index=None, **opt_args):
+
+    def train_network(self, models, verbose=False, skip_rep_metrics=False, skip_metrics=False, 
+        conv_tol=1e-5,bsz=64, nepoch=1000, n_train_dat=5000, n_test_dat=1000, metric_period=10,
+        **opt_args):
+
+        ### book-keeping
+        # self.opt_args = {k:v for k,v in locals().items() \
+        #     if k not in ['model', 'verbose', 'skip_metrics', 'self']}
+        self.opt_args = opt_args
+        self.models = models
+        # self.init = init_index
+
+        ### generate data
+        self.train_conditions, self.train_data = self.draw_data(n_train_dat)
+        self.test_conditions, self.test_data = self.draw_data(n_test_dat)
+
+        dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
+        dl = torch.utils.data.DataLoader(dset, batch_size=bsz, shuffle=True) 
+        
+        ### train network
+        # self.optimizer = opt_alg(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        for model in self.models:
+            model.init_optimizer(**opt_args)
+
+        expinf = self.file_suffix()
+        print('Running %s ...'%expinf)
+
+        self.init_metrics()
+        for epoch in range(nepoch):
+
+            # Actually update model #######################################
+            losses = []
+            prm_change = []
+            for model in self.models:
+                prm_init = [1*p.data for p in model.parameters()]
+                losses.append(model.grad_step(dl)) # this does a pass through the data
+                prm_change.append(max([torch.max(torch.abs(p1.data - p0)) for p1,p0 in zip(prm_init, model.parameters())]))
+
+            # Measure things ##############################################
+            if not np.mod(epoch, metric_period):
+                for k in self.metrics.keys():
+                    self.metrics[k].append([])
+
+                self.metrics['train_loss'][-1].append( losses)
+
+                with torch.no_grad():
+                    for model in self.models:
+                        self.model = model
+                        self.compute_representation_metrics(skip_rep_metrics)
+
+                        if not skip_metrics:
+                            self.compute_metrics()
+
+            # print updates ############################################
+            if verbose:
+                print('Epoch %d: Loss=%.3f'%(epoch, -np.mean(losses)))
+
+            # print(max(prm_change))
+            if max(prm_change) <= conv_tol:
+                if verbose:
+                    print('Converged')
+                break
+            
+        #### package computed metrics
+        for k,v in self.metrics.items():
+            self.metrics[k] = np.array(v)
+
+    def init_metrics(self):
+        self.metrics = {'train_loss': [],
+                       'test_perf': [],
+                       'parallelism': [],
+                       'decoding': [],
+                       'mean_grad': [],
+                       'std_grad': [],
+                       'ccgp': [],
+                       'hidden_kernel': [],
+                       'linear_dim': [],
+                       'sparsity': []} # put all training metrics here
+
+    def compute_representation_metrics(self, skip_metrics):
+
+        pred, z_test = self.model(self.test_data[0])[:2]
+        _, z_train = self.model(self.train_data[0])[:2]
+        N = z_test.shape[1]
+
+        # print(pred.shape)
+        # print(z_test.shape)
+
+        z_test = z_test.detach().numpy().T
+        z_train = z_train.detach().numpy().T
+
+        # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
+        terr = self.outputs.correct(pred, self.test_data[1])
+        # print(terr)
+        self.metrics['test_perf'][-1].append(terr)
+
+        # representation sparsity
+        self.metrics['sparsity'][-1].append(np.mean(z_test>0))
+
+        # Dimensionality #########################################
+        pr = util.participation_ratio(z_test)
+        self.metrics['linear_dim'][-1].append( pr)
+
+        if not skip_metrics:
+            dics = dic.Dichotomies(self.inputs.num_cond, 
+                                    self.outputs.positives+self.inputs.positives)
+            dic_shat = dic.Dichotomies(self.inputs.num_cond, 
+                                    self.outputs.positives+self.inputs.positives)
+
+            # distance correlations
+            # didx = np.random.choice(n_compute,np.min([n_compute, 2000]),replace=False)
+            # Z = z_train[didx,...].T
+            # X = self.train_data[0][idx_trn,...][didx,...].T
+            # Y = self.train_data[1][idx_trn,...][didx,...].T
+            # metrics['dcorr_input'].append(util.distance_correlation(Z, X))
+            # metrics['dcorr_output'].append(util.distance_correlation(Z, Y))
+
+            # z_mean = np.stack([z_train[self.train_conditions[idx_trn]==i,:].mean(0).detach().numpy() \
+            #     for i in np.unique(self.train_conditions[idx_trn])]).T
+            # Kern_z = util.dot_product(z_mean-z_mean.mean(1,keepdims=True), z_mean-z_mean.mean(1,keepdims=True))
+            # metrics['hidden_kernel'].append(Kern_z)
+
+            # shattering dimension #####################################
+            dclf = ta.LinearDecoder(N, dic_shat.ntot, svm.LinearSVC)
+
+            trn_conds_all = np.array([dic_shat.coloring(self.train_conditions) \
+                for _ in dic_shat])
+            # print(trn_conds_all)
+            dclf.fit(z_train.T, trn_conds_all.T)
+
+            tst_conds_all = np.array([dic_shat.coloring(self.test_conditions) \
+                for _ in dic_shat])
+            SD = dclf.test(z_test.T, tst_conds_all.T)
+
+            self.metrics['decoding'][-1].append(SD)  
+            
+            # various abstraction metrics #########################
+            gclf = svm.LinearSVC()
+
+            PS = np.zeros(dics.ntot)
+            CCGP = np.zeros(dics.ntot)
+            for i, _ in enumerate(dics):
+                coloring = dics.coloring(self.test_conditions)
+                PS[i] = dic.parallelism_score(z_test, self.test_conditions, coloring)
+                CCGP[i] = np.mean(dic.compute_ccgp(z_test.T, self.test_conditions, 
+                                                   coloring,gclf, twosided=True))
+
+            self.metrics['parallelism'][-1].append(PS)
+            self.metrics['ccgp'][-1].append(CCGP)
+
+    def compute_metrics(self):
+        """ Here goes anything specific to an experiment """
+        pass
+
+    def save_experiment(self, SAVE_DIR):
+        """
+        Save the experimental information: model parameters, learning metrics,
+        and hyperparameters. 
+        """
+        
+        if 'models' not in dir(self):
+            raise Exception('Can only save after training a network!'
+                            'Use "train_network" method')
+
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        if not os.path.isdir(SAVE_DIR+FOLDERS):
+            os.makedirs(SAVE_DIR+FOLDERS)
+        
+        # save all hyperparameters, for posterity
+        all_args = {'net_args': self.net_args,
+                    'opt_args': self.opt_args,
+                    'exp_prm': self.exp_prm}
+        
+        params_fname = 'parameters_'+expinf
+        metrics_fname = 'metrics_'+expinf+'.pkl'
+        args_fname = 'arguments_'+expinf+'.pkl'
+        
+        for i,model in enumerate(self.models):
+            model.save(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
+        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+            pickle.dump(self.metrics, f, -1)
+        with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
+            pickle.dump(all_args, f, -1)
+
+    def load_experiment(self, SAVE_DIR, opt_args=None):
+        """
+        Requires that the model is specified
+        """
+
+        if 'models' not in dir(self):
+            raise Exception('Can only save after training a network!'
+                            'Use "train_network" method')
+
+        if opt_args is not None:
+            self.opt_args = opt_args
+        elif 'opt_args' not in dir(self):
+            raise Exception('Optimization arguments "opt_args" must be supplied!')
+
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        if not os.path.isdir(SAVE_DIR+FOLDERS):
+            os.makedirs(SAVE_DIR+FOLDERS)
+        
+        params_fname = 'parameters_'+expinf
+        metrics_fname = 'metrics_'+expinf+'.pkl'
+        args_fname = 'arguments_'+expinf+'.npy'
+        
+        for i,model in enumerate(self.models):
+            model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
+        # self.model.load(SAVE_DIR+FOLDERS+params_fname)
+        with open(SAVE_DIR+FOLDERS+metrics_fname, 'rb') as f:
+            self.metrics = pickle.load(f)
+        # args = np.load(SAVE_DIR+FOLDERS+args_fname, allow_pickle=True).item()
+
+        # return self.model, args,
+
+
+    ####### file I/O functions for this experiment
+    # I do this in order to standardise everything within this experiment
+    def folder_hierarchy(self):
+
+        FOLDERS = '/%s/'%self.__name__
+
+        FOLDERS += self.inputs.__name__ + '/'
+        FOLDERS += self.outputs.__name__ + '/'
+        FOLDERS += self.exp_folder_hierarchy()
+
+        return FOLDERS
+        
+    def exp_folder_hierarchy(self):
+        return ''
+
+    def file_suffix(self):
+        # if self.opt_args['init_index'] is None:
+        #     return self.model.__name__
+        # else:
+        #     return self.model.__name__ + '_%d'%self.opt_args['init_index']
+        return self.models[0].__name__
+
+
+#%% Sequential classification
+class RNNExperiment():
+    """
+    Basic class for multi-classification experiments. To make an instance of such an experiment,
+    make a child class and define the `load_data` method. This contains all the methods
+    to run the experiment, and save and load it.
+    """
+    def __init__(self, task):
+        self.task = task
+
+        self.__name__ = self.__class__.__name__
+
+    def draw_data(self, num_dat):
+        """
+        needs to produce a list of conditoins, and a tuple of (inputs, outputs) or 
+        (inputs, outputs, initial_hidden) with shapes (num_seq, len_seq, *),
+        where * is dim_inp, dim_out, or dim_hidden
+        """
+
+        raise NotImplementedError
+
+    def package_data(self):
+
+        self.train_conditions, self.train_data = self.draw_data(self.opt_args['n_train_dat'])
+        self.test_conditions, self.test_data = self.draw_data(self.opt_args['n_train_dat'])
+
+        self.decoded_vars = []
+
+        dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
+        return torch.utils.data.DataLoader(dset, batch_size=self.opt_args['bsz'], shuffle=True) 
+
+    def train_network(self, model, verbose=False, skip_metrics=True,
+            bsz=64, nepoch=1000, lr=1e-3, opt_alg=optim.Adam, weight_decay=0,
+            n_train_dat=5000, n_test_dat=2000, init_index=None):
+
+        ### book-keeping
+        self.opt_args = {k:v for k,v in locals().items() \
+            if k not in ['model', 'verbose', 'skip_metrics', 'init_index', 'self']}
+        self.model = model
+        self.init = init_index
+
+        expinf = self.file_suffix()
+        print('Running %s ...'%expinf)
+
+        ### generate data
+        dl = self.package_data()
+        
+        ### train network
+        self.optimizer = opt_alg(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+
+        self.init_metrics()
+        for epoch in range(nepoch):
+             
+            # Actually update model #######################################
+            loss = self.model.grad_step(dl, self.optimizer) # this does a pass through the data
+
+            self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss)
+
+            with torch.no_grad():
+                self.compute_representation_metrics(skip_metrics)
+
+                    # if not np.mod(epoch, 10):
+                    #     self.compute_gradient_metrics()
+            
+            # print updates ############################################
+            if verbose:
+                print('Epoch %d: Loss=%.3f'%(epoch, -loss))
+            
+        #### package computed metrics
+        for k,v in self.metrics.items():
+            self.metrics[k] = np.array(v)
+
+
+    def init_metrics(self):
+        self.metrics = {'train_loss': np.zeros(0),
+                        'train_perf':[],
+                        'test_perf': [],
+                        'decoding': [],
+                        'linear_dim': np.zeros(0)} # put all training metrics here
+
+    def compute_representation_metrics(self, skip_metrics=True):
+
+        pred, z = self.model(self.test_data[0].transpose(0,1))[:2]
+        trn_pred = self.model(self.test_data[0].transpose(0,1))[0]
+        N = z.shape[2]
+        T = z.shape[1]
+        nseq = z.shape[0]
+
+        z = z_test.detach().transpse(1,2).numpy() # shape (nseq, N, T)
+
+        terr = self.task.correct(trn_pred, self.train_data[1])
+        self.metrics['train_perf'].append(terr)
+
+        # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
+        terr = self.task.correct(pred, self.test_data[1])
+        self.metrics['test_perf'].append(terr)
+
+        # Dimensionality #########################################
+        pr = util.participation_ratio(z)
+        self.metrics['linear_dim'] = np.append(self.metrics['linear_dim'], pr)
+
+        # things that take up time! ###################################
+        if not skip_metrics:
+
+            which_time = np.repeat(range(T), self.ntrain)
+
+            dclf = ta.LinearDecoder(N, self.decoded_vars.shape[-1], svm.LinearSVC)
+
+            dclf.fit(z[:nseq//2,...], self.decoded_vars[:nseq//2,...], 
+                t_=which_time, max_iter=200)
+
+            dec = dclf.test(z[nseq//2:,...],  self.decoded_vars[nseq//2:,...])
+            self.metrics['decoding'].append(dec)
+
+
+    def save_experiment(self, SAVE_DIR):
+        """
+        Save the experimental information: model parameters, learning metrics,
+        and hyperparameters. 
+        """
+        
+        if 'model' not in dir(self):
+            raise Exception('Can only save after training a network!'
+                            'Use "train_network" method')
+
+        FOLDERS = self.folder_hierarchy(self.opt_args)
+        expinf = self.file_suffix()
+        
+        if not os.path.isdir(SAVE_DIR+FOLDERS):
+            os.makedirs(SAVE_DIR+FOLDERS)
+        
+        # save all hyperparameters, for posterity
+        all_args = {'net_args': self.net_args,
+                    'opt_args': self.opt_args,
+                    'exp_prm': self.exp_prm}
+        
+        params_fname = 'parameters_'+expinf+'.pt'
+        metrics_fname = 'metrics_'+expinf+'.pkl'
+        args_fname = 'arguments_'+expinf+'.npy'
+        
+        self.model.save(SAVE_DIR+FOLDERS+params_fname)
+        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+            pickle.dump(self.metrics, f, -1)
+        with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
+            np.save(f, all_args)
+
+
+    def folder_hierarchy(self, opt):
+
+        FOLDERS = '/%s/'%self.__name__
+
+        FOLDERS += self.task.__name__ + '/'
+
+        # additional folders for deviations from default
+        FOLDERS += (
+                    f"{'/{opt_alg.__name__}/' if opt['opt_alg'].__name__!='Adam' else ''}"
+                    f"{'/l2_{weight_decay}/' if opt['weight_decay']>0 else ''}"
+                    f"{'/bs_{bsz}/' if opt['bsz']!=64 else ''}"
+                    ).format(**opt)
+        
+        return FOLDERS
+        
+    def file_suffix(self):
+        if self.init is None:
+            return self.model.__name__
+        else:
+            return self.model.__name__ + '_%d'%self.init
+
+
+# class delayed_logic(SequentialClassification):
+#     def __init__(self, task, input_task, SAVE_DIR, time_between=20, input_channels=1, jitter=True, **expargs):
+#         """
+#         Generates num_cond
+#         """
+#         self.num_inp = input_task.dim_output # how many inputs
+#         self.dim_input = len(np.unique(input_channels))
+#         self.input_task = input_task
+#         self.input_channels = input_channels
+#         self.time_between = time_between
+#         self.jitter = jitter
+
+#         super(delayed_logic, self).__init__(task, SAVE_DIR, **expargs)
+#         if input_channels == 1:
+#             self.base_dir = 'results/dlog/%d-%d-%d/'%(self.num_inp, time_between, input_channels) # append at will
+#         else:
+#             inp_chn = ("%d"*self.num_inp)%tuple(input_channels)
+#             self.base_dir = 'results/dlog/%d-%d-%s/'%(self.num_inp, time_between, inp_chn) # append at will
+
+#     def load_data(self, SAVE_DIR, jitter_override=None):
+
+#         if jitter_override is None:
+#             jitter = self.jitter
+#         else:
+#             jitter = jitter_override
+
+#         # -------------------------------------------------------------------------
+#         # Import data, create the train and test sets
+#         n_total = 1000*(2**self.num_inp) # hardcode the number of datapoints
+#         # total_time = self.time_between*(self.num_inp-1) + 1
+#         total_time = self.time_between*self.num_inp 
+
+#         inp_condition = np.random.choice(2**self.num_inp, n_total)
+
+#         inputs = torch.zeros(n_total, total_time, self.dim_input)
+#         dt = self.time_between//2
+
+#         input_times = np.zeros((n_total, self.num_inp))
+#         input_times[:,0] = 0 
+#         input_times[:,1] = self.time_between + jitter*np.random.randint(-dt,dt, size=n_total)
+#         input_times[:,2] = 2*self.time_between + jitter*np.random.randint(-dt,int(1.5*dt), size=n_total)
+
+#         vals = 2*self.input_task(inp_condition).flatten()-1
+#         seq_idx = np.repeat(range(n_total),self.num_inp)
+#         if self.input_channels == 1:
+#             inp_idx = np.tile([0,0,0],n_total)
+#         else: # assume input channel is a list
+#             inp_idx = np.tile(self.input_channels, n_total)
+#         inputs[seq_idx,input_times.flatten(),inp_idx] = vals
+
+#         Y = torch.tensor(inp_condition)
+
+#         trn = int(np.floor(0.8*n_total))
+
+#         self.train_data = (inputs[:trn,:].float(), self.task(Y[:trn]))
+#         # self.train_conditions = self.abstracts(Y[:trn])
+#         self.train_conditions = Y[:trn].detach().numpy()
+#         self.ntrain = trn
+        
+#         self.test_data = (inputs[trn:,:], 
+#                           self.task(Y[trn:]))
+#         # self.test_conditions = self.abstracts(Y[trn:])
+#         self.test_conditions = Y[trn:].detach().numpy()
+#         self.ntest = n_total - trn
+
+#     def save_other_info(self, arg_dict):
+#         arg_dict['input_dichotomies'] = self.input_task.positives
+#         return arg_dict
+
+#     def load_other_info(self, arg_dict):
+#         self.task.positives = arg_dict['dichotomies']
+#         self.input_task.positives = arg_dict['input_dichotomies']

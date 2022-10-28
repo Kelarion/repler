@@ -31,6 +31,7 @@ from cycler import cycler
 import students
 import assistants
 import experiments as exp
+import dichotomies as dics
 import util
 import tasks
 import plotting as dicplt
@@ -714,8 +715,8 @@ for i in range(num_cond):
 x_3 = np.stack(x_3)
 
 #%%
-noise = 0.2
-epsilon = 0.15
+noise = 0.0
+epsilon = 0.5
 N_neur = 41**2
 n_epoch = 500
 fake_lr = 1e-1
@@ -727,14 +728,14 @@ rms_beta = 0.99
 
 # this_nonlin = RayLou()
 # this_nonlin = TanAytch()
-this_nonlin = NoisyTanAytch(noise)
+# this_nonlin = NoisyTanAytch(noise)
 # this_nonlin = HardTanAytch()
 # this_nonlin = Iden()
 # this_nonlin = Poftslus(1)
-# this_nonlin = NoisyRayLou(noise)
+this_nonlin = NoisyRayLou(noise)
 
-# incl_bias = False
-incl_bias = True
+incl_bias = False
+# incl_bias = True
 
 task = tasks.RandomDichotomies(d=[(1,2)])
 input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim_inp, nudge_mag=epsilon, noise_var=noise, random=False)
@@ -820,7 +821,7 @@ basin_ovlp = fake_W@basin_prototype
 w_coefs = np.array(ws)
 
 plt.figure()
-plt.scatter(fake_weights_proj_init[:,1],fake_weights_proj_init[:,2],c=basin_ovlp.argmax(-1))
+plt.scatter(fake_weights_proj_init[:,1],-fake_weights_proj_init[:,2],c=basin_ovlp.argmax(-1))
 dicplt.square_axis()
 
 # eps = np.tan(np.pi/2-np.arctan(input_task.nudge_mag))
@@ -1053,6 +1054,130 @@ l,v = la.eig(K)
 
 idx = np.argsort(-l)
 vecs = v[:,idx].T@x_.T
+
+#%%
+def task_basis(W, y):
+    
+    num_cond = y.shape[-1]
+    
+    grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+
+    # compute relevant directions
+    dic = dics.Dichotomies(num_cond)
+    all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+    
+    corr_dir = W.T@y
+    # corr_dir/=la.norm(corr_dir, axis=-1, keepdims=True)
+    corr_dir/=np.max(corr_dir, axis=-1, keepdims=True)
+    # lin_dir = corr_dir@x.T
+    # lin_dir /= la.norm(lin_dir, axis=-1, keepdims=True)
+    
+    kernels = ((all_col@y.T)@grp_weights==0)
+    bad_dirs = np.stack([all_col[k,:].T@all_col[k,:] for k in kernels.T])[grp,:,:]
+    anticorr_dir = 1.0*bad_dirs[np.arange(len(grp)),np.argmax(corr_dir>0,axis=1),:]
+    # anticorr_dir/=la.norm(anticorr_dir, axis=-1, keepdims=True)
+    anticorr_dir/=np.max(anticorr_dir, axis=-1, keepdims=True)
+    # bad_dir = anticorr_dir@x.T
+    # bad_dir /= la.norm(bad_dir, axis=-1, keepdims=True)
+    
+    return np.stack([corr_dir,anticorr_dir])
+
+#%%
+
+n_dat = 1000
+dt = 1e-3
+dim = 100
+init_range = 0.1
+beta = 100
+epsilon = 1.0
+
+task = tasks.RandomDichotomies(d=[(1,2)])
+y_ = task(np.arange(4)).detach().numpy().T
+err_avg = y_ - y_.mean(1,keepdims=True)
+delta = err_avg.squeeze()
+
+# xs = np.random.randn(dim, 4)
+input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim, nudge_mag=epsilon, noise_var=0, random=False)
+x_pos = la.block_diag(*np.diff(input_task.means[:2],axis=1).squeeze().tolist()).T
+x_pos = np.concatenate([x_pos,input_task.means[2].flatten()[:,None]], axis=1)
+
+xs = input_task(np.arange(4),noise=0).detach().numpy().T
+
+# inp_basis = np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
+# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@inp_basis
+# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
+basis = np.squeeze(task_basis(np.array([[1]]), err_avg))
+basis /= la.norm(basis,axis=-1,keepdims=True)
+
+
+w = np.random.randn(2*dim, n_dat)*init_range
+
+# ws = [w.T@xs]
+w_x = w.T@xs
+ws = [w_x/np.sqrt(1+la.norm(w_x,axis=1, keepdims=True)**2)]
+for t in tqdm(range(10000)):
+    idx = np.random.choice(xs.shape[1], n_dat)
+    xi = xs[:,idx]
+    take_step = np.random.rand(n_dat) < 1/(1+np.exp(-beta*np.sum(w*xi,0)))
+    w += dt*delta[idx]*xi*take_step
+    # ws.append(w.T@xs)
+    # ws.append((w/(1+la.norm(w,axis=0))).T@basis)
+    w_x = w.T@xs
+    ws.append(w_x/np.sqrt(1+la.norm(w_x,axis=1, keepdims=True)**2))
+
+wa = np.stack(ws)
+# www = (xs/la.norm(xs,axis=-1,keepdims=True)).T@basis
+# bla = wa@www
+bla = wa@basis.T
+
+basins = [[0],[1],[2],[3],[0,3],[1,2]]
+# basin_prototype = np.stack([xs[:,p].sum(1) for p in basins]).T
+# basin_ovlp = fake_W@basin_prototype
+basin_ovlp = np.stack([wa[-1,:,p].sum(0) for p in basins]).T
+
+plt.figure()
+plt.plot(bla[:,:,1], bla[:,:,0], alpha=0.1, color=(0.5,0.5,0.5))
+# dicplt.square_axis()
+
+# eps = np.tan(np.pi/2-np.arctan(input_task.nudge_mag))
+# nya = np.max(np.abs(bla))
+eps = np.arctan(np.sqrt(2)/epsilon)
+plt.plot([-np.cos(eps),np.cos(eps)],[-np.sin(eps),np.sin(eps)],'k--')
+plt.plot([-np.cos(eps),np.cos(eps)],[np.sin(eps),-np.sin(eps)],'k--')
+plt.plot(np.cos(np.linspace(0,2*np.pi,100)),np.sin(np.linspace(0,2*np.pi,100)),'k--')
+
+x_proj = (xs.T@(xs@basis.T))
+x_proj /= la.norm(x_proj, axis=1, keepdims=True)
+plt.scatter(x_proj[:,1], x_proj[:,0], c=delta, cmap='bwr')
+
+dicplt.square_axis()
+# plt.scatter(bla[0,:,0], bla[0,:,2], c=basin_ovlp.argmax(1), alpha=1, zorder=10)
+
+#%%
+
+init_var = 0.1
+eps = 0.1
+# dt = 
+
+x = 2*(tasks.StandardBinary(2)(np.arange(4)).numpy() - 0.5)
+y = 2*(tasks.RandomDichotomies(d=[(1,2)])(np.arange(4)).numpy()-0.5)
+x = np.concatenate([x, eps*y],axis=1)
+
+kern = x@(y*x).T
+l,v = la.eig(kern>0)
+
+
+w_grd = np.
+
+pw = [np.random.randn()]
+for t in range(100):
+    
+    p0 = sts.norm.pdf(-(kern*kern).sum(0)/init_var)
+    ci = v
+    
+
+
+
 
 
 

@@ -374,14 +374,309 @@ class ParsedSequence(object):
         return swap_idx
 
 
+
 class HierarchicalData(object):
 
-    def __init__(self, num_vars, fan_out, respect_hierarchy=True, graph_rule='minimal'):
+    def __init__(self):
+        raise NotImplementedError
+
+    def labels(self):
+        raise NotImplementedError
+
+    # def represent_labels(self, these_leaves, rep=None):
+    #     """ 
+    #     'rep' is any function which maps an integer index to some representation, 
+    #     as long as the representation is the same dimension for each index.
+
+    #     'these_leaves' is a lists of leaves to be represented
+    #     """
+
+    #     labs = self.labels(these_leaves)
+
+    #     fix_nan = lambda x, l : np.where(np.isnan(l), 0 ,x)
+    #     if rep is None:
+    #         rep = lambda l : np.eye(self.fan_out)[:,l]
+
+    #     reps = np.concatenate([fix_nan(rep(fix_nan(l,l).astype(int)), l) for l in labs])
+    #     return reps
+    def represent_labels(self, these_leaves):
+        """ finds the label of each of 'these_leaves' """
+
+        idx = np.array([ i for j in these_leaves for \
+            i in self.similarity_graph.nodes('category')[j] ] )
+        var = np.repeat(np.arange(len(these_leaves)), 
+            [len(self.similarity_graph.nodes('category')[j]) for j in these_leaves])
+
+        labels = np.zeros((self.num_cat,len(these_leaves)))
+        labels[idx,var] = 1
+
+        return labels
+
+    def similar_representation(self, dim=500, similarity='laplacian',
+        only_leaves=True, sigma=1, tol=1e-10):
+        """ 
+        Makes a random representation whose kernel matches the inverse Laplacian 
+        or the depth of deepest common ancestor
+        """
+
+        if similarity == 'laplacian':
+            L = self.graph_laplacian()
+            leaves = np.isin(self.similarity_graph,self.items)
+
+            C = la.inv(L+np.diag(leaves)*(1/sigma))
+        elif similarity == 'dca':
+            C = self.deepest_common_ancestor(only_leaves=False)
+
+        if only_leaves:
+            these = np.isin(self.similarity_graph,self.items)
+        else:
+            these = np.ones(len(C))>0
+
+        eps = np.random.randn(len(C),500) # random gaussian vectors 
+        eps -= eps.mean(1, keepdims=True)
+
+        std = la.cholesky(np.cov(eps) + np.eye(eps.shape[0])*tol)
+        rep = la.cholesky(C + np.eye(eps.shape[0])*tol).T@la.inv(std).T@eps
+        return rep[these,:]
+
+    def graph_laplacian(self):
+        """ Laplacian of the similarity graph """
+        N = incidence_matrix(self.similarity_graph, oriented=True).toarray()
+
+        return N@N.T # laplacian
+
+    def deepest_common_ancestor(self, only_leaves=True):
+
+        G = self.similarity_graph
+        if only_leaves:
+            n = self.items.tolist()
+        else:
+            n = list(G)
+
+        # lca = list(all_pairs_lowest_common_ancestor(G, product(n, n)))
+        lca = []
+        ix = []
+        for i,j in product(n, n):
+            dec_i = nx.descendants(G.reverse(), i).union(set([i]))
+            dec_j = nx.descendants(G.reverse(), j).union(set([j]))
+            all_anc = dec_i.intersection(dec_j)
+            anc_depths = [len(G.nodes('category')[a]) for a in all_anc]
+            lca.append(max(anc_depths))
+            ix.append((n.index(i),n.index(j)))
+
+        ix = np.array(ix)
+        lca = np.array(lca)
+
+        # ijv = np.array([(n.index(a[0][0]),n.index(a[0][1]),dpl(G.reverse(), a[1], 0)) for a in lca])
+        
+        LCA = np.ones((len(n), len(n)))
+        # LCA[ijv[:,0],ijv[:,1]] = ijv[:,2]
+        LCA[ix[:,0],ix[:,1]] = lca
+
+        return LCA
+
+
+    def random_sequence(self, child_prob=0.7, **recurse_args):
+        """ 'child_prob' is the probability of a parent node producing a child node """
+
+        self.child_prob = child_prob
+
+        seq = [0]
+        self.make_children(seq, 0, **recurse_args)
+
+        sent = ParsedSequence(''.join(str(seq).split(',')))
+
+        return sent
+
+    def make_children(self, seq, idx, replace=False, max_child=None):
+        """recursion to generate random sequence"""
+        
+        if max_child is None:
+            max_child = self.fan_out
+
+        if idx < self.depth:
+            n_child = (np.random.binomial(max_child-1, self.child_prob, len(seq))+1).tolist()
+            
+            children = []
+            for ix in range(len(seq)):
+                c_all = [e[1] for e in self.similarity_graph.out_edges(seq[ix])]
+
+                ins_idx = ix + sum(n_child[:0]) + 1
+                c = [[i] for i in np.random.choice(c_all, n_child[ix], replace=replace).tolist()]
+                seq[ins_idx:ins_idx] = c
+                children += c
+                
+            for child in children:
+                self.make_children(child, idx+1, replace=replace, max_child=max_child)
+
+    ## functions for making the similarity graph
+    def fill_similarity_graph(self, max_depth=None, path_rule='minimal'):
+        """
+        Constructs a directed acyclic graph such that, for any pair of leaf nodes, 
+        the depth of their nearest common ancestor matches the number of features 
+        they have in common. This is good for constructing an embedding in which 
+        dot products match feature similarity, for example.
+ 
+        This is done in two steps:
+            First infer abstract hidden nodes based on shared labels. If two 
+            leaf nodes, i and j, share all but 1 label, then we create a new node 
+            whose labels are the intersection of i and j. After all leaf nodes, 
+            this is repeated on the newly-created hidden nodes, etc. Then we do 
+            another pass but this time for all pairs sharing all but 2 labels, 
+            etc. until we reach `max_depth`. 
+
+            Then add the edges by constructing paths from the root to each leaf
+            node. This will create new hidden nodes when they are necessary, 
+            where "necessary" is determined by the `path_rule` (see path_to_node 
+            method).
+
+        """
+
+        G = nx.DiGraph()
+        G.add_nodes_from(self.items)
+        nx.set_node_attributes(G, 
+            values={i:self.cats[i-1] for i in self.items}, 
+            name='category')
+
+        G.add_node(0, category=set())
+
+        if max_depth is None:
+            max_depth = max([len(i) for i in self.cats])
+
+        # self.connect_layer(G, self.items, self.cats)
+
+        ### Infer hidden nodes based on pairwise label intersections
+        for n in range(1,max_depth):
+            # connect pairs which are the same in all but n labels
+
+            these_nodes = 1*self.items 
+            while len(these_nodes)>0:
+                # find common sources for all pairs at each depth 
+                new_nodes = []
+                for i in these_nodes:
+                    for j in these_nodes[these_nodes>i]:
+
+                        G.nodes('category')
+                        L_ij = G.nodes('category')[i].intersection(G.nodes('category')[j])
+
+                        if len(G.nodes('category')[i])-len(L_ij) != n:
+                            continue
+                        
+                        # print(f"{(i,j)}, {G.nodes('category')[i]}V{G.nodes('category')[j]}={L_ij}")
+
+                        matching_nodes = np.isin(G.nodes('category'), L_ij)
+
+                        if np.any(matching_nodes):
+                            new_source = np.where(matching_nodes)[0].item()
+                        else:
+                            new_source = max(G) + 1
+                            G.add_node(new_source, category=L_ij)
+                            new_nodes.append(new_source)
+
+                        # G.add_edge(new_source, i)
+                        # G.add_edge(new_source, j)
+
+                these_nodes = np.array(new_nodes)
+
+        ### Connect each leaf node to the source 
+        for i in (self.items):
+            self.path_to_node(G, 0, i, rule=path_rule) # recursion!
+
+        return G
+
+    def path_to_node(self, G, source, target, rule='minimal'):
+        """ 
+        Lay down path on G from source to target. To get from i to j, first find all 
+        nodes k with one label more than i, and which share all their labels with j. 
+        Then add an edge from i to k. Furthermore, if k's labels can be expressed as 
+        a union of i's labels an another node, l's labels, add and edge from l to k.
+
+        Possible rules for finding "parents" of k:
+            'minimal' (default)
+                only adds a new step if there exists a node at the same depth as source,
+                such that labels(source) V labels(node) = labels(step)
+            'matching' 
+                creates all possible new steps, but only uses existing valid parents
+            'maximal'
+                creates all possible new steps, and all possible valid parents
+    
+        """
+
+        source_cat = G.nodes('category')[source]
+        targ_cat = G.nodes('category')[target]
+
+        ds = len(source_cat)
+        # dt = len(targ_cat) 
+
+        steps = product(targ_cat-source_cat, [source_cat])
+
+        for s in steps:
+            # we start by specifying the next step's category
+            new_cat = set([s[0]]).union(s[1])
+
+            matching_nodes = [G.nodes('category')[i] == new_cat for i in sorted(G)]
+
+            if np.any(matching_nodes):
+                new_step = sorted(G)[np.where(matching_nodes)[0].item()]
+            else:
+                new_step = max(G) + 1
+
+            # print('%s->%s'%(source_cat,new_cat))
+            # find a spouse if it exists
+
+            # bachelors = nx.descendants_at_distance(G.reverse(), target, dt-ds)
+            bachelors = [i for (i,j) in G.nodes('category') if len(j) == ds]
+            matching_nodes = [G.nodes('category')[i].union(source_cat) == new_cat for i in bachelors]
+
+            if np.any(matching_nodes):
+                # add spouses if they exist
+                if new_step not in list(G):
+                    G.add_node(new_step, category=new_cat)
+                G.add_edge(source, new_step)
+
+                for this_spouse in np.where(matching_nodes)[0]: # there are multiple parents
+                    G.add_edge(list(bachelors)[this_spouse], new_step)
+                    # print('%s+%s=%s'%(G.nodes('category')[list(bachelors)[this_spouse]],source_cat,new_cat))
+            
+            elif rule == 'minimal':
+                # don't make the child if there is no parent
+                if new_step in list(G):
+                    G.add_edge(source, new_step) # lay a stone, move on
+                else: 
+                    continue # otherwise this fork is over
+            elif rule == 'maximal':
+                # invent all possible parents
+                if new_step not in list(G):
+                    G.add_node(new_step, category=new_cat)
+
+                for sps in product(new_cat-source_cat, [source_cat]):
+                    new_spouse = max(G) + 1
+                    G.add_node(new_spouse, category=set([sps[0]]).union(sps[1]))
+                    G.add_edge(new_spouse, new_step)
+
+            # print('%s+%s=%s'%(G.nodes('category')[s],G.nodes('category')[source],new_cat))
+
+            if new_step != target:
+                self.path_to_node(G, new_step, target, rule=rule)
+
+class RegularTree(HierarchicalData):
+
+    def __init__(self, num_vars, fan_out, respect_hierarchy=True, 
+                    graph_rule='minimal', max_depth=None):
         """ 
         'num vars' is a list of number of variables in each layer,
         while 'fan_out' is how many children each parent has 
         e.g. num_vars=[1,2,4,8] with fan_out=2 is a normal tree
         while num_vars=[1,1,1,1] with fan_out=2 is a hypercube
+
+        Possible rules for connecting the graph:
+            'minimal' (default)
+                only adds a new step if there exists a node at the same depth as source,
+                such that labels(source) V labels(node) = labels(step)
+            'matching' 
+                creates all possible new steps, but only uses existing valid parents
+            'maximal'
+                creates all possible new steps, and all possible valid parents
         """
 
         self.fan_out = fan_out
@@ -442,10 +737,25 @@ class HierarchicalData(object):
 
         self.variable_tree = var_graph # tree of variables
         self.value_tree = val_graph # tree of variable labels 
+
         self.terminals = leaves
 
+        # unique label combinations into categories
+        varval = [(self.value_tree.nodes(data='var')[i],self.value_tree.nodes(data='val')[i]) \
+            for i in sorted(self.value_tree.nodes)[1:]]
+        cats = np.unique(varval, axis=0, return_inverse=True)[1]
+        paths = [np.array(list(all_simple_paths(self.value_tree, 0, n))).squeeze() \
+            for n in self.terminals]
+        self.cats = [set([cats[i] for i in p[1:]-1]) for p in paths]
+        self.num_cat = max([max(i) for i in self.cats])+1
+
         ###### Convert to similarity graph
-        self.similarity_graph = self.fill_similarity_graph(graph_rule)
+        # if graph_rule == 'generic':
+        self.items = np.arange(len(leaves))+1
+        self.similarity_graph = self.fill_similarity_graph()
+        # else:
+        #     self.similarity_graph = self.fill_similarity_graph_from_tree(graph_rule)
+        #     self.items = self.terminals 
 
         self.num_data = len(leaves)
 
@@ -463,170 +773,14 @@ class HierarchicalData(object):
 
         return labels
 
-    def represent_labels(self, these_leaves, rep=None):
+    def fill_similarity_graph_from_tree(self, rule='minimal'):
         """ 
-        'rep' is any function which maps an integer index to some representation, 
-        as long as the representation is the same dimension for each index.
+        DEPRECATED
 
-        'these_leaves' is a lists of leaves to be represented
-        """
-
-        labs = self.labels(these_leaves)
-
-        fix_nan = lambda x, l : np.where(np.isnan(l), 0 ,x)
-        if rep is None:
-            rep = lambda l : np.eye(self.fan_out)[:,l]
-
-        reps = np.concatenate([fix_nan(rep(fix_nan(l,l).astype(int)), l) for l in labs])
-        return reps
-
-    def similar_representation(self, dim=500, similarity='laplacian',
-        only_leaves=True, sigma=1, tol=1e-10):
-        """ 
-        Makes a random representation whose kernel matches the inverse Laplacian 
-        or the depth of deepest common ancestor
-        """
-
-        if similarity == 'laplacian':
-            L = self.graph_laplacian()
-            leaves = np.isin(self.similarity_graph,self.terminals)
-
-            C = la.inv(L+np.diag(leaves)*(1/sigma))
-        elif similarity == 'dca':
-            C = self.deepest_common_ancestor(only_leaves=False)
-
-        if only_leaves:
-            these = np.isin(self.similarity_graph,self.terminals)
-        else:
-            these = np.ones(len(C))>0
-
-        eps = np.random.randn(len(C),500) # random gaussian vectors 
-        eps -= eps.mean(1, keepdims=True)
-
-        std = la.cholesky(np.cov(eps) + np.eye(eps.shape[0])*tol)
-        rep = la.cholesky(C + np.eye(eps.shape[0])*tol).T@la.inv(std).T@eps
-        return rep[these,:]
-
-    def graph_laplacian(self):
-        """ Laplacian of the similarity graph """
-        N = incidence_matrix(self.similarity_graph, oriented=True).toarray()
-
-        return N@N.T # laplacian
-
-    def deepest_common_ancestor(self, only_leaves=True):
-
-        G = self.similarity_graph
-        if only_leaves:
-            n = self.terminals
-        else:
-            n = list(G)
-
-        # lca = list(all_pairs_lowest_common_ancestor(G, product(n, n)))
-        lca = []
-        ix = []
-        for i,j in product(n, n):
-            dec_i = nx.descendants(G.reverse(), i).union(set([i]))
-            dec_j = nx.descendants(G.reverse(), j).union(set([j]))
-            all_anc = dec_i.intersection(dec_j)
-            anc_depths = [len(G.nodes('category')[a]) for a in all_anc]
-            lca.append(max(anc_depths))
-            ix.append((n.index(i),n.index(j)))
-
-        ix = np.array(ix)
-        lca = np.array(lca)
-
-        # ijv = np.array([(n.index(a[0][0]),n.index(a[0][1]),dpl(G.reverse(), a[1], 0)) for a in lca])
-        
-        LCA = np.ones((len(n), len(n)))
-        # LCA[ijv[:,0],ijv[:,1]] = ijv[:,2]
-        LCA[ix[:,0],ix[:,1]] = lca
-
-        return LCA
-
-
-    def random_sequence(self, child_prob=0.7, **recurse_args):
-        """ 'child_prob' is the probability of a parent node producing a child node """
-
-        self.child_prob = child_prob
-
-        seq = [0]
-        self.make_children(seq, 0, **recurse_args)
-
-        sent = ParsedSequence(''.join(str(seq).split(',')))
-
-        return sent
-
-    def make_children(self, seq, idx, replace=False, max_child=None):
-        """recursion to generate random sequence"""
-        
-        if max_child is None:
-            max_child = self.fan_out
-
-        if idx < self.depth:
-            n_child = (np.random.binomial(max_child-1, self.child_prob, len(seq))+1).tolist()
-            
-            children = []
-            for ix in range(len(seq)):
-                c_all = [e[1] for e in self.value_tree.out_edges(seq[ix])]
-
-                ins_idx = ix + sum(n_child[:0]) + 1
-                c = [[i] for i in np.random.choice(c_all, n_child[ix], replace=replace).tolist()]
-                seq[ins_idx:ins_idx] = c
-                children += c
-                
-            for child in children:
-                self.make_children(child, idx+1, replace=replace, max_child=max_child)
-
-
-    # def make_similarity_graph(self, G, these_nodes):
-    #     """
-    #     out-dated, doesn't work
-    #     recursion to make the similarity graph
-
-    #     algorithm is something like this:
-    #     for each node in these_nodes{
-    #         look at the grandchildren of node
-    #         for any grandchildren which share a category{
-    #             create a child of node whose children are said grandchildren
-    #             set the child's category to said category
-    #         }
-    #         make_similarity_graph(children of node)
-    #     }
-
-    #     """
-
-    #     these_chiln = []
-    #     for node in these_nodes:
-
-    #         # rename children
-    #         chiln = list(nx.descendants_at_distance(G, node, 1))
-    #         for child in chiln:
-    #             par_cats = set.union(*[G.nodes('category')[j] for j in G.predecessors(child)])
-    #             G.nodes[child]['category'] = tuple(set(G.nodes('category')[child]).union(par_cats))
-
-    #         # make connections between grandchildren
-    #         gchiln = np.array(list(nx.descendants_at_distance(G, node, 2)))
-    #         if len(gchiln) == 0:
-    #             continue
-
-    #         cats = [G.nodes('category')[i] for i in gchiln]
-
-    #         for this_cat in set(cats):
-    #             if np.sum([c==this_cat for c in cats])>1:
-    #                 new_node = np.max(G.nodes)+1
-    #                 G.add_node(new_node, category=this_cat)
-    #                 G.add_edges_from([(new_node,gchiln[i]) for i in range(len(gchiln)) if cats[i]==this_cat])
-    #                 G.add_edge(node, new_node)
-
-    #         these_chiln += list(nx.descendants_at_distance(G, node, 1))
-
-    #     if len(these_chiln) >0:
-    #         self.make_similarity_graph(G, np.unique(these_chiln))
-
-
-    def fill_similarity_graph(self, rule='minimal'):
-        """ 
         Make a graph so that distance between nodes matches distance in the labels
+        
+        Basic algorithm is:
+            see if any two nodes share a label
 
         """
 
@@ -700,150 +854,6 @@ class HierarchicalData(object):
 
         return G
 
-    # def path_to_node(self, G, source, target, rule='minimal'):
-    #     """ Lay down path on G from source to target """
-
-    #     source_cat = G.nodes('category')[source]
-    #     targ_cat = G.nodes('category')[target]
-
-    #     ds = len(source_cat)
-    #     dt = len(targ_cat) 
-
-    #     if rule == 'minimal':
-    #         steps = nx.descendants_at_distance(G.reverse(), target, dt-ds)
-    #     elif rule == 'maximal':
-    #         steps = combinations(targ_cat, ds)
-    #     elif rule == 'matching':
-    #         steps = product(targ_cat-source_cat, [source_cat])
-
-    #     for s in steps:
-
-    #         if rule == 'matching':
-    #             # we start by specifying the next step
-    #             new_cat = set([s[0]]).union(s[1])
-
-    #             matching_nodes = [G.nodes('category')[i] == new_cat for i in sorted(G)]
-    #             if np.any(matching_nodes):
-    #                 new_step = sorted(G)[np.where(matching_nodes)[0].item()]
-    #             else:
-    #                 new_step = max(G) + 1
-    #                 G.add_node(new_step, category=new_cat)
-
-    #             G.add_edge(source, new_step)
-
-    #             print('%s->%s'%(source_cat,new_cat))
-    #             # find a spouse if it exists
-    #             bachelors = nx.descendants_at_distance(G.reverse(), target, dt-ds)
-    #             matching_nodes = [G.nodes('category')[i].union(source_cat) == new_cat for i in bachelors]
-    #             if np.any(matching_nodes):
-    #                 for this_spouse in np.where(matching_nodes)[0]: # there are multiple parents
-    #                     G.add_edge(list(bachelors)[this_spouse], new_step)
-    #                     print('%s+%s=%s'%(G.nodes('category')[list(bachelors)[this_spouse]],source_cat,new_cat))
-    #         else:
-    #             # we start by specifying the spouse nodes, then make the child
-    #             if rule == 'minimal':
-    #                 # only use existing nodes as spouses
-    #                 spouse = s 
-    #             elif rule == 'maximal':
-    #                 # make new nodes if necessary
-    #                 matching_nodes = [G.nodes('category')[i] == set(s) for i in sorted(G)]
-    #                 if np.any(matching_nodes):
-    #                     spouse = sorted(G)[np.where(matching_nodes)[0].item()]
-    #                 else:
-    #                     spouse = max(G) + 1
-    #                     G.add_node(spouse, category=set(s))
-
-    #             # now make the child
-    #             new_cat = G.nodes('category')[spouse].union(source_cat)
-
-    #             if spouse == source:
-    #                 continue
-
-    #             matching_nodes = [G.nodes('category')[i] == new_cat for i in sorted(G)]
-    #             if np.any(matching_nodes):
-    #                 new_step = sorted(G)[np.where(matching_nodes)[0].item()]
-    #             else:
-    #                 new_step = max(G) + 1
-    #                 G.add_node(new_step, category=new_cat) 
-
-    #             G.add_edge(source, new_step)
-    #             G.add_edge(spouse, new_step)
-
-    #         # print('%s+%s=%s'%(G.nodes('category')[s],G.nodes('category')[source],new_cat))
-
-    #         if new_step != target:
-    #             self.path_to_node(G, new_step, target, rule=rule)
-
-
-    def path_to_node(self, G, source, target, rule='minimal'):
-        """ 
-        Lay down path on G from source to target 
-
-        Possible rules:
-            'minimal' (default)
-                only adds a new step if there exists a node at the same depth as source,
-                such that labels(source) V labels(node) = labels(step)
-            'matching' 
-                creates all possible new steps, but only uses existing valid parents
-            'maximal'
-                creates all possible new steps, and all possible valid parents
-    
-        """
-
-        source_cat = G.nodes('category')[source]
-        targ_cat = G.nodes('category')[target]
-
-        ds = len(source_cat)
-        dt = len(targ_cat) 
-
-        steps = product(targ_cat-source_cat, [source_cat])
-
-        for s in steps:
-            # we start by specifying the next step
-            new_cat = set([s[0]]).union(s[1])
-
-            matching_nodes = [G.nodes('category')[i] == new_cat for i in sorted(G)]
-            if np.any(matching_nodes):
-                new_step = sorted(G)[np.where(matching_nodes)[0].item()]
-            else:
-                new_step = max(G) + 1
-
-            # print('%s->%s'%(source_cat,new_cat))
-            # find a spouse if it exists
-
-            bachelors = nx.descendants_at_distance(G.reverse(), target, dt-ds)
-            matching_nodes = [G.nodes('category')[i].union(source_cat) == new_cat for i in bachelors]
-
-            if np.any(matching_nodes):
-                # add spouses if they exist
-                if new_step not in list(G):
-                    G.add_node(new_step, category=new_cat)
-                for this_spouse in np.where(matching_nodes)[0]: # there are multiple parents
-                    G.add_edge(list(bachelors)[this_spouse], new_step)
-                    # print('%s+%s=%s'%(G.nodes('category')[list(bachelors)[this_spouse]],source_cat,new_cat))
-            
-            elif rule == 'minimal':
-                # don't make the child if there is no parent
-                continue
-            elif rule == 'maximal':
-                # invent all possible parents
-                if new_step not in list(G):
-                    G.add_node(new_step, category=new_cat)
-
-                for sps in product(new_cat-source_cat, [source_cat]):
-                    new_spouse = max(G) + 1
-                    G.add_node(new_spouse, category=set([sps[0]]).union(sps[1]))
-                    G.add_edge(new_spouse, new_step)
-
-            if new_step not in list(G):
-                G.add_node(new_step, category=new_cat)
-            G.add_edge(source, new_step)
-
-            # print('%s+%s=%s'%(G.nodes('category')[s],G.nodes('category')[source],new_cat))
-
-            if new_step != target:
-                self.path_to_node(G, new_step, target, rule=rule)
-
     def label_nodes(self, parents, children): 
         """ 
         connects parent nodes to children nodes 
@@ -876,4 +886,46 @@ class HierarchicalData(object):
         # p = np.repeat(L1, N)
         # return [[p[i], c[i]] for i in range(n2)]
         return c
+
+
+class LabelledItems(HierarchicalData):
+
+    def __init__(self, num_item=None, num_lab=None, labels=None):
+        """
+        Either supply the number of conditions and labels, or just supply 
+        a list of sets containing each item's labels
+
+        If both are supplied, labels are used
+        """
+
+        if labels is not None:
+            self.cats = 1*labels
+            self.items = np.arange(len(labels)) + 1
+            self.num_vars = max([max(i) for i in labels if len(i)>0]) + 1
+            self.num_data = len(labels)
+            self.depth = max([len(l) for l in labels])
+
+            # assumes that each item has the same number of labels!!!
+            self.fan_out = int(len(labels)**(1/len(labels[0])))
+
+        elif num_item is not None:
+            # not implemented yet, need to think a lil bit
+            self.num_data = num_items
+            # self.
+
+        self.similarity_graph = self.fill_similarity_graph()
+
+    def represent_labels(self, these_leaves):
+        """ finds the label of each of 'these_leaves' """
+
+        idx = np.array([ i for j in these_leaves for \
+            i in self.similarity_graph.nodes('category')[j] ] )
+        var = np.repeat(np.arange(len(these_leaves)), 
+            [len(self.similarity_graph.nodes('category')[j]) for j in these_leaves])
+
+        labels = np.zeros((self.num_vars,len(these_leaves)))
+        labels[idx,var] = 1
+
+        return labels
+
 

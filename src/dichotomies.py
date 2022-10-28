@@ -11,10 +11,10 @@ from itertools import combinations, permutations, islice, filterfalse, chain
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 
+import util
 
 class Dichotomies:
-    """An iterator for looping over all dichotomies when computing abstraction metrics, which 
-    also includes methods for computing said metrics if you want to."""
+    """An iterator for looping over all dichotomies when computing abstraction metrics"""
 
     def __init__(self, num_cond, special=None, extra=0, unbalanced=False):
         """
@@ -118,7 +118,11 @@ def uncorrelated_dichotomies(num_item, pos_items, num_max=None):
     return x
 
 def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False, 
-        debug=False, return_weights=False,num_max=None):
+        debug=False, return_weights=False, num_max=None):
+    """
+    z is shape (num_item, num_feat)
+    cond and coloring are shape (num_item, )
+    """
 
     num_cond = len(np.unique(cond))
     pos_conds = np.unique(cond[coloring==0])
@@ -141,8 +145,8 @@ def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False,
         if return_weights:
             ws.append(np.append(clf.coef_, clf.intercept_))
         if twosided:
-            clf.fit(z[~is_trn,...], coloring[~is_trn][:,None])
-            perf = clf.score(z[is_trn,...], coloring[is_trn][:,None])
+            clf.fit(z[~is_trn,...], coloring[~is_trn])
+            perf = clf.score(z[is_trn,...], coloring[is_trn])
             ccgp.append(perf)
             if return_weights:
                 ws.append(np.append(clf.coef_, clf.intercept_))
@@ -155,7 +159,7 @@ def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False,
     return outs
 
 
-def parallelism_score(z, cond, coloring, eps=1e-12, debug=False):
+def parallelism_score(z, cond, coloring, eps=1e-12, debug=False, average=True):
     """ 
     Computes parallelism of coloring
 
@@ -166,25 +170,34 @@ def parallelism_score(z, cond, coloring, eps=1e-12, debug=False):
     method based on kernels
     """
 
+    if average:
+        Z = np.array([z[...,cond==c].mean(-1) for c in np.unique(cond)]).T
+        Y = np.array([coloring[cond==c].mean() for c in np.unique(cond)])
+        conds = np.unique(cond)
+    else:
+        Z = z
+        Y = coloring
+        conds = cond
+
     # compute kernels
-    z_cntr = z - z.mean(-1, keepdims=True)
-    y_cntr = np.sign(coloring - coloring.mean())
+    z_cntr = Z - Z.mean(-1, keepdims=True)
+    y_cntr = np.sign(Y - Y.mean())
     Kz = np.einsum('k...i,k...j->...ij', z_cntr, z_cntr)
     Ky = y_cntr[:,None]*y_cntr[None,:]
     
-    pos = np.unique(cond[y_cntr>0])
-    neg = np.unique(cond[y_cntr<0])
+    pos = np.unique(conds[y_cntr>0])
+    neg = np.unique(conds[y_cntr<0])
 
     ps = []
     pairs = []
     for n in permutations(neg, len(pos)):
         pairs.append(n)
 
-        mask = 1 - np.eye(len(cond))
+        mask = 1 - np.eye(len(conds))
         mask[pos,n] = 0
         mask[n,pos] = 0
 
-        incl = np.isin(cond, np.concatenate([pos,n]))
+        incl = np.isin(conds, np.concatenate([pos,n]))
         y_mask = incl[:,None]*incl[None,:]
 
         if np.sum(mask)>0:
@@ -206,3 +219,12 @@ def parallelism_score(z, cond, coloring, eps=1e-12, debug=False):
     else:
         return np.max(ps)
 
+def hierarchical_parallelism(z, y_super, y_sub):
+
+    sigs = [util.decompose_covariance(z[y_sup==s,:].T,y_sub[y_sup==s])[1] for s in np.unique(y_sup)]
+            
+    dots = np.einsum('ikl,jkl->ij',np.array(sigs),np.array(sigs))
+    csim = la.triu(dots,1)/np.sqrt((np.diag(dots)[:,None]*np.diag(dots)[None,:]))
+    foo1, foo2 = np.nonzero(np.triu(np.ones(dots.shape),1))
+
+    return np.mean(csim[foo1,foo2])

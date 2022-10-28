@@ -31,8 +31,9 @@ class IndependentBinary(object):
         raise NotImplementedError
     
     def correct(self, pred, targets):
-        n = (targets.detach().numpy() == (pred.detach().numpy()>=0.5)).mean(0, keepdims=True)
-        return n.astype(float)
+        msk = np.isnan(targets.detach().numpy())
+        n = targets.detach().numpy() == (pred.detach().numpy()>=0.5)
+        return np.nanmean(np.where(msk,np.nan,n), 0, keepdims=True).astype(float)
 
     def information(self, test_var, normalize=False):
         """
@@ -88,19 +89,23 @@ class IndependentBinary(object):
             MI.append(mi)
         return MI
 
+# class LookupTable(object):
+
+
 class IndependentCategorical(object):
     def __init__(self, labels):
         super(IndependentCategorical, self).__init__()
         self.__name__ = self.__class__.__name__
         self.labels = labels
-        self.num_val = int(labels.max()) + 1
+        self.num_val = int(np.nanmax(labels)) + 1
+        self.num_var = labels.shape[0]
 
     def correct(self, pred, targets):
-        n = (targets.detach().numpy() == pred.detach().numpy().argmax(-1)).mean(0, keepdims=True)[None,:]
-        return n.astype(float)
+        n = targets.detach().numpy() == pred.detach().numpy().argmax(-1)
+        return np.nanmean(n, 0, keepdims=True)[None,:].astype(float)
 
     def __call__(self, idx, noise=None):
-        return torch.tensor(self.labels[:,idx])
+        return torch.tensor(self.labels[:,idx]).T
 
     def subspace_information(self):
         """
@@ -144,10 +149,33 @@ class Regression(object):
         n = (targets.detach().numpy() - pred.detach().numpy()).pow(2).mean(0, keepdims=True)
         return n.astype(float)
 
- # class DiscreteLatent(object):
-
 
 ## Generic discrete tasks
+class BinaryLabels(IndependentBinary):
+    def __init__(self, labels):
+        super(BinaryLabels, self).__init__()
+
+        self.labels = labels
+
+        self.num_var = labels.shape[0]
+        self.num_cond = labels.shape[1]
+        self.dim_output = self.num_var
+        self.positives = None
+
+        self.__name__ = 'BinaryLabels_%d_%d'%(self.num_cond, self.num_var)
+
+    def __call__(self, idx, noise=None):
+        return torch.tensor(self.labels[:,idx]).float().T
+
+class HierarchicalLabels(BinaryLabels):
+    def __init__(self, num_vars, respect=True, K=2):
+
+        self.DGP = gram.HierarchicalData(num_vars, fan_out=K, respect_hierarchy=respect)
+        super(HierarchicalLabels, self).__init__(self.DGP.labels(self.DGP.terminals))
+
+        self.__name__ = 'HierarchicalLabels_%d_%s_%s'%(K, num_vars, respect)
+
+
 class RandomDichotomies(IndependentBinary):
     def __init__(self, c=None, n=None, overlap=0, d=None, use_mse=False):
         """overlap is given as the log2 of the dot product on their +/-1 representation"""
@@ -198,6 +226,8 @@ class RandomDichotomies(IndependentBinary):
     def __call__(self, labels, noise=None):
         these = torch.tensor([np.isin(labels, p) for p in self.positives]).float()
         return these.T
+
+# class 
 
 class RandomDichotomiesCategorical(Classification):
     def __init__(self, c, n, overlap=0, use_mse=False):
@@ -347,14 +377,21 @@ class LogicalFunctions(IndependentBinary):
 
 ## Tasks which produce continuous representations of the binary tasks
 class RandomPatterns(object):
-    def __init__(self, num_class, dim_pattern, noise_var=0.1):
+    def __init__(self, num_cond, dim_pattern, noise_var=0.1, center=True, random=False):
 
         self.dim_output = dim_pattern
         self.noise_var = noise_var
-        self.num_class = num_class
+        self.num_cond = num_cond
 
-        means = np.random.randn(self.num_class, self.dim_output)
+        if not random:
+            np.random.seed(0)
+
+        means = np.random.randn(self.num_cond, self.dim_output)
         self.means = means
+        if center:
+            self.means -= self.means.mean(0, keepdims=True)
+
+        self.__name__ = f'RandomPatterns_{num_cond}P_{dim_pattern}D_{noise_var:.2f}snr'
 
     def __call__(self, labels, noise=None):
 
@@ -364,7 +401,7 @@ class RandomPatterns(object):
         means = self.means[labels,...]
         return torch.tensor(means + np.random.randn(len(labels), self.dim_output)*noise).float()
 
-class RandomTransisions(object):
+class RandomTransitions(object):
     def __init__(self, rep_task, actions, p_action, num_var=2, num_val=2):
 
         self.rep_task = rep_task
@@ -480,56 +517,57 @@ class NudgedCube(object):
         return torch.tensor(clus_mns + np.random.randn(len(labels), self.dim_output)*noise).float()
 
 class NudgedXOR(object): # version specific to the xor
-    def __init__(self, latent_task, dim_factor, noise_var=0.1, nudge_mag=1, rotated=False, random=False):
+    def __init__(self, dim_factor, num_var=2, noise_var=0.1, nudge_mag=1, 
+        rotated=False, random=False, sqrt_N_norm=True):
         super(NudgedXOR,self).__init__()
 
-        self.latent_task = latent_task
         self.rotated = rotated
-        self.dim_output = latent_task.num_var*dim_factor
+        self.dim_output = (num_var+1)*dim_factor
         self.noise_var = noise_var
         self.nudge_mag = nudge_mag
 
         if len(str(nudge_mag))-2 > 1:
-            self.__name__ = 'NudgedXOR%d-%d-%.1f-%.2f'%(latent_task.num_var, self.dim_output, noise_var, nudge_mag)
+            self.__name__ = 'NudgedXOR%d-%d-%.1f-%.2f'%(num_var, self.dim_output, noise_var, nudge_mag)
         else:
-            self.__name__ = 'NudgedXOR%d-%d-%.1f-%.1f'%(latent_task.num_var, self.dim_output, noise_var, nudge_mag)
+            self.__name__ = 'NudgedXOR%d-%d-%.1f-%.1f'%(num_var, self.dim_output, noise_var, nudge_mag)
         if random:
             self.__name__ += '_rand'
+        if rotated:
+            self.__name__ += '_rot'
 
-        self.positives = self.latent_task.positives
-        self.num_var = latent_task.num_var
-        self.num_cond = latent_task.num_cond
+        self.bits = StandardBinary(num_var)
+        self.positives = self.bits.positives
+        self.num_var = num_var
+        self.num_cond = 2**num_var
 
-        means = np.random.randn(latent_task.num_var+1, 2, dim_factor)
         if not random:
-            means = means/la.norm(means, axis=-1, keepdims=True)
-        means[:,1,:] = - means[:,0,:]
+            np.random.seed(0)
+        # self.means = la.qr(np.random.randn(self.dim_output, self.num_cond+1), mode='economic')[0]
+        means = np.abs(np.random.randn(self.dim_output, self.num_var+1))
+        means *= np.repeat(np.eye(num_var+1), dim_factor, axis=0)
+        means /= la.norm(means, axis=0, keepdims=True)
+        if sqrt_N_norm:
+            means *= np.sqrt(self.dim_output/3)
         self.means = means
-
-        nudge_dir = np.random.randn(1, dim_factor*latent_task.num_var)
-        if not random:
-            nudge_dir /= la.norm(nudge_dir)
-            nudge_dir[:,:dim_factor] -= (nudge_dir[:,:dim_factor]@means[0,0,:])*means[0,0,:]
-            nudge_dir[:,dim_factor:] -= (nudge_dir[:,dim_factor:]@means[1,0,:])*means[1,0,:]
-        self.means[-1,:,:] = nudge_dir.reshape((2,dim_factor))
 
         if self.rotated:
             C = np.random.rand(self.dim_output, self.dim_output)
-            self.rot_mat = la.qr(C)[0][:self.dim_output,:]
+            self.rot_mat = la.qr(C)[0]
 
     def __call__(self, labels, noise=None):
 
         if noise is None:
             noise = self.noise_var
 
-        var_bit = self.latent_task(labels).numpy()
-        var_idx = np.arange(self.num_var,dtype=int)[None,:]*np.ones((len(labels),1),dtype=int)
-        nudge_bit = var_bit.sum(1)%2
+        var_bit = self.bits(labels).numpy()
+        nudge_bit = 2*(var_bit.sum(1, keepdims=True)%2)-1  # the nd xor
 
-        # mns = (self.means[:,None,:]*var_bit[:,:,None]) - (self.means[:,None,:]*(1-var_bit[:,:,None]))
-        clus_mns = self.means[var_idx,var_bit.astype(int),:].reshape((len(labels),-1)) 
-        clus_mns += 2*(nudge_bit[:,None] - 0.5)*self.nudge_mag*self.means[2,...].flatten()
+        clus_mns = np.concatenate([2*var_bit-1, nudge_bit*self.nudge_mag], axis=1)@self.means.T
 
+        # # mns = (self.means[:,None,:]*var_bit[:,:,None]) - (self.means[:,None,:]*(1-var_bit[:,:,None]))
+        # clus_mns = self.means[var_idx,var_bit.astype(int),:].reshape((len(labels),-1)) 
+        # clus_mns += 2*(nudge_bit[:,None] - 0.5)*self.nudge_mag*self.means[2,...].flatten()
+        # clus_mns 
 
         # clus_mns = np.reshape(mns.transpose((2,0,1)), (self.dim_output,-1)).T
         if self.rotated:

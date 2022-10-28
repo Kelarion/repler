@@ -2,9 +2,6 @@
 import os, sys
 import pickle
 
-import torch
-import torchvision
-import torch.optim as optim
 import numpy as np
 import scipy
 import scipy.linalg as la
@@ -23,6 +20,9 @@ def pca(X,**kwargs):
     return U, S**2
 
 def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
+    """
+    takes in (n_feat, n_sample) returns (n_sample, n_comp)
+    """
 
     U,S = pca(X, **kwargs)
     if thrs is not None:
@@ -34,7 +34,7 @@ def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
 def participation_ratio(X):
     """ (..., n_feat, n_sample) """
     _, evs = pca(X)
-    return (np.sum(evs)**2)/np.sum(evs**2)
+    return (np.sum(evs, -1)**2)/np.sum(evs**2, -1)
 
 def sample_normalize(data, sigma, eps=1e-10):
     """ 
@@ -63,6 +63,84 @@ def part2expo(pr,N):
     exps = np.linspace(0,5,100)
     parts = np.array([expo2part(p, N) for p in exps])
     return exps[np.argmin(np.abs(parts-pr))]
+
+#%%
+def _cos_sin_col(col):
+    return np.cos(col), np.sin(col)
+
+def _rf_decomp(col, n_units=10, wid=2):
+    cents = np.linspace(0, 2*np.pi - (1/n_units)*2*np.pi, n_units)
+    cents = np.expand_dims(cents, 0)
+    col = np.expand_dims(col, 1)
+    r = np.exp(wid*np.cos(col - cents))/np.exp(wid)
+    return list(r[:, i] for i in range(n_units))
+
+def decompose_colors(*cols, decomp_func=_cos_sin_col, **kwargs):
+    all_cols = []
+    for col in cols:
+        all_cols.extend(decomp_func(col, **kwargs))
+    return np.stack(all_cols, axis=1)
+
+class RFColors():
+    def __init__(self, n_units=10, wid=2):
+
+        self.dim_out = n_units
+        self.wid = wid
+        self.__name__ = 'RFColors'
+
+    def __call__(self, *cols):
+        return decompose_colors(*cols, decomp_func=_rf_decomp, 
+            n_units=self.dim_out, wid=self.wid)
+
+class TrigColors():
+    def __init__(self):
+
+        self.dim_out = 2
+        self.__name__ = 'TrigColors'
+
+    def __call__(self, *cols):
+        return decompose_colors(*cols, decomp_func=_cos_sin_col)
+
+#%%
+def von_mises_mle(x, newt_steps=2):
+    """ x is shape """
+    
+    rho = np.stack([np.sin(x),np.cos(x)])
+
+    R_ = la.norm(rho.mean(1))
+    rho_bar = rho.mean(1)/R_
+    mu_mle = np.arctan2(rho_bar[0], rho_bar[1])
+
+    kap = R_*(2-R_**2)/(1-R_**2)
+    for s in range(newt_steps):
+        kap -= (A2(kap) - R_)/(1 - A2(kap)**2 - (1/kap)*A2(kap))
+
+    return mu_mle, kap
+
+def A2(kappa):
+    return spc.i1(kappa)/spc.i0(kappa)
+
+
+#%%
+def unroll_dict(this_dict):
+    """ 
+    Takes a dict, where some values are lists, and creates a list of 
+    dicts where those values are each entry of the corresponding list
+    """
+
+    variable_prms = {k:v for k,v in this_dict.items() if type(v) is list}
+    fixed_prms = {k:v for k,v in this_dict.items() if type(v) is not list}
+
+    if len(variable_prms)>0:
+        all_dicts = []
+        var_k, var_v = zip(*variable_prms.items())
+
+        for vals in list(itt.product(*var_v)):
+            all_dicts.append(dict(zip(var_k, vals), **fixed_prms))
+    else:
+        all_dicts = this_dict
+
+    return all_dicts
 
 #%%
 def random_basis(dim):
@@ -162,6 +240,8 @@ def diagonality(Z, X, cutoff=0.9):
 def dependence_statistics(x=None, dist_x=None):
     """
     Assume x is (n_feat, ..., n_sample), or dist_x is (...,n_sample, n_sample)
+
+    U-centers the distance matrices, for unbiased estimators
     """
     
     if x is not None:
@@ -210,9 +290,11 @@ def distance_correlation(x=None, y=None, dist_x=None, dist_y=None):
     V_xy = distance_covariance(x, y, dist_x, dist_y)
     V_x = distance_covariance(x, x, dist_x, dist_x)
     V_y = distance_covariance(y, y, dist_y, dist_y)
+
+    return V_xy/np.where(V_x*V_y>0, np.sqrt(V_x*V_y), 1e-12)
     # print([V_x, V_y, V_xy])
-    sing = V_x*V_y > 0
-    return sing*V_xy/(np.sqrt(V_x*V_y)+1e-30)
+    # sing = V_x*V_y > 0
+    # return sing*V_xy/(np.sqrt(V_x*V_y)+1e-30)
     # if 0 in [V_x, V_y]:
         # return 0
     # else:
@@ -224,10 +306,17 @@ def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=Non
     R_xz = distance_correlation(x, z, dist_x=dist_x, dist_y=dist_z)
     R_yz = distance_correlation(y, z, dist_x=dist_y, dist_y=dist_z)
 
-    if ((R_xz**2) > 1-1e-4) or ((R_yz**2) > 1-1e-4):
-        return 0
-    else:
-        return (R_xy - R_xz*R_yz)/np.sqrt((1-R_xz**2)*(1-R_yz**2))
+    # print(R_xy)
+    # print(R_xz)
+    # print(R_yz)
+
+    sing = (((R_xz**2) > 1-1e-12)+((R_yz**2) > 1-1e-12))
+    return np.where(sing, 0, (R_xy - R_xz*R_yz)/np.sqrt((1-R_xz**2)*(1-R_yz**2)))
+
+    # if ((R_xz**2) > 1-1e-4) or ((R_yz**2) > 1-1e-4):
+    #     return 0
+    # else:
+    #     return (R_xy - R_xz*R_yz)/np.sqrt((1-R_xz**2)*(1-R_yz**2))
 
 # def distance_correlation(X):
 #     V = distance_covariance(X)
@@ -236,6 +325,42 @@ def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=Non
 #     R = np.zeros(V.shape)
 #     R[normlzr>0] = np.sqrt(V[normlzr>0]/np.sqrt(normlzr[normlzr>0]))
 #     return R
+
+def kernel_alignment(k, l):
+    """
+    Unbiased estimator of the Hilbert-Schmidt Independence Criterion, which 
+    I'm calling the kernel alignment because it is an objectively better name 
+    """
+
+    n = k.shape[-1]
+    k_ = (1-np.eye(n))*k
+    l_ = (1-np.eye(n))*l
+
+    a = np.sum(k_*l_, axis=(-1,-2))
+    b = np.sum(k_, axis=(-1,-2))*np.sum(l_, axis=(-1,-2))/((n-1)*(n-2))
+    c = 2*np.sum(np.einsum('...ik,...kj->...ij',k_,l_), axis=(-1,-2))/(n-2)
+
+    return (a + b - c)/(n*(n-3))
+
+def normalized_kernel_alignment(k,l):
+    return kernel_alignment(k,l)/np.sqrt(kernel_alignment(k,k)*kernel_alignment(l,l))
+
+def partial_kernel_alignment(k1, k2, k3):
+    h11 = kernel_alignment(k1, k1)
+    h12 = kernel_alignment(k1, k2)
+    h13 = kernel_alignment(k1, k3)
+    h22 = kernel_alignment(k2, k2)
+    h23 = kernel_alignment(k2, k3)
+    h33 = kernel_alignment(k3, k3)
+    
+    r12 = h12/np.sqrt(h11*h22) 
+    r13 = h13/np.sqrt(h11*h33)
+    r23 = h23/np.sqrt(h22*h33)
+    
+    denom = np.sqrt((1-r13**2)*(1-r23**2))
+
+    return (r12 - r23*r13)/np.where(denom>0, denom, 1e-12)
+    # return np.where(denom>0, (r12 - r23*r13)/denom, 0)
 
 def rbf_kernel(X, sigma=1, p=2):
     """X is (n_sample, n_dim)"""
@@ -257,73 +382,6 @@ def gauss_process(xs, var=1):
 
 ###########
 
-def uncorrelated_dichotomies(num_item, pos_items, num_max=None):
-
-    K = int(num_item/4)
-    n_tot = 0.5*spc.binom(int(num_item/2), K)**2
-    neg = np.setdiff1d(range(num_item),pos_items)
-    if (num_max is None) or (num_max>=n_tot):
-        x = np.concatenate([[np.sort(np.concatenate([p,n])) for n in combinations(neg,K)] \
-            for p in combinations(pos_items,K)])
-        x = x[:int(len(x)/2)]
-    else:
-        x = []
-        for ix in Dichotomies(len(neg)-1, [], num_max):
-            trn = np.array(pos_conds)[np.append(0,np.array(ix)+1)]
-            x.append(np.sort(np.append(trn, np.random.choice(neg, K, replace=False))))
-
-    return x
-
-def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False, 
-        debug=False, return_weights=False,num_max=None):
-
-    num_cond = len(np.unique(cond))
-    pos_conds = np.unique(cond[coloring==0])
-
-    if these_vars is None:
-        x = uncorrelated_dichotomies(num_cond, pos_conds, num_max=num_max)
-    else:
-        x = these_vars
-
-    # ntot = spc.binom(int(self.num_cond/2), K)**2
-    ccgp = []
-    ws = []
-    for train_set in x:
-        is_trn = np.isin(cond, train_set)
-
-        clf.fit(z[is_trn,...], coloring[is_trn])
-        # print(clf.thrs)
-        perf = clf.score(z[~is_trn,...], coloring[~is_trn])
-        ccgp.append(perf)
-        if return_weights:
-            ws.append(np.append(clf.coef_, clf.intercept_))
-        if twosided:
-            clf.fit(z[~is_trn,...], coloring[~is_trn][:,None])
-            perf = clf.score(z[is_trn,...], coloring[is_trn][:,None])
-            ccgp.append(perf)
-            if return_weights:
-                ws.append(np.append(clf.coef_, clf.intercept_))
-    outs = [ccgp]
-    if debug:
-        outs.append(x)
-    if return_weights:
-        outs.append(ws)
-
-    return outs
-
-# def restricted_ccgp(z, item_labs, var_labs, clf, restriction=None, **ccgp_args):
-#     """  """
-
-#     num_item = len(np.unique(item_labs))
-#     var_items = np.unique(var_labs)
-
-#     if restriction is None:
-#         x = list(combinations(var_items, 2))
-#     else:
-#         x = [restriction]
-
-#     ccgp = []
-#     for 
 
 #%% Mobius strip (maybe this belongs as a class?)
 def noose_curve(x, l=2):
@@ -477,43 +535,3 @@ def significant_figures(nums, sig_figs):
     return np.round(nums/pwr, sig_figs-1)*pwr
 
 
-def sinusoidal_encoding(seqs):
-
-    p = torch.arange(seqs.shape[0])[:,None,None]*torch.ones(1,1,seqs.shape[-1])
-    d = torch.arange(seqs.shape[-1])[None,None,:]*torch.ones(seqs.shape[0],1,1)
-
-    args = p/(1000**(2*(d//2)/seqs.shape[-1]))
-
-    return torch.where(np.mod(d,2)>0, np.cos(args), np.sin(args))
-
-# class ContinuousEmbedding(object):
-#     def __init__(self, dim, f):
-#         """f in [0,1]"""
-#         C = np.random.rand(dim, dim)
-#         self.basis = torch.tensor(la.qr(C)[0]).float()
-        
-#         self.emb_dim = dim
-#         self.rotator = self.rotation_mat(f)
-#         self.offset = f*(1-np.sqrt(1-2*(0.5**2)))
-
-#     def rotation_mat(self, f):
-#         """returns a matrix which rotates by angle theta in the x2-x3 plane"""
-
-#         theta = f*np.pi/2
-#         rot = torch.eye(self.emb_dim).float()
-#         rot[1:3,1:3] = torch.tensor([[np.cos(theta),np.sin(theta)],[-np.sin(theta),np.cos(theta)]]).float()
-
-#         return (self.basis@rot)@(self.basis.T)
-        
-#     def __call__(self, labels, newf=None):
-#         ''' labels of shape (..., n_variable) '''
-#         if newf is not None:
-#             self.rotator = self.rotation_mat(newf)
-#             self.offset = newf*(1-np.sqrt(1-2*(0.5**2)))
-                
-#         output = labels@(self.basis[:,:2].T)
-#         output -= output.mean(0)
-#         output[labels[:,0]==0,:] = output[labels[:,0]==0,:]@self.rotator
-#         output[labels[:,0]==0,:] += self.offset*self.basis[:,0]
-    
-#         return output

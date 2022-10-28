@@ -31,8 +31,10 @@ import students
 import assistants
 import experiments as exp
 import util
+import pt_util
 import tasks
 import plotting as dicplt
+import dichotomies as dics
 
 #%% custom classes to allow for identity gradients
 class RayLou(nn.ReLU):
@@ -111,7 +113,6 @@ class HardTanAytch(nn.Hardtanh):
         else:
             return ((x<self.vmax)&(x>self.vmin)).float()
 
-
 class Iden(nn.Identity):
     def __init__(self, linear_grad=False):
         super(Iden,self).__init__()
@@ -121,13 +122,13 @@ class Iden(nn.Identity):
             return torch.ones(x.shape)
         else:
             return torch.ones(x.shape)
-
+        
 # %% Pick data format
-which_data = 'assoc'
+# which_data = 'assoc'
 # which_data = 'class'
-# which_data = 'struc_class'
+which_data = 'struc_class'
 
-ndat = 1000
+ndat = 5000
 
 # Associative task 
 if which_data == 'assoc':
@@ -198,11 +199,12 @@ if which_data == 'assoc':
 # Classification w/ random inputs
 elif which_data == 'class':
     num_cond = 4
-    num_var = 2
-    dim_inp = 200 # dimension per variable
-    noise = 0.1
+    num_var = 1
+    dim_inp = 120 # dimension per variable
+    noise = 0.5 
     
-    task = tasks.RandomDichotomies(d=[(0,1),(0,2)])
+    # task = tasks.RandomDichotomies(d=[(0,1),(0,2)])
+    task = tasks.RandomDichotomies(d=[(0,3)])
     # task = tasks.RandomDichotomies(d=[(0,1,2,3)])
     # task = tasks.StandardBinary(3)
     # this_exp = exp.random_patterns(task, SAVE_DIR, 
@@ -210,6 +212,7 @@ elif which_data == 'class':
     #                                 dim=dim_inp,
     #                                 var_noise=noise)
     input_task = tasks.RandomPatterns(num_cond, dim_inp, noise)
+    input_task.means -= input_task.means.mean(0)
     
     # abstract_conds = util.decimal(this_exp.train_data[1])[:ndat]
     # inp_condition = this_exp.train_conditions[:ndat]
@@ -229,10 +232,10 @@ elif which_data == 'class':
 # Classification w/ structured inputs
 elif which_data == 'struc_class':
     num_var = 2
-    dim_inp = 100 # dimension per variable
-    noise = 0.2
+    dim_inp = 40 # dimension per variable
+    noise = 0.0
     
-    ndat = 2000
+    ndat = 5000
     
     num_cond = 2**num_var
     
@@ -250,7 +253,8 @@ elif which_data == 'struc_class':
     task = tasks.RandomDichotomies(d=[(1,2)])
     # task = tasks.RandomDichotomies(d=[(0,1)])
     # input_task = tasks.NudgedCube(tasks.StandardBinary(2), task, dim_inp, nudge_mag=0.2, noise_var=noise)
-    input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim_inp, nudge_mag=0.2, noise_var=noise, random=False)
+    # input_task = tasks.NudgedXOR(tasks.StandardBinary(2), dim_inp, nudge_mag=0.0, noise_var=noise, random=False)
+    input_task = tasks.NudgedXOR(dim_inp, nudge_mag=0.05, noise_var=noise, random=False, sqrt_N_norm=True)
     
     # generate inputs
     inp_condition = np.random.choice(2**num_var, ndat)
@@ -273,12 +277,14 @@ elif which_data == 'struc_class':
     
     # inputs = torch.tensor(clus_mns + np.random.randn(ndat, num_var*dim_inp)*noise).float()
     
-    x_pos = la.block_diag(*np.diff(input_task.means[:2],axis=1).squeeze().tolist()).T
-    x_pos = np.concatenate([x_pos,input_task.means[2].flatten()[:,None]], axis=1)
+    # x_pos = la.block_diag(*np.diff(input_task.means[:2],axis=1).squeeze().tolist()).T
+    # x_pos = np.concatenate([x_pos,input_task.means[2].flatten()[:,None]], axis=1)
     # 
     # x_pos = la.block_diag(*np.diff(input_task.means,axis=1).squeeze().tolist()).T
     
-    x_pos /= la.norm(x_pos,axis=0, keepdims=True)
+    # x_pos = np.stack([input_task.means[(dim_inp*i):(dim_inp*(i+1)),i] for i in range(3)]).T
+    
+    x_pos = input_task.means/la.norm(input_task.means,axis=0, keepdims=True)
     # x_pos = np.concatenate([x_pos, np.zeros((1,x_pos.shape[1]))], axis=0)
     
     inputs = input_task(inp_condition)
@@ -296,7 +302,7 @@ elif which_data == 'struc_class':
 
 manual = True
 # manual = False
-ppp = 0 # 0 is MSE, 1 is cross entropy
+ppp = 1 # 0 is MSE, 1 is cross entropy
 # theoretical = True
 theoretical = False
 
@@ -313,8 +319,8 @@ two_layers = False
 # nonneg = True
 nonneg = False
 
-train_out = True
-# train_out = False
+# train_out = True
+train_out = False
 
 linear_grad = False
 # linear_grad = True
@@ -322,18 +328,18 @@ linear_grad = False
 # train_biases = False
 train_biases = True
 
-nonlinearity = RayLou(linear_grad)
-# nonlinearity = TanAytch(linear_grad)
+# nonlinearity = RayLou(linear_grad)
+nonlinearity = TanAytch(linear_grad)
 # nonlinearity = HardTanAytch(linear_grad, vmin=-0.5, vmax=0.5)
 # nonlinearity = Iden()
 
 correct_mse = False # if True, rescales the MSE targets to be more like the log odds
 
-N = 100
+N = 128
 # N = 264
 
-nepoch = 2000
-lr = 1e-3
+nepoch = 1000
+lr = 1e-1
 bsz = 200
 
 # n_trn = int(ndat*0.8)
@@ -356,7 +362,8 @@ W1 = torch.FloatTensor(N,inputs.shape[1]).uniform_(-ba,ba)
 # W1 = torch.FloatTensor([[1,-1],[-1,1]]).repeat_interleave(N//2,0)
 # W1 = torch.FloatTensor(torch.zeros(N,inputs.shape[1]))
 if train_biases:
-    b1 = torch.FloatTensor(N,1).uniform_(-ba,ba)
+    # b1 = torch.FloatTensor(N,1).uniform_(-ba,ba)
+    b1 = torch.FloatTensor(N,1).uniform_(-2*ba,-ba)
 else:
 # b1 = students.Feedforward([inputs.shape[1],N], nonlinearity='Tanh').network.layer0.bias.data[:,None]
     b1 = torch.FloatTensor(torch.zeros(N,1))
@@ -373,13 +380,14 @@ if two_layers:
     b2.requires_grad_(True)
 
 # ba = 1/np.sqrt(targets.shape[1])
-ba = 10/N
+# ba = 10/N
+ba = 1/np.sqrt(N)
 
 if nonneg:
     W = torch.FloatTensor(targets.shape[1],N).uniform_(0,2*ba)
     b = torch.FloatTensor(targets.shape[1],1).uniform_(0,2*ba)
 else:
-    W = torch.FloatTensor(targets.shape[1],N).uniform_(-ba,ba)
+    # W = torch.FloatTensor(targets.shape[1],N).uniform_(-ba,ba)
     # W = torch.FloatTensor([1,-1]).repeat(N//2)[None,:]
     # W *= (W>0)
     # W = torch.FloatTensor(torch.ones(targets.shape[1],N))
@@ -388,10 +396,11 @@ else:
     #                 students.BinaryReadout(N//2, targets.shape[1], rotated=True).weight.detach()], dim=-1)*10/N
     # W_bin = torch.cat([students.BinaryReadout(256, 2**num_var, rotated=False).weight.detach(),
     #                 students.BinaryReadout(8, 2**num_var, rotated=True).weight.detach()], dim=-1)*10/N
+    W = torch.tensor(pt_util.BalancedBinary(1,2)(targets.shape[1],N)).float()/np.sqrt(N)
     # W = torch.tensor(x_pos).float()@W_bin
     # W = students.Feedforward([N,targets.shape[1]], nonlinearity=[None]).network.layer0.weight.data
-    b = torch.FloatTensor(targets.shape[1],1).uniform_(-ba,ba)
-    # b = torch.FloatTensor(torch.zeros(targets.shape[1],1))
+    # b = torch.FloatTensor(targets.shape[1],1).uniform_(-ba,ba)
+    b = torch.FloatTensor(torch.zeros(targets.shape[1],1))
     # b = students.Feedforward([N,targets.shape[1]], nonlinearity=[None]).network.layer0.bias.data[:,None]
 
 if use_adam:
@@ -460,16 +469,18 @@ for epoch in tqdm(range(nepoch)):
     # this is just the way I compute the abstraction metrics, sorry
     clf = assistants.LinearDecoder(N, 1, assistants.MeanClassifier)
     gclf = assistants.LinearDecoder(N, 1, svm.LinearSVC)
-    # D = assistants.Dichotomies(len(np.unique(inp_condition)),
-                                # input_task.positives+task.positives, extra=0)
-    D = assistants.Dichotomies(len(np.unique(inp_condition)),
-                                task.positives, extra=0)
+    D = dics.Dichotomies(len(np.unique(inp_condition)), task.positives, extra=100)
+    # D = dics.Dichotomies(len(np.unique(inp_condition)),
+    #                             input_task.positives+task.positives, extra=0)
+    # D = dics.Dichotomies(len(np.unique(inp_condition)),
+    #                             task.positives, extra=0)
     
     ps = []
     ccgp = [] 
     for _ in D:
-        ps.append(D.parallelism(z.T.detach().numpy(), inp_condition[:ndat][idx_tst], clf))
-        ccgp.append(D.CCGP(z.T.detach().numpy(), inp_condition[:ndat][idx_tst], gclf, max_iter=1000))
+        ps.append(dics.parallelism_score(z.detach().numpy(), inp_condition[:ndat][idx_tst], D.coloring(inp_condition[:ndat][idx_tst])))
+        # ccgp.append(D.CCGP(z.T.detach().numpy(), inp_condition[:ndat][idx_tst], gclf, max_iter=1000))
+        # ccgp.append(dics.compute_ccgp(z.T.detach().numpy(), inp_condition[:ndat][idx_tst], D.coloring(inp_condition[:ndat][idx_tst]), gclf))
     PS.append(ps)
     CCGP.append(ccgp)
     
@@ -584,6 +595,8 @@ for epoch in tqdm(range(nepoch)):
                 W1 -= lr*w_alr*W1.grad
                 if train_biases:
                     b1 -= lr*b_alr*b1.grad
+                if train_out:
+                    W -= -lr*err@z.T/inps.shape[0]
             # W1 += lr*dw
             # b1 += lr*db
         else:
@@ -613,6 +626,129 @@ adam_v = np.array(adam_v)
 
 weights_proj = np.einsum('ijk,kl->ijl',weights,x_pos/la.norm(x_pos,axis=0, keepdims=True))
 W = W.detach().numpy()
+
+#%% PAPER FIGURES (trajectories)
+    
+# this_nonlin = RayLou()
+# this_nonlin = TanAytch()
+this_nonlin = NoisyTanAytch(noise)
+# this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
+# this_nonlin = Iden()
+# this_nonlin = Poftslus(1)
+# this_nonlin = NoisyRayLou(noise)
+
+N_grid = 41
+intrcp = -0.1
+
+num_out = (np.sign(W)!=0).sum(0)
+
+x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+y_ = task(np.unique(inp_condition)).detach().numpy().T
+err_avg = y_ - y_.mean(1,keepdims=True)
+
+grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+
+
+# these_neur = num_out>1 # plot all conjunctive-output neurons
+these_neur = num_out==1 # plot all abstract-output neurons
+
+these_groups = np.unique(grp[these_neur])
+# these_groups = np.array([0])
+
+# # compute relevant directions
+# dic = assistants.Dichotomies(num_cond)
+# all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+
+# corr_dir = W.T@err_avg
+# # corr_dir/=la.norm(corr_dir, axis=-1, keepdims=True)
+# corr_dir/=np.max(corr_dir, axis=-1, keepdims=True)
+# lin_dir = corr_dir@x_.T
+# lin_dir /= la.norm(lin_dir, axis=-1, keepdims=True)
+
+# kernels = ((all_col@err_avg.T)@grp_weights==0)
+# bad_dirs = np.stack([all_col[k,:].T@all_col[k,:] for k in kernels.T])[grp,:,:]
+# anticorr_dir = 1.0*bad_dirs[np.arange(N),np.argmax(corr_dir>0,axis=1),:]
+# # anticorr_dir/=la.norm(anticorr_dir, axis=-1, keepdims=True)
+# anticorr_dir/=np.max(anticorr_dir, axis=-1, keepdims=True)
+# bad_dir = anticorr_dir@x_.T
+# bad_dir /= la.norm(bad_dir, axis=-1, keepdims=True)
+
+# neur_basis = np.stack([bad_dir,lin_dir])
+
+def task_basis(W, y):
+    
+    num_cond = y.shape[-1]
+    
+    grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+
+    # compute relevant directions
+    dic = dics.Dichotomies(num_cond)
+    all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+    
+    corr_dir = W.T@y
+    # corr_dir/=la.norm(corr_dir, axis=-1, keepdims=True)
+    corr_dir /= np.max(corr_dir, axis=-1, keepdims=True)
+    # lin_dir = corr_dir@x.T
+    # lin_dir /= la.norm(lin_dir, axis=-1, keepdims=True)
+    
+    kernels = ((all_col@y.T)@grp_weights==0)
+    bad_dirs = np.stack([all_col[k,:].T@all_col[k,:] for k in kernels.T])[grp,:,:]
+    anticorr_dir = 1.0*bad_dirs[np.arange(len(grp)),np.argmax(corr_dir>0,axis=1),:]
+    # anticorr_dir/=la.norm(anticorr_dir, axis=-1, keepdims=True)
+    anticorr_dir /= np.max(anticorr_dir, axis=-1, keepdims=True)
+    # bad_dir = anticorr_dir@x.T
+    # bad_dir /= la.norm(bad_dir, axis=-1, keepdims=True)
+    
+    return np.stack([anticorr_dir,corr_dir])
+ 
+basis = task_basis(W, err_avg)
+corr_dir = basis[1]
+
+neur_basis = basis@x_.T
+neur_basis /= la.norm(neur_basis, axis=-1, keepdims=True)
+neur_basis = np.where(np.isnan(neur_basis), 0, neur_basis)
+
+# neur_weights = np.einsum('ilk,jlk->jli', neur_basis, weights)
+neur_weights = np.einsum('thi,jhi->jht', neur_basis, weights)
+
+neur_weights = np.where(np.isnan(neur_weights), 0, neur_weights)
+
+up_range = np.abs((neur_weights[:,these_neur,:]).max())*1.1 #+ 0.1
+down_range = np.abs((neur_weights[:,these_neur,:]).min())*1.1 #+ 0.1
+this_range = np.max([up_range, down_range])
+# this_range=6.7
+
+plt.figure()
+
+
+nidx = np.where(these_neur)[0][0] # plot all conjunctive-output neurons
+
+wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*2)
+
+fake_W = np.stack([w.flatten() for w in wawa]).T
+# WW = fake_W@np.where(np.isnan(neur_basis[:,nidx,:]), -0.1, neur_basis[:,nidx,:])
+WW = fake_W@neur_basis[:,nidx,:]
+fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + intrcp))).numpy()
+
+fake_grads = neur_basis[:,nidx,:]@(x_@(corr_dir[nidx,:]*fake_fz).T)
+
+# corr_grad = fake_fz@((x_.T@x_)*corr_dir[nidx]**2).sum(0)
+# anticorr_grad = fake_fz@((x_.T@x_)*(anticorr_dir[nidx]*corr_dir[nidx])).sum(0)
+# corr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@corr_dir[nidx]
+# anticorr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@anticorr_dir[nidx]
+
+plt.quiver(fake_W[:,0],fake_W[:,1], fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
+# plt.quiver(fake_W[:,0],fake_W[:,1], anticorr_grad,corr_grad, color=(0.5,0.5,0.5))
+
+dicplt.square_axis()
+
+# cols = cm.viridis(these_groups/len(these_groups))
+cols = cm.viridis(np.zeros(len(these_groups))/len(these_groups))
+
+for i,this_grp in enumerate(these_groups):
+    plt.scatter(neur_weights[0,grp==this_grp,0],neur_weights[0,grp==this_grp,1],marker='o', c=cols[i])
+    plt.plot(neur_weights[:,grp==this_grp,0],neur_weights[:,grp==this_grp,1], color=cols[i])
+
 
 #%%
 if two_layers:
@@ -687,200 +823,127 @@ nonlin_grad = ((lin_grad.squeeze()*f_z.transpose(1,2)))
 dw_lin = lin_grad[...,None]*x_.T[None,:,None,:]
 dw_nonlin = nonlin_grad[...,None]*x_.T[None,:,None,:]
 
+# #%% Hand-picked basis
+# this_nonlin = nonlinearity
+# # this_nonlin = RayLou()
+# # this_nonlin = TanAytch()
+# # this_nonlin = NoisyTanAytch(noise)
+# # this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
+# # this_nonlin = Iden()
+# # this_nonlin = Poftslus(1)
+# # this_nonlin = NoisyRayLou(noise)
 
-#%% Hand-picked basis
-this_nonlin = nonlinearity
-# this_nonlin = RayLou()
-# this_nonlin = TanAytch()
-# this_nonlin = NoisyTanAytch(noise)
-# this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
-# this_nonlin = Iden()
-# this_nonlin = Poftslus(1)
-# this_nonlin = NoisyRayLou(noise)
+# this_group = 1
 
-this_group = 1
+# these_vars = [1,0]
 
-these_vars = [1,0]
+# # # basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
+# # # basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))
 
-# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))@np.array([[-1/np.sqrt(2),1/np.sqrt(2),0],[1/np.sqrt(2),1/np.sqrt(2),0],[0,0,1]])
-# basis = (x_pos/la.norm(x_pos,axis=0, keepdims=True))
+# # grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
+# # # grp_weights, grp = np.unique(np.sign(W_bin),axis=1, return_inverse=True)
+# # # grp_weights = x_pos@grp_weights 
 
-# grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
-grp_weights, grp = np.unique(np.sign(W_bin),axis=1, return_inverse=True)
-grp_weights = x_pos@grp_weights 
+# # fake_J = grp_weights[:,this_group]
+# # # fake_J = grp_weights[:,this_group]
+# # # fake_J = 1
 
-fake_J = grp_weights[:,this_group]
-# fake_J = grp_weights[:,this_group]
-# fake_J = 1
+# # dic = dics.Dichotomies(num_cond)
+# # all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
 
-dic = assistants.Dichotomies(num_cond)
-all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
+# # # weights_proj = np.einsum('ijk,kl->ijl',weights,basis) #+ biases[:,-1:,None]
+# # x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+# # # x_ = x_pos
+# # y_ = task(np.unique(inp_condition)).detach().numpy().T
 
-# weights_proj = np.einsum('ijk,kl->ijl',weights,basis) #+ biases[:,-1:,None]
-x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
-# x_ = x_pos
-y_ = task(np.unique(inp_condition)).detach().numpy().T
+# # err_avg = y_ - y_.mean(1,keepdims=True)
+# # # err_avg = targets.numpy().T - y_.mean(1,keepdims=True)
+# # # err_avg = delta[0].numpy()
+# # # x_avg = (x_) - (x_).mean(1,keepdims=True)
 
-err_avg = y_ - y_.mean(1,keepdims=True)
-# err_avg = targets.numpy().T - y_.mean(1,keepdims=True)
-# err_avg = delta[0].numpy()
-# x_avg = (x_) - (x_).mean(1,keepdims=True)
+# # # good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
+# # # good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
+# # good_dir = (grp_weights.T@err_avg@x_.T)[this_group,:]
+# # good_dir /= la.norm(good_dir)
+# # bad_dirs = all_col[((all_col@err_avg.T)@fake_J)==0].T@all_col[((all_col@err_avg.T)@fake_J)==0]
+# # bad_dir = x_@bad_dirs[(fake_J@err_avg>0)][0].squeeze()
+# # bad_dir /= la.norm(bad_dir)
 
-# good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
-# good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
-good_dir = (grp_weights.T@err_avg@x_.T)[this_group,:]
-good_dir /= la.norm(good_dir)
-bad_dirs = all_col[((all_col@err_avg.T)@fake_J)==0].T@all_col[((all_col@err_avg.T)@fake_J)==0]
-bad_dir = x_@bad_dirs[(fake_J@err_avg>0)][0].squeeze()
-bad_dir /= la.norm(bad_dir)
+# # # good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
+# # # good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
+# # # bad_dir = (x_@(grp_weights[:,grp]*err_avg).prod(0))
+# # # bad_dir /= la.norm(bad_dir)
 
-# good_dir = (grp_weights.T@err_avg@x_.T)[grp,:]
-# good_dir /= la.norm(good_dir, axis=-1, keepdims=True)
-# bad_dir = (x_@(grp_weights[:,grp]*err_avg).prod(0))
-# bad_dir /= la.norm(bad_dir)
+# # basis = np.stack([good_dir,bad_dir]).T
 
-basis = np.stack([good_dir,bad_dir]).T
+# x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+# y_ = task(np.unique(inp_condition)).detach().numpy().T
 
-weights_proj = np.einsum('ijk,kl->ijl',weights,basis)
+# basis = task_basis(W, y_ - y_.mean(1,keepdims=True))
 
-N_grid = 31
-# this_range = np.abs(weights_proj[0]).max() + 0.1
-up_range = np.abs((weights_proj[...,these_vars]).max())*1.1 #+ 0.1
-down_range = np.abs((weights_proj[...,these_vars]).min())*1.1 #+ 0.1
-# this_range=0.7
-this_range = np.max([up_range, down_range])
-# up_range = this_range
-# down_range = this_range
+# weights_proj = np.einsum('ijk,kl->ijl',weights,basis)
+
+# N_grid = 31
+# # this_range = np.abs(weights_proj[0]).max() + 0.1
+# up_range = np.abs((weights_proj[...,these_vars]).max())*1.1 #+ 0.1
+# down_range = np.abs((weights_proj[...,these_vars]).min())*1.1 #+ 0.1
+# # this_range=0.7
+# this_range = np.max([up_range, down_range])
+# # up_range = this_range
+# # down_range = this_range
         
-# this_bias = np.random.randn(N_grid**2,1)*0.1
-this_bias = np.ones((N_grid**len(these_vars),1))*-2#b1.detach().numpy().mean()
-# this_bias = b1.detach().numpy()
+# # this_bias = np.random.randn(N_grid**2,1)*0.1
+# this_bias = np.ones((N_grid**len(these_vars),1))*-2#b1.detach().numpy().mean()
+# # this_bias = b1.detach().numpy()
 
 
-wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*len(these_vars))
+# wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*len(these_vars))
 
-# fake_W = np.stack([w.flatten() for w in wawa]+[np.ones(N_grid**len(these_vars))*0 for _ in np.setdiff1d(range(x_pos.shape[-1]),these_vars)]).T
-fake_W = np.stack([w.flatten() for w in wawa]).T
-WW = fake_W@basis[:,these_vars].T #+ x_pos[:,np.setdiff1d(range(x_pos.shape[-1]),these_vars)].T*0
-fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + this_bias))).numpy()
-# fake_fz = this_nonlin.deriv(torch.tensor((WW@inputs.numpy().T + this_bias))).numpy()
-# fake_fz = this_nonlin.deriv(torch.tensor((fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T@inputs.numpy().T + this_bias))).numpy()
-# fake_fz = this_nonlin.deriv(torch.tensor((fake_W@x_pos.T@x_ + this_bias))).numpy()
+# # fake_W = np.stack([w.flatten() for w in wawa]+[np.ones(N_grid**len(these_vars))*0 for _ in np.setdiff1d(range(x_pos.shape[-1]),these_vars)]).T
+# fake_W = np.stack([w.flatten() for w in wawa]).T
+# WW = fake_W@basis[:,these_vars].T #+ x_pos[:,np.setdiff1d(range(x_pos.shape[-1]),these_vars)].T*0
+# fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + this_bias))).numpy()
+# # fake_fz = this_nonlin.deriv(torch.tensor((WW@inputs.numpy().T + this_bias))).numpy()
+# # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T@inputs.numpy().T + this_bias))).numpy()
+# # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@x_pos.T@x_ + this_bias))).numpy()
 
-fake_grads = basis.T@(x_@(fake_J@err_avg*fake_fz).T)
-# fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(inputs.numpy().T@(fake_J@err_avg*fake_fz).T)
-# fake_grads = ((fake_J@err_avg*fake_fz)@x_.T)@x_[:,these_vars]
-# fake_lin_grads = (x_pos.T@x_)*(err_avg)
+# fake_grads = basis.T@(x_@(fake_J@err_avg*fake_fz).T)
+# # fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(inputs.numpy().T@(fake_J@err_avg*fake_fz).T)
+# # fake_grads = ((fake_J@err_avg*fake_fz)@x_.T)@x_[:,these_vars]
+# # fake_lin_grads = (x_pos.T@x_)*(err_avg)
 
-plt.figure()
-nya = plt.quiver(fake_W[:,0],fake_W[:,1],
-            fake_grads[these_vars[0],:],fake_grads[these_vars[1],:], color=(0.5,0.5,0.5))
+# plt.figure()
+# nya = plt.quiver(fake_W[:,0],fake_W[:,1],
+#             fake_grads[these_vars[0],:],fake_grads[these_vars[1],:], color=(0.5,0.5,0.5))
 
-# plt.quiver(fake_W[:,0],fake_W[:,1],
-#            fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
+# # plt.quiver(fake_W[:,0],fake_W[:,1],
+# #            fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
 
-# reps = this_nonlin(torch.tensor(WW@x_ + this_bias)).numpy()
-# pps = np.sum([np.sign(err_avg.squeeze()[i]*err_avg.squeeze()[j])*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0)
-# pnrm = (la.norm(reps,2,axis=-1)**2) # local norm
-
-
-# plt.imshow((pps/pnrm).reshape((N_grid,N_grid)),'bwr', 
-#            extent=[-this_range,this_range,-this_range,this_range])
-# dicplt.diverging_clim(plt.gca())
+# # reps = this_nonlin(torch.tensor(WW@x_ + this_bias)).numpy()
+# # pps = np.sum([np.sign(err_avg.squeeze()[i]*err_avg.squeeze()[j])*reps[:,i]*reps[:,j] for i,j in zip([1,0,1,2],[2,3,3,0]) ], axis=0)
+# # pnrm = (la.norm(reps,2,axis=-1)**2) # local norm
 
 
-plt.plot(weights_proj[:,grp==this_group,these_vars[0]],weights_proj[:,grp==this_group,these_vars[1]], 'r', linewidth=1)
-# plt.plot(weights_proj[:,np.sign(W.squeeze())<0,these_vars[0]],weights_proj[:,np.sign(W.squeeze())<0,these_vars[1]], 'b', linewidth=1)
-# plt.plot(lin_w[:,np.sign(W.squeeze())<0,these_vars[0]],lin_w[:,np.sign(W.squeeze())<0,these_vars[1]], 'b', linewidth=1)
+# # plt.imshow((pps/pnrm).reshape((N_grid,N_grid)),'bwr', 
+# #            extent=[-this_range,this_range,-this_range,this_range])
+# # dicplt.diverging_clim(plt.gca())
 
 
-# plt.plot(weights_proj[:,grp==0,these_vars[0]],weights_proj[:,grp==0,these_vars[1]], 'r', linewidth=2)
-# plt.plot(weights_proj[:,grp==1,these_vars[0]],weights_proj[:,grp==1,these_vars[1]], 'b', linewidth=2)
-# plt.plot(weights_proj[:,grp==2,these_vars[0]],weights_proj[:,grp==2,these_vars[1]], 'g', linewidth=2)
-# plt.plot(weights_proj[:,grp==3,these_vars[0]],weights_proj[:,grp==3,these_vars[1]], 'y', linewidth=2)
-# plt.plot(weights_proj[:,np.sign(W.squeeze())<0,0],weights_proj[:,np.sign(W.squeeze())<0,1], 'b', linewidth=1)
-plt.axis('equal')
-plt.axis('square')
-plt.xlim([-down_range,up_range])
-plt.ylim([-down_range,up_range])
-
-#%% All neurons on one plot
-
-# this_nonlin = RayLou()
-# this_nonlin = TanAytch()
-# this_nonlin = NoisyTanAytch(noise)
-# this_nonlin = HardTanAytch(vmin=-0.5,vmax=0.5)
-# this_nonlin = Iden()
-# this_nonlin = Poftslus(1)
-this_nonlin = NoisyRayLou(noise)
-
-N_grid = 21
-
-num_out = (np.sign(W)!=0).sum(0)
-
-# these_neur = num_out>1 # plot all conjunctive-output neurons
-these_neur = num_out==1 # plot all abstract-output neurons
-
-x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
-y_ = task(np.unique(inp_condition)).detach().numpy().T
-err_avg = y_ - y_.mean(1,keepdims=True)
-
-grp_weights, grp = np.unique(np.sign(W),axis=1, return_inverse=True)
-
-# compute relevant directions
-dic = assistants.Dichotomies(num_cond)
-all_col = np.stack([2*dic.coloring(range(num_cond))-1 for _ in dic])
-
-corr_dir = W.T@err_avg
-# corr_dir/=la.norm(corr_dir, axis=-1, keepdims=True)
-corr_dir/=np.max(corr_dir, axis=-1, keepdims=True)
-lin_dir = corr_dir@x_.T
-lin_dir /= la.norm(lin_dir, axis=-1, keepdims=True)
-
-kernels = ((all_col@err_avg.T)@grp_weights==0)
-bad_dirs = np.stack([all_col[k,:].T@all_col[k,:] for k in kernels.T])[grp,:,:]
-anticorr_dir = 1.0*bad_dirs[np.arange(N),np.argmax(corr_dir>0,axis=1),:]
-# anticorr_dir/=la.norm(anticorr_dir, axis=-1, keepdims=True)
-anticorr_dir/=np.max(anticorr_dir, axis=-1, keepdims=True)
-bad_dir = anticorr_dir@x_.T
-bad_dir /= la.norm(bad_dir, axis=-1, keepdims=True)
-
-neur_basis = np.stack([bad_dir,lin_dir])
-neur_weights = np.einsum('ilk,jlk->jli', neur_basis, weights)
-
-up_range = np.abs((neur_weights[:,these_neur,:]).max())*1.1 #+ 0.1
-down_range = np.abs((neur_weights[:,these_neur,:]).min())*1.1 #+ 0.1
-this_range = np.max([up_range, down_range])
-# this_range=6.7
+# plt.plot(weights_proj[:,grp==this_group,these_vars[0]],weights_proj[:,grp==this_group,these_vars[1]], 'r', linewidth=1)
+# # plt.plot(weights_proj[:,np.sign(W.squeeze())<0,these_vars[0]],weights_proj[:,np.sign(W.squeeze())<0,these_vars[1]], 'b', linewidth=1)
+# # plt.plot(lin_w[:,np.sign(W.squeeze())<0,these_vars[0]],lin_w[:,np.sign(W.squeeze())<0,these_vars[1]], 'b', linewidth=1)
 
 
-plt.figure()
+# # plt.plot(weights_proj[:,grp==0,these_vars[0]],weights_proj[:,grp==0,these_vars[1]], 'r', linewidth=2)
+# # plt.plot(weights_proj[:,grp==1,these_vars[0]],weights_proj[:,grp==1,these_vars[1]], 'b', linewidth=2)
+# # plt.plot(weights_proj[:,grp==2,these_vars[0]],weights_proj[:,grp==2,these_vars[1]], 'g', linewidth=2)
+# # plt.plot(weights_proj[:,grp==3,these_vars[0]],weights_proj[:,grp==3,these_vars[1]], 'y', linewidth=2)
+# # plt.plot(weights_proj[:,np.sign(W.squeeze())<0,0],weights_proj[:,np.sign(W.squeeze())<0,1], 'b', linewidth=1)
+# plt.axis('equal')
+# plt.axis('square')
+# plt.xlim([-down_range,up_range])
+# plt.ylim([-down_range,up_range])
 
-
-nidx = np.where(these_neur)[0][0] # plot all conjunctive-output neurons
-
-wawa = np.meshgrid(*(np.linspace(-this_range,this_range,N_grid),)*len(these_vars))
-
-fake_W = np.stack([w.flatten() for w in wawa]).T
-WW = fake_W@neur_basis[:,nidx,:] 
-fake_fz = this_nonlin.deriv(torch.tensor((WW@x_))).numpy()
-
-fake_grads = neur_basis[:,nidx,:]@(x_@(corr_dir[nidx,:]*fake_fz).T)
-
-# corr_grad = fake_fz@((x_.T@x_)*corr_dir[nidx]**2).sum(0)
-# anticorr_grad = fake_fz@((x_.T@x_)*(anticorr_dir[nidx]*corr_dir[nidx])).sum(0)
-# corr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@corr_dir[nidx]
-# anticorr_grad = (corr_dir[nidx,:]*fake_fz)@(x_.T@x_)@anticorr_dir[nidx]
-
-plt.quiver(fake_W[:,0],fake_W[:,1], fake_grads[0,:],fake_grads[1,:], color=(0.5,0.5,0.5))
-# plt.quiver(fake_W[:,0],fake_W[:,1], anticorr_grad,corr_grad, color=(0.5,0.5,0.5))
-
-dicplt.square_axis()
-
-cols = cm.viridis(np.unique(grp)/7)
-for this_grp in np.unique(grp[these_neur]):
-    plt.scatter(neur_weights[0,grp==this_grp,0],neur_weights[0,grp==this_grp,1],marker='o', c=cols[this_grp])
-    plt.plot(neur_weights[:,grp==this_grp,0],neur_weights[:,grp==this_grp,1], color=cols[this_grp])
 
 #%%
 # basins = list(itt.chain(*([combinations(range(num_cond), i) for i in range(1,3)])))
@@ -957,10 +1020,10 @@ plt.colorbar()
 
 #%%
 # this_nonlin = RayLou()
-this_nonlin = TanAytch()
+# this_nonlin = TanAytch()
 # this_nonlin = Iden()
 # this_nonlin = Poftslus(1)
-# this_nonlin = NoisyRayLou(noise)
+this_nonlin = NoisyRayLou(noise)
 
 grp_weights, grp = np.unique(W,axis=1, return_inverse=True)
 grp_weights = grp_weights
@@ -1027,7 +1090,79 @@ for j,these_vars in enumerate(np.split(np.arange(x_pos.shape[-1]),x_pos.shape[-1
         
         if i>0:
             plt.yticks([])
+#%%
+# this_nonlin = RayLou()
+# this_nonlin = TanAytch()
+# this_nonlin = Iden()
+# this_nonlin = Poftslus(1)
+this_nonlin = NoisyRayLou(noise)
 
+grp_weights, grp = np.unique(W,axis=1, return_inverse=True)
+grp_weights = grp_weights
+num_grp = grp_weights.shape[-1]
+this_grp = 1
+
+x_ = input_task(np.unique(inp_condition),noise=0).detach().numpy().T
+# x_ = x_pos
+y_ = task(np.unique(inp_condition)).detach().numpy().T
+
+arr_scl = 1e1
+
+N_grid = 21
+n_cond = x_.shape[-1]
+
+# this_range = np.abs(weights_proj[0]).max() + 0.1
+up_range = np.abs((weights_proj).max())*1.1 #+ 0.1
+down_range = np.abs((weights_proj).min())*1.1 #+ 0.1
+# this_range=0.3
+this_range = np.max([up_range, down_range])
+# up_range = this_range
+# down_range = this_range
+
+# this_bias = np.random.randn(N_grid**2,1)*0.1
+this_bias = np.ones((N_grid**2,1))*0#b1.detach().numpy().mean()
+# this_bias = b1.detach().numpy()
+
+err_avg = y_ - y_.mean(1,keepdims=True)
+# err_avg = targets.numpy().T - y_.mean(1,keepdims=True)
+
+wawa = np.meshgrid(*(np.linspace(-this_range,up_range,N_grid),)*2)
+
+plt.figure()
+for j,these_vars in enumerate(combinations(range(n_cond), 2)):
+    
+    
+    fake_W = np.stack([w.flatten() for w in wawa]).T
+    # fake_W = np.stack([w.flatten() for w in wawa]).T
+    WW = fake_W@(x_/la.norm(x_,axis=0, keepdims=True))[:,these_vars].T
+
+    fake_fz = this_nonlin.deriv(torch.tensor((WW@x_ + this_bias))).numpy()
+    # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@(x_pos/la.norm(x_pos,axis=0, keepdims=True))[:,these_vars].T@inputs.numpy().T + this_bias))).numpy()
+    # fake_fz = this_nonlin.deriv(torch.tensor((fake_W@x_pos.T@x_ + this_bias))).numpy()
+    
+    # cols = dicplt.color_cycle('brg', num_grp)
+    # cols = cm.jet(np.arange(num_grp)/num_grp)
+        
+    plt.subplot(n_cond-1, n_cond-1, these_vars[0]*(n_cond-1) + these_vars[1])
+    fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(x_@(grp_weights[:,this_grp]@err_avg*fake_fz).T)
+    # fake_grads = (x_pos/la.norm(x_pos,axis=0, keepdims=True)).T@(inputs.numpy().T@(grp_weights[:,i]@err_avg*fake_fz).T)
+    
+    plt.quiver(fake_W[:,1],fake_W[:,0],
+                fake_grads[these_vars[1],:],fake_grads[these_vars[0],:],
+                # color=cols[i],
+                color=(0.5,0.5,0.5),
+                scale_units='xy',
+                scale=arr_scl)
+    
+    plt.plot(weights_proj[:,grp==this_grp,these_vars[1]],weights_proj[:,grp==this_grp,these_vars[0]], color='r', linewidth=2)
+    
+    plt.axis('equal')
+    plt.axis('square')
+    plt.xlim([-down_range,up_range])
+    plt.ylim([-down_range,up_range])
+    
+    # if i>0:
+    #     plt.yticks([])
 
 #%%
 

@@ -1,0 +1,58 @@
+import socket
+import os
+import sys
+
+if socket.gethostname() == 'kelarion':
+    CODE_DIR = '/home/kelarion/github/repler/src/'
+    SAVE_DIR = '/mnt/c/Users/mmall/Documents/uni/columbia/multiclassification/saves/results/'
+    LOAD_DIR = '/mnt/c/Users/mmall/Documents/uni/columbia/multiclassification/server_cache/'
+else:    
+    # CODE_DIR = '/rigel/home/ma3811/repler/'
+    # SAVE_DIR = '/rigel/theory/users/ma3811/'  
+    CODE_DIR = '/burg/home/ma3811/repler/'
+    SAVE_DIR = '/burg/theory/users/ma3811/results/'
+    LOAD_DIR = SAVE_DIR
+    openmind = False
+
+import pickle as pkl
+
+import numpy as np
+
+sys.path.append(CODE_DIR)
+import util
+import experiments as exp
+
+from sklearn.exceptions import ConvergenceWarning
+import warnings # I hate convergence warnings so much never show them to me
+warnings.simplefilter("ignore", category=ConvergenceWarning)
+
+
+####  Load dataset and parameters  ######
+##########################################################
+
+# get the indices
+allargs = sys.argv
+idx = int(allargs[1])
+ndat = int(allargs[2])
+
+data_idx = int(np.mod(idx,ndat))
+param_idx = idx//ndat
+
+task_dict = pkl.load(open(LOAD_DIR+'task_%d.pkl'%data_idx, 'rb'))
+net_dict = pkl.load(open(LOAD_DIR+'network_%d.pkl'%param_idx, 'rb'))
+
+print('Loaded data!')
+
+####  Fit model and save #########################
+##########################################################
+
+this_exp = task_dict['experiment'](**task_dict['exp_args'])
+
+model = this_exp.initialize_network(net_dict['model'], **net_dict['model_args'])
+
+this_exp.train_network(model, **net_dict['opt_args'])
+
+this_exp.save_experiment(SAVE_DIR)
+
+print('ALL DONE! THANK YOU VERY MUCH FOR YOUR PATIENCE!!!!!!!')
+print(':' + ')'*12)

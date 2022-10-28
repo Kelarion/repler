@@ -56,7 +56,8 @@ class ScatterAnime(object):
 
     i hate matplotlib animation so much 
     """
-    def __init__(self, x, y, auto_zoom=False, trail=False, interval=10, **scat_args):
+    def __init__(self, x, y, auto_zoom=False, trail=False, interval=10, 
+        fig=None, ax=None, **scat_args):
         ''' 
         x and y are shape (num_data, num_time) 
         '''
@@ -71,10 +72,20 @@ class ScatterAnime(object):
         self.interval = interval
         
         # Setup the figure and axes...
-        self.fig, self.ax = plt.subplots()
+        if fig is None and ax is None:
+            self.fig, self.ax = plt.subplots()
+        elif ax is not None:
+            self.ax = ax
+            self.fig = ax.get_figure()
+        elif fig is not None:
+            self.fig = fig
+            self.ax = fig.add_subplot(111)
         # Then setup FuncAnimation.
-        # self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
-        #     init_func=self.setup_plot, blit=False, frames=x.shape[-1])
+        self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
+            init_func=self.setup_plot, blit=False, frames=x.shape[-1])
+
+    def save(self,save_dir, fps=30):
+        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
 
     def setup_plot(self):
         """Initial drawing of the scatter plot."""
@@ -85,9 +96,9 @@ class ScatterAnime(object):
         self.scat = self.ax.scatter(self.x[...,0], self.y[...,0], **self.kwargs)
 
         self.patches += [self.scat,]
-        if not self.auto_zoom:
-            self.ax.set_xlim([1.1*self.x.min(), 1.1*self.x.max()])
-            self.ax.set_ylim([1.1*self.y.min(), 1.1*self.y.max()])
+        # if not self.auto_zoom:
+        #     self.ax.set_xlim([1.1*self.x.min(), 1.1*self.x.max()])
+        #     self.ax.set_ylim([1.1*self.y.min(), 1.1*self.y.max()])
 
         if self.leave_trail:
             self.trail, = self.ax.plot(self.x[...,0], self.y[...,0])
@@ -375,8 +386,8 @@ class ScatterAnime3D(object):
 
     i hate matplotlib animation so much 
     """
-    def __init__(self, x, y, z, auto_zoom=False, interval=10, 
-        rotation_period=1000, frames=None, blit=False, view_period=0,
+    def __init__(self, x, y, z, auto_zoom=False, interval=10, blit=False,
+        rotation_period=1000, after_period=0, view_period=0,
         init_elev=30, init_azim=30, rot_elev=0, rot_azim=1,
         fig=None, ax=None, equalize=False,
         **kwargs):
@@ -390,6 +401,7 @@ class ScatterAnime3D(object):
         self.kwargs = kwargs
         self.auto_zoom = auto_zoom
         self.view_period = view_period
+        self.after_period = after_period
         self.equalize = equalize
         
         self.rot_speed = rotation_period
@@ -398,8 +410,7 @@ class ScatterAnime3D(object):
         self.rot_e = rot_elev # how much to rotat3 elevation
         self.rot_a = rot_azim # how much to rotate azimuth
 
-        if frames is None:
-            frames = x.shape[-1] + view_period
+        self.tot_frames = x.shape[-1] + view_period + after_period
 
         # Setup the figure and axes...
         if fig is None and ax is None:
@@ -414,7 +425,7 @@ class ScatterAnime3D(object):
             
         # Then setup FuncAnimation.
         self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
-            init_func=self.setup_plot, blit=blit, frames=frames)
+            init_func=self.setup_plot, blit=blit, frames=self.tot_frames)
 
     def save(self,save_dir, fps=30):
         self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
@@ -454,7 +465,7 @@ class ScatterAnime3D(object):
         self.ax.view_init(self.init_elev + self.rot_e*(i/self.rot_speed)*360,
             self.init_azim + self.rot_a*(i/self.rot_speed)*360)
 
-        if i>self.view_period:
+        if i>self.view_period and i<(self.tot_frames-self.after_period):
             i -= self.view_period
             # Set x and y data...
     

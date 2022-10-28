@@ -16,6 +16,12 @@ from torch.nn.parameter import Parameter
 from collections import OrderedDict
 import numpy as np
 import scipy
+import scipy.linalg as la
+
+from sklearn.exceptions import ConvergenceWarning
+import warnings # I hate convergence warnings so much never show them to me
+warnings.simplefilter("ignore", category=ConvergenceWarning)
+
 
 #%% Neural networks !!!
 class Feedforward(nn.Module):
@@ -28,6 +34,7 @@ class Feedforward(nn.Module):
         
         onion = OrderedDict()
         self.ndim = dim_layers
+        self.activation = nonlinearity
         
         if type(nonlinearity) is str:
             nonlinearity = [nonlinearity for _ in dim_layers[1:]]
@@ -51,7 +58,6 @@ class Feedforward(nn.Module):
                     onion['link%d'%l] = getattr(nn, nonlinearity[l])()
         
         self.network = nn.Sequential(onion)
-
         
     def forward(self, x):
         h = self.network(x)
@@ -661,7 +667,12 @@ class NeuralNet(nn.Module):
         raise NotImplementedError
         
     def grad_step(self):
+        """ Needs init_optimizer """
         raise NotImplementedError
+
+    def init_optimizer(self, opt_alg, **opt_alg_args):
+        self.optimizer = opt_alg(self.parameters(), **opt_alg_args)
+        self.initialized = True
     
     def save(self, to_path):
         """ save model parameters to path """
@@ -697,7 +708,7 @@ class VAE(NeuralNet):
         
         return px_params, qz_params, z
     
-    def grad_step(self, data, optimizer, beta=1.0):
+    def grad_step(self, data, beta=1.0):
         """ Single step of the AEVB algorithm on the VAE generator-posterior pair """
 
         running_loss = 0
@@ -706,7 +717,7 @@ class VAE(NeuralNet):
             nums, labels = batch
             nums = nums.squeeze(1).reshape((-1, 784))
             
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             
             # forward
             px_params, qz_params, z = self(nums)
@@ -715,14 +726,14 @@ class VAE(NeuralNet):
             
             # optimise
             loss.backward()
-            optimizer.step()
+            self.optimizer.step()
             
             running_loss += loss.item()
                 
         return running_loss/(i+1)
 
     # custom loss function
-    def free_energy(model, x, px_params, qz_params, regularise=True, y=None, xtrans=None):
+    def free_energy(model, x, px_params, qz_params, regularise=1, y=None, xtrans=None):
         """Computes free energy, or evidence lower bound
         If y is supplied, does a cheeky thing that isn't really the free energy
         ToDo: add support for >1 MC sample in the cross-entropy estimation
@@ -752,7 +763,7 @@ class VAE(NeuralNet):
 
 class MultiGLM(NeuralNet):
     """A deep GLM model with multiple outputs"""
-    def __init__(self, encoder, decoder, p_targ, p_latent=None, p_data=None):
+    def __init__(self, encoder, decoder, p_targ, p_latent=None):
         """
         Parameters
         ----------
@@ -767,23 +778,26 @@ class MultiGLM(NeuralNet):
         p_latent : DeepDistribution, optional
             Distribution of the latent code. The default (None) is a point
             mass (i.e. deterministic).
-        p_data : DeepDistribution, optional
-            Distribution of the data, to model noise in the inputs. The 
-            default (None) is also deterministic.
         """
         
         super(MultiGLM,self).__init__()
         
         self.enc = encoder
         self.dec = decoder
-        
+
         if p_latent is not None:
             if p_latent.name() == 'PointMass':
                 p_latent = None
         self.latent = p_latent
-        self.data = p_data
-        
+
         self.obs = p_targ
+
+        self.__name__ = '%s_%s_%s_%s'%(self.enc.__class__.__name__,
+                                       self.enc.ndim,
+                                       self.enc.activation,
+                                       self.obs.name())
+        if p_latent is not None:
+            self.__name__ += self.latent.name()
         
     def forward(self, x):
         """
@@ -798,40 +812,204 @@ class MultiGLM(NeuralNet):
         py_params = self.dec(z) # decoding
         # recon_x = self.p_x(px_params) # draw outputs
         
-        return py_params, qz_params, z
+        return py_params, z, qz_params
     
-    def grad_step(self, data, optimizer):
+    def grad_step(self, data, **opt_args):
         """ Single step of maximum likelihood over the data """
+        if not self.initialized:
+            self.init_optimizer(**opt_args)
 
         running_loss = 0
         
         for i, batch in enumerate(data):
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             
             nums, labels = batch
             # nums = nums.squeeze(1).reshape((-1, 784))
             
             # # forward
-            px_params, qz_params, z = self(nums)
-            loss = -self.obs.distr(px_params).log_prob(labels).mean()
+            px_params, z, qz_params = self(nums)
+
+            msk = ~torch.isnan(labels)
+            loss = -self.obs.distr(px_params[msk]).log_prob(labels[msk]).mean()
             if self.latent is not None:
                 loss -= self.latent.distr(qz_params).log_prob(z).sum()
-            
+
             # loss = -loglihood(self, nums, labels)
             # foo = self(nums)[0]
             # loss = nn.NLLLoss(reduction='sum')(foo, labels)
 
             # optimise
             loss.backward()
-            optimizer.step()
+            self.optimizer.step()
             
             running_loss += loss.item()
             
         return running_loss/(i+1)
 
+class SimpleMLP(MultiGLM):
+
+    def __init__(self, dim_inp, width, dim_out, p_targ, activation='ReLU', 
+                    depth=1, p_latent=None, **ff_args):
+
+        enc = Feedforward([dim_inp] + [width]*depth, nonlinearity=activation, **ff_args)
+
+        dec = nn.Linear(width, dim_out)
+
+        super(SimpleMLP, self).__init__(enc, dec, p_targ(dim_out), p_latent)
+
+        self.__name__ = f'MLP_{depth}_{width}_{activation}'
+
+
+class ShallowNetwork(NeuralNet):
+    """ Manually-trained network with one hidden layer """
+
+    def __init__(self, dim_inp, width, dim_out, activation, p_targ, 
+                    init_inp_var=None, inp_bias_var=None, 
+                    inp_weight_distr=torch.randn, inp_bias_distr=torch.randn,
+                    init_out_var=None, out_bias_var=None, 
+                    out_weight_distr=torch.randn, out_bias_distr=torch.randn):
+
+        super(ShallowNetwork, self).__init__()
+
+        if init_inp_var is None:
+            init_inp_var = 1/np.sqrt(dim_inp)
+        if inp_bias_var is None:
+            inp_bias_var = 1/np.sqrt(dim_inp)
+        if init_out_var is None:
+            init_out_var = 1/np.sqrt(width)
+        if out_bias_var is None:
+            out_bias_var = 1/np.sqrt(width)
+
+        self.p_w = inp_weight_distr
+        self.p_j = out_weight_distr
+
+        self.W = nn.Parameter(torch.FloatTensor(self.p_w(width, dim_inp)*init_inp_var)) # input weights
+        self.J = nn.Parameter(torch.FloatTensor(self.p_j(dim_out, width)*init_out_var)) # output weights
+
+        # self.b1 = nn.Parameter(torch.FloatTensor(width, 1).uniform_(-inp_bias_var,inp_bias_var))
+        # self.b2 = nn.Parameter(torch.FloatTensor(dim_out, 1).uniform_(-out_bias_var,out_bias_var))
+        self.b1 = nn.Parameter(torch.FloatTensor(inp_bias_distr(width, 1))*inp_bias_var)
+        self.b2 = nn.Parameter(torch.FloatTensor(out_bias_distr(dim_out, 1))*out_bias_var)
+
+        self.nx = dim_inp
+        self.ny = dim_out
+        self.nz = width
+
+        self.activation = activation
+        self.p_targ = p_targ(dim_out) # conditional expectation function, in GLM terms
+
+        self.initialized = False
+
+        self.__name__ = f'Shallow_{width}_{activation.__class__.__name__}'
+
+    def forward(self, x):
+        """ x is shape (dim_x, ...) """
+
+        z = self.activation(torch.matmul(self.W, x.T) + self.b1)
+        return (torch.matmul(self.J, z) + self.b2).T, z.T
+
+    def init_optimizer(self, lr=1e-3, do_rms=False, rms_beta=0.99,
+                        train_outputs=True, train_inputs=True, 
+                        train_inp_bias=True, train_out_bias=True):
+
+        self.train_W = train_inputs
+        self.train_J = train_outputs
+        self.train_b1 = train_inp_bias
+        self.train_b2 = train_out_bias
+
+        self.lr = lr
+        self.do_rms = do_rms
+        self.beta = rms_beta
+
+        self.initialized = True
+
+    def grad_step(self, data, **opt_args):
+
+        if not self.initialized:
+            self.init_optimizer(**opt_args)
+
+        running_loss = 0
+        
+        with torch.no_grad():
+            for i, batch in enumerate(data):
+                
+                inps, outs = batch
+
+                curr = (torch.matmul(self.W, inps.T) + self.b1).detach()
+                z = self.activation(curr)
+                pred = (torch.matmul(self.J, z) + self.b2).detach()
+
+                ## compute loss 
+                loss = -self.p_targ.distr(pred.T).log_prob(outs).mean()
+
+                ##  do backprop manually for the shallow network
+                err = (outs.T - self.p_targ.distr(pred.T).mean.T).numpy()
+                err = torch.tensor(np.where(np.isnan(err), 0.0, err)).float()
+
+                if self.train_J:
+                    dJ = -(err@z.T)/inps.shape[0]
+                if self.train_b2:
+                    db2 = -err.mean(1, keepdims=True)
+
+                d2 = (self.J.T@err)*self.activation.deriv(curr)
+                if self.train_W:
+                    dW = -(d2@inps)/inps.shape[0]
+                if self.train_b1:
+                    db1 = -d2.mean(1, keepdim=True)
+
+                if self.do_rms:
+                    if self.train_W:
+                        if 'w_rms' not in dir(self):
+                            self.w_rms = 0.1*dW.pow(2)
+                        else:
+                            self.w_rms = self.beta*self.w_rms + (1-self.beta)*dW.pow(2)
+                        w_alr = 1/np.sqrt((self.w_rms/(1-self.beta))+1e-8)
+
+                    if self.train_b1:
+                        if 'b1_rms' not in dir(self):
+                            self.b1_rms = 0.1*db1.pow(2)
+                        else:
+                            self.b1_rms = self.beta*self.b1_rms + (1-self.beta)*db1.pow(2)
+                        b1_alr = 1/np.sqrt((self.b1_rms/(1-self.beta))+1e-8)
+
+                    if self.train_J:
+                        if 'j_rms' not in dir(self):
+                            self.j_rms = 0.1*dJ.pow(2)
+                        else:
+                            self.j_rms = self.beta*self.j_rms + (1-self.beta)*dJ.pow(2)
+                        j_alr = 1/np.sqrt((self.j_rms/(1-self.beta))+1e-8)
+
+                    if self.train_b2:
+                        if 'b2_rms' not in dir(self):
+                            self.b2_rms = 0.1*db2.pow(2)
+                        else:
+                            self.b2_rms = self.beta*self.b2_rms + (1-self.beta)*db2.pow(2)
+                        b2_alr = 1/np.sqrt((self.b2_rms/(1-self.beta))+1e-8)
+
+                else:
+                    w_alr = 1
+                    b1_alr = 1
+                    j_alr = 1
+                    b2_alr = 1
+
+                if self.train_W:
+                    self.W -= self.lr*w_alr*dW
+                if self.train_b1:
+                    self.b1 -= self.lr*b1_alr*db1
+                if self.train_J:
+                    self.J -= self.lr*j_alr*dJ
+                if self.train_b2:
+                    self.b2 -= self.lr*b2_alr*db2
+
+                running_loss += loss.item()
+            
+        return running_loss/(i+1)
+
+
 class GenericRNN(NeuralNet):
     def __init__(self, rnn, out_dist, recoder=None, decoder=None, 
-        fix_decoder=False, z_dist=None, beta=1.0):
+        fix_decoder=False, z_dist=None, beta=1.0, only_final=False):
 
         super(GenericRNN,self).__init__()
 
@@ -847,6 +1025,8 @@ class GenericRNN(NeuralNet):
         self.nhid = self.rnn.hidden_size
         self.nlayers = self.rnn.num_layers
 
+        self.only_final = only_final
+
         if decoder is None:
             self.decoder = nn.Linear(self.nhid, nout)
         else:
@@ -854,6 +1034,18 @@ class GenericRNN(NeuralNet):
         if fix_decoder:
             self.decoder.requires_grad = False
         # self.softmax = nn.LogSoftmax(dim=2)
+
+        # self.__name__ = '%s_%s_%s'%(self.rnn.__class__.__name__,
+        #                             self.nhid,
+        #                             self.obs.name())
+        # if z_dist is not None:
+        #     self.__name__ += '_%s'%self.hidden_dist.name()
+
+        self.__name__ = (f'{self.rnn.__class__.__name__}'
+                         f'_{self.nhid}_{self.obs.name()}'
+                         f'_{self.rnn.nonlinearity}'
+                         f"{'_regularized' if z_dist is not None and beta>0 else''}"
+                        ).format(beta=beta)
 
     def forward(self, emb, hidden=None, give_gates=False, debug=False, only_final=True):
         """
@@ -936,7 +1128,7 @@ class GenericRNN(NeuralNet):
     def init_hidden(self, bsz):
         return torch.zeros(1, bsz, self.nhid)
 
-    def grad_step(self, data, optimizer, init_state=False, only_final=True):
+    def grad_step(self, data, optimizer, only_final=None, init_state=None):
         """ Single step of maximum likelihood over the data """
 
         running_loss = 0
@@ -944,7 +1136,7 @@ class GenericRNN(NeuralNet):
         for i, batch in enumerate(data):
             optimizer.zero_grad()
             
-            if init_state:
+            if len(batch)>2:
                 nums, labels, hidden = batch
                 hidden = hidden[None,...]
             else:
@@ -958,10 +1150,10 @@ class GenericRNN(NeuralNet):
 
             # # forward
             if self.hidden_dist is None:
-                out, _ = self(nums, hidden, only_final=only_final)
-                loss = -self.obs.distr(out).log_prob(labels).mean()
+                out, _ = self(nums, hidden, only_final=self.only_final)
+                loss = -torch.mean(self.obs.distr(out).log_prob(labels))
             else:
-                out, hid = self(nums, hidden, only_final=only_final)
+                out, hid = self(nums, hidden, only_final=self.only_final)
                 # print(hid.shape)
 
                 loss = -self.obs.distr(out).log_prob(labels).mean() \
@@ -977,5 +1169,47 @@ class GenericRNN(NeuralNet):
         return running_loss/(i+1)
 
 
+class MonkeyRNN(GenericRNN):
 
+    def __init__(self, dim_inp, dim_hid, dim_out, p_targ, nonlinearity='relu',
+        p_hid=None, beta=0, fix_decoder=True, fix_encoder=True, bias=True, 
+        ortho_out=True, ortho_in=True, noise_std=None):
 
+        rnn = nn.RNN(dim_inp+dim_hid, dim_hid, 1, nonlinearity=nonlinearity)
+        dec = nn.Linear(dim_hid, dim_out, bias=bias)
+
+        if ortho_out or ortho_in:
+            N = np.max([dim_inp+dim_out, dim_hid])
+            basis = la.qr( np.random.randn(N,N))[0]
+
+        with torch.no_grad():
+            if ortho_in:
+                rnn.weight_ih_l0[:,:dim_inp] = torch.tensor(basis[:,:dim_inp]).float()
+                rnn.weight_ih_l0[:,dim_inp:] = torch.tensor(np.eye(dim_hid)).float()
+
+            if fix_encoder:
+                rnn.weight_ih_l0.requires_grad = False
+            else: 
+                train_mask = np.zeros(dim_inp+dim_hid, dtype=bool)
+                train_mask[dim_inp:] = True
+                weight_mask = torch.ones_like(rnn.weight_ih_l0)
+                weight_mask[:, train_mask] = 0
+                if noise_std is None:
+                    ident_weights = torch.tensor(np.identity(dim_hid), dtype=torch.float)
+                else:
+                    ident_weights = torch.tensor(noise_std, dtype=torch.float)
+                rnn.weight_ih_l0[:, train_mask] = ident_weights
+                rnn.weight_ih_l0.register_hook(lambda grad: grad.mul_(weight_mask))
+
+            if fix_decoder:
+                if ortho_out:
+                    dec.weight.copy_(torch.tensor(basis[:,dim_inp:dim_inp+dim_out].T).float())
+                dec.weight.requires_grad = False
+
+        if p_hid is None:
+            z_dist = None
+        else:
+            z_dist = p_hid(dim_hid)
+
+        super(MonkeyRNN,self).__init__(rnn, p_targ(dim_out), decoder=dec,
+            z_dist=z_dist, beta=beta)

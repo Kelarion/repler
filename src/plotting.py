@@ -440,6 +440,8 @@ def pca3d(X, special_vec=None, **scat_args):
 
     set_axes_equal(ax)
 
+    return scat
+
 def square_axis(ax=None):
     if ax is None:
         ax = plt.gca()
