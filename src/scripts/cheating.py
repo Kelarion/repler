@@ -266,8 +266,8 @@ def proj_coef(A, B):
 #%% debugging
 
 # GT = gram.RegularTree([1,2], fan_out=2, respect_hierarchy=False)
-# GT = gram.RegularTree([1,1,4], fan_out=2, respect_hierarchy=True)
-GT = gram.RegularTree([1,2,2], fan_out=2, respect_hierarchy=False)
+GT = gram.RegularTree([1,1,4], fan_out=2, respect_hierarchy=False)
+# GT = gram.RegularTree([1,2,2], fan_out=2, respect_hierarchy=False)
 # GT = gram.RegularTree([1,1,2,4,8,16], fan_out=2, respect_hierarchy=False)
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,4])])
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,3]), set([0,1]), set([2,3])])
