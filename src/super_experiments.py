@@ -29,37 +29,20 @@ from sklearn.exceptions import ConvergenceWarning
 import warnings # I hate convergence warnings so much never show them to me
 warnings.simplefilter("ignore", category=ConvergenceWarning)
 
+#%% Base class
+class NetworkExperiment():
 
-#%% Multi-classification tasks
+    def __init__(self):
 
-class FeedforwardExperiment():
-    """
-    Basic class for multi-classification experiments. To make an instance of such an experiment,
-    make a child class and define the `load_data` method. This contains all the methods
-    to run the experiment, and save and load it.
-    """
-    def __init__(self, inputs, outputs):
-        """
-        Everything required to fully specify an experiment.
-        
-        Failure to supply the N argument will create the class in 'task only mode',
-        which means that will not have a model. Call the `self.use_model` method
-        to later equip it with a particular model.
-        """
-        
-        self.inputs = inputs
-        self.outputs = outputs
+        return NotImplementedError
 
-        self.__name__ = self.__class__.__name__
+    def init_metrics(self):
 
-    def draw_data(self, num_dat):
+        return NotImplementedError
 
-        condition = np.random.choice(self.inputs.num_cond, num_dat, replace=True)
-        
-        inps = self.inputs(condition)
-        outs = self.outputs(condition)
+    def draw_data(self):
 
-        return condition, (inps, outs)
+        return NotImplementedError
 
     def initialize_network(self, model, num_init=None, **net_args):
         """ 
@@ -75,16 +58,12 @@ class FeedforwardExperiment():
 
         nets = []
         for i in range(self.num_init):
-            nets.append( model(dim_inp=self.inputs.dim_output, 
-                                dim_out=self.outputs.dim_output, **net_args) )
+            nets.append( model(dim_inp=self.dim_inp, 
+                                dim_out=self.dim_out, **net_args) )
 
         return nets
 
-    # def train_network(self, model, verbose=False, skip_metrics=False,
-    #         bsz=64, nepoch=1000, n_train_dat=5000, n_test_dat=1000, 
-    #         init_index=None, **opt_args):
-
-    def train_network(self, models, verbose=False, skip_rep_metrics=False, skip_metrics=False, 
+    def train_network(self, models, verbose=False, skip_rep_metrics=True, skip_metrics=False, 
         conv_tol=1e-5,bsz=64, nepoch=1000, n_train_dat=5000, n_test_dat=1000, metric_period=10,
         **opt_args):
 
@@ -97,7 +76,7 @@ class FeedforwardExperiment():
 
         ### generate data
         self.train_conditions, self.train_data = self.draw_data(n_train_dat)
-        self.test_conditions, self.test_data = self.draw_data(n_test_dat)
+        self.test_conditions, self.test_data = self.draw_data(**self.test_data_args)
 
         dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
         dl = torch.utils.data.DataLoader(dset, batch_size=bsz, shuffle=True) 
@@ -150,89 +129,6 @@ class FeedforwardExperiment():
         #### package computed metrics
         for k,v in self.metrics.items():
             self.metrics[k] = np.array(v)
-
-    def init_metrics(self):
-        self.metrics = {'train_loss': [],
-                       'test_perf': [],
-                       'parallelism': [],
-                       'decoding': [],
-                       'mean_grad': [],
-                       'std_grad': [],
-                       'ccgp': [],
-                       'hidden_kernel': [],
-                       'linear_dim': [],
-                       'sparsity': []} # put all training metrics here
-
-    def compute_representation_metrics(self, skip_metrics):
-
-        pred, z_test = self.model(self.test_data[0])[:2]
-        _, z_train = self.model(self.train_data[0])[:2]
-        N = z_test.shape[1]
-
-        # print(pred.shape)
-        # print(z_test.shape)
-
-        z_test = z_test.detach().numpy().T
-        z_train = z_train.detach().numpy().T
-
-        # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
-        terr = self.outputs.correct(pred, self.test_data[1])
-        # print(terr)
-        self.metrics['test_perf'][-1].append(terr)
-
-        # representation sparsity
-        self.metrics['sparsity'][-1].append(np.mean(z_test>0))
-
-        # Dimensionality #########################################
-        pr = util.participation_ratio(z_test)
-        self.metrics['linear_dim'][-1].append( pr)
-
-        if not skip_metrics:
-            dics = dic.Dichotomies(self.inputs.num_cond, 
-                                    self.outputs.positives+self.inputs.positives)
-            dic_shat = dic.Dichotomies(self.inputs.num_cond, 
-                                    self.outputs.positives+self.inputs.positives)
-
-            # distance correlations
-            # didx = np.random.choice(n_compute,np.min([n_compute, 2000]),replace=False)
-            # Z = z_train[didx,...].T
-            # X = self.train_data[0][idx_trn,...][didx,...].T
-            # Y = self.train_data[1][idx_trn,...][didx,...].T
-            # metrics['dcorr_input'].append(util.distance_correlation(Z, X))
-            # metrics['dcorr_output'].append(util.distance_correlation(Z, Y))
-
-            # z_mean = np.stack([z_train[self.train_conditions[idx_trn]==i,:].mean(0).detach().numpy() \
-            #     for i in np.unique(self.train_conditions[idx_trn])]).T
-            # Kern_z = util.dot_product(z_mean-z_mean.mean(1,keepdims=True), z_mean-z_mean.mean(1,keepdims=True))
-            # metrics['hidden_kernel'].append(Kern_z)
-
-            # shattering dimension #####################################
-            dclf = ta.LinearDecoder(N, dic_shat.ntot, svm.LinearSVC)
-
-            trn_conds_all = np.array([dic_shat.coloring(self.train_conditions) \
-                for _ in dic_shat])
-            # print(trn_conds_all)
-            dclf.fit(z_train.T, trn_conds_all.T)
-
-            tst_conds_all = np.array([dic_shat.coloring(self.test_conditions) \
-                for _ in dic_shat])
-            SD = dclf.test(z_test.T, tst_conds_all.T)
-
-            self.metrics['decoding'][-1].append(SD)  
-            
-            # various abstraction metrics #########################
-            gclf = svm.LinearSVC()
-
-            PS = np.zeros(dics.ntot)
-            CCGP = np.zeros(dics.ntot)
-            for i, _ in enumerate(dics):
-                coloring = dics.coloring(self.test_conditions)
-                PS[i] = dic.parallelism_score(z_test, self.test_conditions, coloring)
-                CCGP[i] = np.mean(dic.compute_ccgp(z_test.T, self.test_conditions, 
-                                                   coloring,gclf, twosided=True))
-
-            self.metrics['parallelism'][-1].append(PS)
-            self.metrics['ccgp'][-1].append(CCGP)
 
     def compute_metrics(self):
         """ Here goes anything specific to an experiment """
@@ -326,9 +222,151 @@ class FeedforwardExperiment():
         #     return self.model.__name__ + '_%d'%self.opt_args['init_index']
         return self.models[0].__name__
 
+#%% Multi-classification tasks
+
+class FeedforwardExperiment(NetworkExperiment):
+    """
+    Basic class for multi-classification experiments. To make an instance of such an experiment,
+    make a child class and define the `load_data` method. This contains all the methods
+    to run the experiment, and save and load it.
+    """
+    def __init__(self, inputs, outputs):
+        """
+        Everything required to fully specify an experiment.
+        
+        Failure to supply the N argument will create the class in 'task only mode',
+        which means that will not have a model. Call the `self.use_model` method
+        to later equip it with a particular model.
+        """
+        
+        self.inputs = inputs
+        self.outputs = outputs
+
+        self.dim_inp = inputs.dim_output
+        self.dim_out = outputs.dim_output
+
+        self.test_data_args = {'num_dat': 1000}
+
+        self.__name__ = self.__class__.__name__
+
+    def draw_data(self, num_dat):
+
+        condition = np.random.choice(self.inputs.num_cond, num_dat, replace=True)
+        
+        inps = self.inputs(condition)
+        outs = self.outputs(condition)
+
+        return condition, (inps, outs)
+
+    def init_metrics(self):
+        self.metrics = {'train_loss': [],
+                       'test_perf': [],
+                       'input_alignment': [],
+                       'target_alignment': [],
+                       'hidden_kernel': [],
+                       'linear_dim': [],
+                       'sparsity': []} # put all training metrics here
+
+    def compute_representation_metrics(self, skip_metrics):
+
+        pred, z_test = self.model(self.test_data[0])[:2]
+        _, z_train = self.model(self.train_data[0])[:2]
+        N = z_test.shape[1]
+
+        # print(pred.shape)
+        # print(z_test.shape)
+
+        z_test = z_test.detach().numpy().T
+        z_train = z_train.detach().numpy().T
+
+        # terr = (self.test_data[1][idx_tst,...] == (pred>=0.5)).sum(0).float()/n_compute
+        terr = self.outputs.correct(pred, self.test_data[1])
+        # print(terr)
+        self.metrics['test_perf'][-1].append(terr)
+
+        # representation sparsity
+        self.metrics['sparsity'][-1].append(np.mean(z_test>0))
+
+        # Dimensionality #########################################
+        pr = util.participation_ratio(z_test)
+        self.metrics['linear_dim'][-1].append( pr)
+
+        # Input and output alignment ###########################
+        Kx = util.dot_product(self.test_data[0].T, self.test_data[0].T)
+        Ky = util.dot_product(self.test_data[1].T, self.test_data[1].T)
+
+        Kz = util.dot_product(z_test, z_test)
+
+        inp_align = util.centered_kernel_alignment(Kx, Kz)
+        self.metrics['input_alignment'][-1].append(inp_align)
+        out_align = util.centered_kernel_alignment(Ky, Kz)
+        self.metrics['target_alignment'][-1].append(out_align)
+
+        
+        _, z_test = self.model(self.inputs(range(self.inputs.num_cond), noise=0))[:2]
+        Kz_mean = util.dot_product(z_test.detach().T, z_test.detach().T)
+        self.metrics['hidden_kernel'][-1].append(Kz_mean)
+
+        # if not skip_metrics:
+        #     dics = dic.Dichotomies(self.inputs.num_cond, 
+        #                             self.outputs.positives+self.inputs.positives)
+        #     dic_shat = dic.Dichotomies(self.inputs.num_cond, 
+        #                             self.outputs.positives+self.inputs.positives)
+
+        #     # distance correlations
+        #     # didx = np.random.choice(n_compute,np.min([n_compute, 2000]),replace=False)
+        #     # Z = z_train[didx,...].T
+        #     # X = self.train_data[0][idx_trn,...][didx,...].T
+        #     # Y = self.train_data[1][idx_trn,...][didx,...].T
+        #     # metrics['dcorr_input'].append(util.distance_correlation(Z, X))
+        #     # metrics['dcorr_output'].append(util.distance_correlation(Z, Y))
+
+        #     # z_mean = np.stack([z_train[self.train_conditions[idx_trn]==i,:].mean(0).detach().numpy() \
+        #     #     for i in np.unique(self.train_conditions[idx_trn])]).T
+        #     # Kern_z = util.dot_product(z_mean-z_mean.mean(1,keepdims=True), z_mean-z_mean.mean(1,keepdims=True))
+        #     # metrics['hidden_kernel'].append(Kern_z)
+
+        #     # shattering dimension #####################################
+        #     dclf = ta.LinearDecoder(N, dic_shat.ntot, svm.LinearSVC)
+
+        #     trn_conds_all = np.array([dic_shat.coloring(self.train_conditions) \
+        #         for _ in dic_shat])
+        #     # print(trn_conds_all)
+        #     dclf.fit(z_train.T, trn_conds_all.T)
+
+        #     tst_conds_all = np.array([dic_shat.coloring(self.test_conditions) \
+        #         for _ in dic_shat])
+        #     SD = dclf.test(z_test.T, tst_conds_all.T)
+
+        #     self.metrics['decoding'][-1].append(SD)  
+            
+        #     # various abstraction metrics #########################
+        #     gclf = svm.LinearSVC()
+
+        #     PS = np.zeros(dics.ntot)
+        #     CCGP = np.zeros(dics.ntot)
+        #     for i, _ in enumerate(dics):
+        #         coloring = dics.coloring(self.test_conditions)
+        #         PS[i] = dic.parallelism_score(z_test, self.test_conditions, coloring)
+        #         CCGP[i] = np.mean(dic.compute_ccgp(z_test.T, self.test_conditions, 
+        #                                            coloring,gclf, twosided=True))
+
+        #     self.metrics['parallelism'][-1].append(PS)
+        #     self.metrics['ccgp'][-1].append(CCGP)
+
+    def folder_hierarchy(self):
+
+        FOLDERS = '/%s/'%self.__name__
+
+        FOLDERS += self.inputs.__name__ + '/'
+        FOLDERS += self.outputs.__name__ + '/'
+        FOLDERS += self.exp_folder_hierarchy()
+
+        return FOLDERS
+
 
 #%% Sequential classification
-class RNNExperiment():
+class RNNExperiment(NetworkExperiment):
     """
     Basic class for multi-classification experiments. To make an instance of such an experiment,
     make a child class and define the `load_data` method. This contains all the methods
@@ -336,6 +374,8 @@ class RNNExperiment():
     """
     def __init__(self, task):
         self.task = task
+        self.dim_inp = task.dim_in
+        self.dim_out = task.dim_out
 
         self.__name__ = self.__class__.__name__
 
@@ -348,64 +388,66 @@ class RNNExperiment():
 
         raise NotImplementedError
 
-    def package_data(self):
+    # def initialize_network(self, model, **model_args):
 
-        self.train_conditions, self.train_data = self.draw_data(self.opt_args['n_train_dat'])
-        self.test_conditions, self.test_data = self.draw_data(self.opt_args['n_train_dat'])
+    #     self.net_args = model_args
 
-        self.decoded_vars = []
+    #     net = model(dim_inp=self.task.dim_in, dim_out=self.task.dim_out, **self.net_args)
 
-        dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
-        return torch.utils.data.DataLoader(dset, batch_size=self.opt_args['bsz'], shuffle=True) 
+    #     return net
 
-    def train_network(self, model, verbose=False, skip_metrics=True,
-            bsz=64, nepoch=1000, lr=1e-3, opt_alg=optim.Adam, weight_decay=0,
-            n_train_dat=5000, n_test_dat=2000, init_index=None):
+    # def train_network(self, model, verbose=False, skip_metrics=True,
+    #         bsz=64, nepoch=1000, lr=1e-3, opt_alg=optim.Adam, weight_decay=0,
+    #         n_train_dat=5000):
 
-        ### book-keeping
-        self.opt_args = {k:v for k,v in locals().items() \
-            if k not in ['model', 'verbose', 'skip_metrics', 'init_index', 'self']}
-        self.model = model
-        self.init = init_index
+    #     ### book-keeping
+    #     self.opt_args = {k:v for k,v in locals().items() \
+    #         if k not in ['model', 'verbose', 'skip_metrics', 'self']}
+    #     self.model = model
+    #     self.init = init_index
 
-        expinf = self.file_suffix()
-        print('Running %s ...'%expinf)
+    #     expinf = self.file_suffix()
+    #     print('Running %s ...'%expinf)
 
-        ### generate data
-        dl = self.package_data()
+    #     ### generate data
+    #     self.train_conditions, self.train_data = self.draw_data(n_train_dat)
+    #     self.test_conditions, self.test_data = self.draw_data(**self.test_data_args)
+
+    #     dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
+    #     dl = torch.utils.data.DataLoader(dset, batch_size=self.opt_args['bsz'], shuffle=True) 
         
-        ### train network
-        self.optimizer = opt_alg(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+    #     ### train network
+    #     self.optimizer = opt_alg(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
-        self.init_metrics()
-        for epoch in range(nepoch):
+    #     self.init_metrics()
+    #     for epoch in range(nepoch):
              
-            # Actually update model #######################################
-            loss = self.model.grad_step(dl, self.optimizer) # this does a pass through the data
+    #         # Actually update model #######################################
+    #         loss = self.model.grad_step(dl, self.optimizer) # this does a pass through the data
 
-            self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss)
+    #         self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss)
 
-            with torch.no_grad():
-                self.compute_representation_metrics(skip_metrics)
+    #         with torch.no_grad():
+    #             self.compute_representation_metrics(skip_metrics)
 
-                    # if not np.mod(epoch, 10):
-                    #     self.compute_gradient_metrics()
+    #                 # if not np.mod(epoch, 10):
+    #                 #     self.compute_gradient_metrics()
             
-            # print updates ############################################
-            if verbose:
-                print('Epoch %d: Loss=%.3f'%(epoch, -loss))
+    #         # print updates ############################################
+    #         if verbose:
+    #             print('Epoch %d: Loss=%.3f'%(epoch, -loss))
             
-        #### package computed metrics
-        for k,v in self.metrics.items():
-            self.metrics[k] = np.array(v)
+    #     #### package computed metrics
+    #     for k,v in self.metrics.items():
+    #         self.metrics[k] = np.array(v)
 
 
     def init_metrics(self):
-        self.metrics = {'train_loss': np.zeros(0),
+        self.metrics = {'train_loss': [],
                         'train_perf':[],
                         'test_perf': [],
                         'decoding': [],
-                        'linear_dim': np.zeros(0)} # put all training metrics here
+                        'linear_dim': []} # put all training metrics here
 
     def compute_representation_metrics(self, skip_metrics=True):
 
@@ -428,53 +470,83 @@ class RNNExperiment():
         pr = util.participation_ratio(z)
         self.metrics['linear_dim'] = np.append(self.metrics['linear_dim'], pr)
 
-        # things that take up time! ###################################
-        if not skip_metrics:
+        # # things that take up time! ###################################
+        # if not skip_metrics:
 
-            which_time = np.repeat(range(T), self.ntrain)
+        #     which_time = np.repeat(range(T), self.ntrain)
 
-            dclf = ta.LinearDecoder(N, self.decoded_vars.shape[-1], svm.LinearSVC)
+        #     dclf = ta.LinearDecoder(N, self.decoded_vars.shape[-1], svm.LinearSVC)
 
-            dclf.fit(z[:nseq//2,...], self.decoded_vars[:nseq//2,...], 
-                t_=which_time, max_iter=200)
+        #     dclf.fit(z[:nseq//2,...], self.decoded_vars[:nseq//2,...], 
+        #         t_=which_time, max_iter=200)
 
-            dec = dclf.test(z[nseq//2:,...],  self.decoded_vars[nseq//2:,...])
-            self.metrics['decoding'].append(dec)
+        #     dec = dclf.test(z[nseq//2:,...],  self.decoded_vars[nseq//2:,...])
+        #     self.metrics['decoding'].append(dec)
 
 
-    def save_experiment(self, SAVE_DIR):
-        """
-        Save the experimental information: model parameters, learning metrics,
-        and hyperparameters. 
-        """
+    # def save_experiment(self, SAVE_DIR):
+    #     """
+    #     Save the experimental information: model parameters, learning metrics,
+    #     and hyperparameters. 
+    #     """
         
-        if 'model' not in dir(self):
-            raise Exception('Can only save after training a network!'
-                            'Use "train_network" method')
+    #     if 'model' not in dir(self):
+    #         raise Exception('Can only save after training a network!'
+    #                         'Use "train_network" method')
 
-        FOLDERS = self.folder_hierarchy(self.opt_args)
-        expinf = self.file_suffix()
+    #     FOLDERS = self.folder_hierarchy(self.opt_args)
+    #     expinf = self.file_suffix()
         
-        if not os.path.isdir(SAVE_DIR+FOLDERS):
-            os.makedirs(SAVE_DIR+FOLDERS)
+    #     if not os.path.isdir(SAVE_DIR+FOLDERS):
+    #         os.makedirs(SAVE_DIR+FOLDERS)
         
-        # save all hyperparameters, for posterity
-        all_args = {'net_args': self.net_args,
-                    'opt_args': self.opt_args,
-                    'exp_prm': self.exp_prm}
+    #     # save all hyperparameters, for posterity
+    #     all_args = {'net_args': self.net_args,
+    #                 'opt_args': self.opt_args,
+    #                 'exp_prm': self.exp_prm}
         
-        params_fname = 'parameters_'+expinf+'.pt'
-        metrics_fname = 'metrics_'+expinf+'.pkl'
-        args_fname = 'arguments_'+expinf+'.npy'
+    #     params_fname = 'parameters_'+expinf+'.pt'
+    #     metrics_fname = 'metrics_'+expinf+'.pkl'
+    #     args_fname = 'arguments_'+expinf+'.npy'
         
-        self.model.save(SAVE_DIR+FOLDERS+params_fname)
-        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
-            pickle.dump(self.metrics, f, -1)
-        with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
-            np.save(f, all_args)
+    #     self.model.save(SAVE_DIR+FOLDERS+params_fname)
+    #     with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+    #         pickle.dump(self.metrics, f, -1)
+    #     with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
+    #         np.save(f, all_args)
 
 
-    def folder_hierarchy(self, opt):
+    # def load_experiment(self, SAVE_DIR, opt_args=None):
+    #     """
+    #     Requires that the model is specified
+    #     """
+
+    #     if 'models' not in dir(self):
+    #         raise Exception('Can only save after training a network!'
+    #                         'Use "train_network" method')
+
+    #     if opt_args is not None:
+    #         self.opt_args = opt_args
+    #     elif 'opt_args' not in dir(self):
+    #         raise Exception('Optimization arguments "opt_args" must be supplied!')
+
+    #     FOLDERS = self.folder_hierarchy()
+    #     expinf = self.file_suffix()
+        
+    #     if not os.path.isdir(SAVE_DIR+FOLDERS):
+    #         os.makedirs(SAVE_DIR+FOLDERS)
+        
+    #     params_fname = 'parameters_'+expinf
+    #     metrics_fname = 'metrics_'+expinf+'.pkl'
+    #     args_fname = 'arguments_'+expinf+'.npy'
+        
+    #     for i,model in enumerate(self.models):
+    #         model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
+    #     # self.model.load(SAVE_DIR+FOLDERS+params_fname)
+    #     with open(SAVE_DIR+FOLDERS+metrics_fname, 'rb') as f:
+    #         self.metrics = pickle.load(f)
+
+    def folder_hierarchy(self):
 
         FOLDERS = '/%s/'%self.__name__
 
@@ -482,18 +554,13 @@ class RNNExperiment():
 
         # additional folders for deviations from default
         FOLDERS += (
-                    f"{'/{opt_alg.__name__}/' if opt['opt_alg'].__name__!='Adam' else ''}"
-                    f"{'/l2_{weight_decay}/' if opt['weight_decay']>0 else ''}"
-                    f"{'/bs_{bsz}/' if opt['bsz']!=64 else ''}"
-                    ).format(**opt)
+                    f"{'/{opt_alg.__name__}/' if self.opt_args['opt_alg'].__name__!='Adam' else ''}"
+                    f"{'/l2_{weight_decay}/' if self.opt_args['weight_decay']>0 else ''}"
+                    f"{'/bs_{bsz}/' if self.opt_args['bsz']!=64 else ''}"
+                    ).format(**self.opt_args)
         
         return FOLDERS
         
-    def file_suffix(self):
-        if self.init is None:
-            return self.model.__name__
-        else:
-            return self.model.__name__ + '_%d'%self.init
 
 
 # class delayed_logic(SequentialClassification):

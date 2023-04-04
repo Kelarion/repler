@@ -12,10 +12,12 @@ from matplotlib import cm
 import matplotlib.gridspec as gsp
 import matplotlib.colors as mpc
 from mpl_toolkits.mplot3d import Axes3D
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from matplotlib import animation as anime
 from cycler import cycler
 import scipy
 import scipy.linalg as la
+from scipy.spatial import ConvexHull
 from scipy.spatial.distance import pdist, squareform
 from itertools import permutations, combinations
 import itertools as itt
@@ -53,7 +55,39 @@ class PCA3D(object):
         new_pcs = new_X.T@self.loadings
         self.ax.scatter(new_pcs[:,0],new_pcs[:,1],new_pcs[:,2], **scat_args)
 
-#%%
+
+def pca3d(X, special_vec=None, **scat_args):
+    '''
+    Assume that "X" is N_feat x N_samp, "coloring" is a vector of dim N_samp
+    '''
+
+    if special_vec is None:
+        X_ = X
+    else:
+        X_ = X - (special_vec[:,None]@special_vec[None,:]/la.norm(special_vec))@X
+        y_ = (special_vec[None,:]/la.norm(special_vec))@X
+
+    U, S, _ = la.svd(X-X.mean(1)[:,None], full_matrices=False)
+    pcs = X.T@U[:,:3]
+
+    ax = plt.subplot(111, projection='3d')
+    if special_vec is None:
+        scat = ax.scatter(pcs[:,0],pcs[:,1],pcs[:,2], **scat_args)
+    else:
+        scat = ax.scatter(y_,pcs[:,0],pcs[:,1], **scat_args)
+    # ax.set_xlabel('pc1')
+    # ax.set_ylabel('pc2')
+    # ax.set_zlabel('pc3')
+
+    set_axes_equal(ax)
+
+    return scat
+
+
+#################################################
+############# Interactive slice plots ###########
+#################################################
+
 class SliceViewer(object):
     def __init__(self, ax=None):
         if ax is not None:
@@ -105,15 +139,20 @@ class ImageSlices(SliceViewer):
         self.im.axes.figure.canvas.draw()
 
 class LineSlices(SliceViewer):
-    def __init__(self, X, Y, ax=None, slice_width=0.1, scroll_mag=0.02, num_slice=None, slice_idx=None, **ln_args):
+    def __init__(self, X, Y, ax=None, scroll_mag=0.02, slice_width=None, num_slice=None, 
+        slice_idx=None, **ln_args):
         '''
         Plots X, only showing the parts within a certain range of Y -- scroll to change Y
+
+        X is shape (num_line, num_time, 2)
+        Y is shape (num_line, num_time)
+
+        if slice_idx is supplied, it should be the center of each bin
         '''
         super(LineSlices,self).__init__(ax)
 
         self.X = X
         self.Y = Y 
-        self.slice_width = slice_width
 
         if slice_idx is None:
             if num_slice is None:
@@ -124,20 +163,33 @@ class LineSlices(SliceViewer):
             self.slice_idx = np.arange(Y.min(), Y.max()+self.scroll_mag, self.scroll_mag)
         else:
             self.slice_idx = slice_idx
-        self.slices = len(self.slice_idx)
 
-        self.ind = self.slices//2
+        if slice_width is None:
+            self.slice_width = np.diff(self.slice_idx)/2
+            self.slice_width = np.append(self.slice_width, self.slice_width[0])
+        else:
+            self.slice_width = np.ones(len(slice_idx))*slice_width
+
+        self.num_slices = len(self.slice_idx)
+
+        self.ind = self.num_slices//2
         # self.idx = (self.Y < self.slice_idx[self.ind]+self.slice_width) \
         # & (self.Y >= self.slice_idx[self.ind]-self.slice_width)
         # self.mask_x1 = np.where(self.idx, self.X[...,0], np.nan)
         # self.mask_x2 = np.where(self.idx, self.X[...,1], np.nan)
 
-        self.all_idx = [(self.Y < s+self.slice_width) & (self.Y >= s-self.slice_width) for s in self.slice_idx]
+        nan_pad = np.ones((self.num_slices, self.Y.shape[0], 1))*np.nan
+        # print(nan_pad.shape)
+
+        self.all_idx = [(self.Y < s+ds) & (self.Y > s-ds) for s, ds in zip(self.slice_idx,self.slice_width)]
         self.mask_X1 = np.where(self.all_idx, self.X[...,0], np.nan)
+        self.mask_X1 = np.concatenate([nan_pad, self.mask_X1, nan_pad], axis=-1)
+        # print(self.mask_X1.shape)
         self.mask_X2 = np.where(self.all_idx, self.X[...,1], np.nan)
+        self.mask_X2 = np.concatenate([nan_pad, self.mask_X2, nan_pad], axis=-1)
 
         self.ln = self.ax.plot(self.mask_X1[self.ind].T, self.mask_X2[self.ind].T, **ln_args)
-        print(len(self.ln))
+        # print(len(self.ln))
         self.update()
 
         self.ax.get_figure().canvas.mpl_connect('scroll_event', self.on_scroll)
@@ -204,8 +256,12 @@ class ScatterSlices(SliceViewer):
 
 class QuiverSlices(SliceViewer):
     def __init__(self, X, V, ax=None, **quiv_args):
+        """
+        X is shape (num_arrow, 2)
+        V is shape (num_slice, num_arrow, 2)
+        """
 
-        super(QuiverSlices,self).__init__()
+        super(QuiverSlices,self).__init__(ax)
 
         if ax is not None:
             self.ax = ax
@@ -228,7 +284,11 @@ class QuiverSlices(SliceViewer):
         self.ax.set_ylabel('slice %s' % self.ind)
         self.quiv.axes.figure.canvas.draw()
 
-#%%
+
+##############################################
+########### Grids of subplots ################
+##############################################
+
 def hierarchical_labels(row_labels, col_labels, row_names=None, col_names=None, hmarg=0.1,wmarg=0.1, **text_args):
     """
     
@@ -337,16 +397,15 @@ def hierarchical_labels(row_labels, col_labels, row_names=None, col_names=None, 
     return axes
 
 def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None, 
-    mutinfo_cmap='copper', var_cmap='tab10', include_legend=True, include_cbar=True, 
-    input_dics=None, output_dics=None, other_dics=None, out_MI=None, s=31, **scatter_args):
+    cmap='copper', var_cmap='tab10', include_legend=True, include_cbar=True, 
+    input_dics=None, output_dics=None, other_dics=None, s=31, c=[(0.5,0.5,0.5)],
+     **scatter_args):
     '''
     Plot values for each abstraction metric as scatter plots with x-axis noise.
 
     Optionally highlight the first "num_special" dichotomies.
     '''
     ndic = len(PS)
-
-    color_by_info = (out_MI is not None)
 
     # be very picky about offsets
     offset = np.random.choice(np.linspace(-0.15,0.15,10), 3*ndic)
@@ -369,19 +428,17 @@ def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None,
         yfoo_err = np.zeros(xfoo.shape)
     else:
         yfoo_err = np.concatenate((PS_err, CCGP_err, SD_err))
-    if color_by_info:
-        cfoo = np.tile(out_MI,3)
 
     plt.errorbar(xfoo, yfoo, yerr=yfoo_err, linestyle='None', c=(0.5,0.5,0.5), zorder=0)
-    if color_by_info:
-        scat = plt.scatter(xfoo, yfoo, s=s, c=cfoo, zorder=10, cmap=mutinfo_cmap, **scatter_args)
+    if c is not None:
+        scat = plt.scatter(xfoo, yfoo, s=s, c=np.tile(c,3), zorder=10, cmap=cmap, **scatter_args)
     else:
         scat = plt.scatter(xfoo, yfoo, s=s, c=[(0.5,0.5,0.5)], zorder=10, **scatter_args)
     # plt.errorbar(xfoo, yfoo, yerr=yfoo_err, linestyle='None', linecolor=cfoo)
     plt.xticks([0,1,2], labels=['PS', 'CCGP', 'Shattering'])
     plt.ylabel('PS or Cross-validated performance')
-    if color_by_info and include_cbar:
-        plt.colorbar(scat, label='Mutual information with output')
+    if include_cbar:
+        plt.colorbar(scat)
 
     # highlight special dichotomies
     anns = []
@@ -415,32 +472,49 @@ def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None,
         plt.legend(anns, leg_text)
 
 
-def pca3d(X, special_vec=None, **scat_args):
-    '''
-    Assume that "X" is N_feat x N_samp, "coloring" is a vector of dim N_samp
-    '''
+################################################
+################# Polytopes ####################
+################################################
 
-    if special_vec is None:
-        X_ = X
-    else:
-        X_ = X - (special_vec[:,None]@special_vec[None,:]/la.norm(special_vec))@X
-        y_ = (special_vec[None,:]/la.norm(special_vec))@X
+def plotytope(vertices=None, halfspace=None, 
+    color=(0.5,0.5,0.5), alpha=0.5, ax=None, plot_verts=True, **vert_args):
+    """
+    Plot a convex polytope in 3d
 
-    U, S, _ = la.svd(X-X.mean(1)[:,None], full_matrices=False)
-    pcs = X.T@U[:,:3]
+    code to do this is from stackexchange user JohanC
+    """
 
-    ax = plt.subplot(111, projection='3d')
-    if special_vec is None:
-        scat = ax.scatter(pcs[:,0],pcs[:,1],pcs[:,2], **scat_args)
-    else:
-        scat = ax.scatter(y_,pcs[:,0],pcs[:,1], **scat_args)
-    # ax.set_xlabel('pc1')
-    # ax.set_ylabel('pc2')
-    # ax.set_zlabel('pc3')
+    has_vert = (vertices is not None)
+    has_half = (halfspace is not None)
 
-    set_axes_equal(ax)
+    if not has_vert or has_half:
+        raise ValueError('You have to supply something, man')
 
-    return scat
+    elif has_vert and has_half:
+        raise Warning('You gave two arguments, I will use the vertices')
+
+
+    if ax is None:
+        ax = plt.subplot(111, projection='3d')
+
+    if has_vert:
+
+        hull = ConvexHull(vertices)
+
+        for s in hull.simplices:
+            tri = Poly3DCollection([vertices[s]])
+            tri.set_color(color)
+            tri.set_alpha(alpha)
+            ax.add_collection(tri)
+
+        if plot_verts:
+            ax.scatter(vertices[:,0],vertices[:,1], vertices[:,2], **vert_args)
+
+    return ax
+
+##############################################
+########### General utility ##################
+##############################################
 
 def square_axis(ax=None):
     if ax is None:

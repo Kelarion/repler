@@ -17,6 +17,9 @@ from collections import OrderedDict
 import numpy as np
 import scipy
 import scipy.linalg as la
+import scipy.special as spc
+
+import pt_util
 
 from sklearn.exceptions import ConvergenceWarning
 import warnings # I hate convergence warnings so much never show them to me
@@ -286,23 +289,27 @@ class CustomGRU(nn.Module):
 
     Supposed to mimic the organisation of torch.nn.GRU -- same parameter names
     """
-    def __init__(self, input_size, hidden_size, num_layers, nonlinearity=torch.tanh):
+    def __init__(self, input_size, hidden_size, num_layers, nonlinearity='tanh'):
         """Mimics the nn.GRU module. Currently num_layers is not supported"""
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.num_layers = 1
+        self.nonlinearity = nonlinearity
 
         # input weights
-        self.weight_ih_l0 = Parameter(torch.Tensor(3*hidden_size, input_size))
+        self.weight_ih_l0 = Parameter(torch.Tensor(hidden_size, input_size))
+        self.weight_ih_l0_g = Parameter(torch.Tensor(2*hidden_size, input_size))
 
         # hidden weights
-        self.weight_hh_l0 = Parameter(torch.Tensor(3*hidden_size, hidden_size))
+        self.weight_hh_l0 = Parameter(torch.Tensor(hidden_size, hidden_size))
+        self.weight_hh_l0_g = Parameter(torch.Tensor(2*hidden_size, hidden_size))
 
         # bias
         self.bias_ih_l0 = Parameter(torch.Tensor(3*hidden_size)) # input
         self.bias_hh_l0 = Parameter(torch.Tensor(3*hidden_size)) # hidden
 
-        self.f = nonlinearity
+        self.f = getattr(torch, nonlinearity)
 
         self.init_weights()
 
@@ -327,8 +334,11 @@ class CustomGRU(nn.Module):
         for t in range(seq_sz): # iterate over the time steps
             x_t = x[t, :, :]
 
-            gi = F.linear(x_t, self.weight_ih_l0, self.bias_ih_l0) # do the matmul all together
-            gh = F.linear(h_t, self.weight_hh_l0, self.bias_hh_l0)
+            W_ih = torch.cat([self.weight_ih_l0, self.weight_ih_l0_g], dim=0)
+            W_hh = torch.cat([self.weight_hh_l0, self.weight_hh_l0_g], dim=0)
+
+            gi = F.linear(x_t, W_ih, self.bias_ih_l0) # do the matmul all together
+            gh = F.linear(h_t, W_hh, self.bias_hh_l0)
 
             i_r, i_z, i_n = gi.chunk(3,1) # input currents
             h_r, h_z, h_n = gh.chunk(3,2) # hidden currents
@@ -670,7 +680,7 @@ class NeuralNet(nn.Module):
         """ Needs init_optimizer """
         raise NotImplementedError
 
-    def init_optimizer(self, opt_alg, **opt_alg_args):
+    def init_optimizer(self, opt_alg=optim.Adam, **opt_alg_args):
         self.optimizer = opt_alg(self.parameters(), **opt_alg_args)
         self.initialized = True
     
@@ -1128,13 +1138,16 @@ class GenericRNN(NeuralNet):
     def init_hidden(self, bsz):
         return torch.zeros(1, bsz, self.nhid)
 
-    def grad_step(self, data, optimizer, only_final=None, init_state=None):
+    def grad_step(self, data, only_final=None, init_state=None):
         """ Single step of maximum likelihood over the data """
+
+        if not self.initialized:
+            self.init_optimizer(**opt_args)
 
         running_loss = 0
         
         for i, batch in enumerate(data):
-            optimizer.zero_grad()
+            self.optimizer.zero_grad()
             
             if len(batch)>2:
                 nums, labels, hidden = batch
@@ -1162,20 +1175,35 @@ class GenericRNN(NeuralNet):
             # optimise
             loss.backward()
 
-            optimizer.step()
+            self.optimizer.step()
             
             running_loss += loss.item()
             
         return running_loss/(i+1)
+
+class NGroupNetwork(ShallowNetwork):
+
+    def __init__(self, dim_out, n_per_group, num_k=2, **net_args):
+
+        Ks = [1,2]
+
+        grp_per_k = [spc.binom(dim_out, k)*(2**k) for k in Ks]
+        tot_neur = int(np.sum(grp_per_k)*n_per_group)
+
+        super(NGroupNetwork, self).__init__(
+            dim_out=dim_out,
+            width=tot_neur, 
+            out_weight_distr=pt_util.BalancedBinary(*Ks, normalize=True),
+            **net_args)
 
 
 class MonkeyRNN(GenericRNN):
 
     def __init__(self, dim_inp, dim_hid, dim_out, p_targ, nonlinearity='relu',
         p_hid=None, beta=0, fix_decoder=True, fix_encoder=True, bias=True, 
-        ortho_out=True, ortho_in=True, noise_std=None):
+        ortho_out=True, ortho_in=True, noise_std=None, rnn_type=nn.RNN):
 
-        rnn = nn.RNN(dim_inp+dim_hid, dim_hid, 1, nonlinearity=nonlinearity)
+        rnn = rnn_type(dim_inp+dim_hid, dim_hid, 1, nonlinearity=nonlinearity)
         dec = nn.Linear(dim_hid, dim_out, bias=bias)
 
         if ortho_out or ortho_in:

@@ -142,10 +142,10 @@ labs = [set([0,2]), set([0,3]), set([1,2]), set([1,3])] # disentangled
 # labs = [set([0,2]), set([0,3]), set([1,2]), set([1,4])] # asymmetric
 # labs = [set([0,2]), set([0,3]), set([1,4]), set([1,5]), set([0,4]), set([0,5]), set([1,2]), set([1,3])]
 
+# 
+# Data = gram.LabelledItems(labels=labs)
 
-Data = gram.LabelledItems(labels=labs)
-
-# Data = gram.RegularTree([1,1,1], fan_out=2, respect_hierarchy=True)
+Data = gram.RegularTree([1,2], fan_out=2, respect_hierarchy=True)
 
 #%%
 

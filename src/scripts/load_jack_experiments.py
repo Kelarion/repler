@@ -54,33 +54,42 @@ def pad_to_dense(M):
     Z = np.zeros((len(M), maxlen, *dims))*np.nan
     for enu, row in enumerate(M):
         Z[enu, :len(row)] = row 
+        
     return Z
 
 #%%
 
-exp_prm = {'experiment': exp.EpsilonSeparableXOR,
- 		   'epsilon': np.linspace(0,1,21).tolist(),
- 		   'input_noise':[0.0, 0.1, 0.2, 0.3], # 0.125 - 8 on log scale
- 		   'dim_inp': 120}
+exp_prm = {'experiment': exp.RandomInputMultiClass,
+		   'dim_inp': 128,
+		   'num_bits': ( 2, 3, 4, 5), 
+		   'num_class': ( 2, 3, 4, 5),
+		   'input_noise':0.1,
+		   'center':[True, False]}
 
-net_args = {'model': stud.ShallowNetwork,
- 			'width': 120,
- 			'p_targ': stud.Bernoulli,
- 			'num_init': 20,
- 			'inp_weight_distr': pt_util.uniform_tensor,
- 			'out_weight_distr': [pt_util.uniform_tensor, 
- 								 pt_util.sphere_weights,
- 								 pt_util.BalancedBinary(2,1,normalize=True)],
- 			'activation':[pt_util.TanAytch(), pt_util.RayLou()]}
+net_args = {'model': stud.NGroupNetwork,
+			'n_per_group': 10,
+			'num_k': 2,
+			'p_targ': stud.Bernoulli,
+			'num_init': 10,
+			'inp_weight_distr': pt_util.uniform_tensor,
+			'inp_bias_distr': torch.ones,
+			'inp_bias_var': 0,
+			'out_bias_var': 0,
+			'activation':[pt_util.TanAytch(), pt_util.RayLou()]}
 
-opt_args = {'train_outputs': [False],
- 			# 'init_index': list(range(5)),
- 			'do_rms': False,
- 			'nepoch': 5000,
- 			'lr':1e-1,
- 			'bsz':200,
- 			'verbose': False,
- 			'skip_metrics':True}
+opt_args = {'train_outputs': False,
+			'train_inp_bias': False,
+			'train_out_bias':False,
+			# 'init_index': list(range(5)),
+			'do_rms': (False, True),
+			'nepoch': 2000,
+			'lr':(1e-1, 1e-2),
+			'bsz':200,
+			'verbose': False,
+			'skip_rep_metrics':True,
+			'skip_metrics':False,
+			'conv_tol': 1e-10,
+			'metric_period':10}
 
 
 #%%
@@ -106,7 +115,7 @@ for k,v in all_metrics.items():
     all_metrics[k] = pad_to_dense(v)
 
 
-#%%
+#%% Compute input alignment 
 
 PS = []
 CCGP = []
@@ -120,10 +129,12 @@ for exp_args in tqdm(all_exp_args):
     # this_exp.initialize_experiment( **exp_args['opt_args'])
     this_exp.load_experiment(SAVE_DIR+'results/', exp_args['opt_args'])
     
-    x_ = this_exp.inputs(np.arange(4), 0).T
-    y_ = this_exp.outputs(np.arange(4), 0).T
+    n_cond = this_exp.inputs.num_cond
     
-    cond = np.random.choice(range(4), 1000)
+    x_ = this_exp.inputs(np.arange(n_cond), 0).T
+    y_ = this_exp.outputs(np.arange(n_cond), 0).T
+    
+    cond = np.random.choice(range(n_cond), 1000)
     x_noise = this_exp.inputs(cond, noise=0.3).T
     # x_noise = this_exp.inputs(cond).T
     y_noise = (this_exp.outputs(cond)).T
@@ -138,8 +149,8 @@ for exp_args in tqdm(all_exp_args):
     
     inp = []
     out = []
-    ccgp = []
-    ps = []
+    # ccgp = []
+    # ps = []
     for model in this_exp.models:
         
         z_ = model(x_.T)[1].detach().numpy().T
@@ -151,13 +162,13 @@ for exp_args in tqdm(all_exp_args):
         inp.append(np.sum(Kz*Kx)/np.sqrt(np.sum(Kx*Kx)*np.sum(Kz*Kz)))
         out.append(np.sum(Kz*Ky)/np.sqrt(np.sum(Ky*Ky)*np.sum(Kz*Kz)))
 
-        ps.append(dics.parallelism_score(z_, np.arange(4), y_.T))
+        # ps.append(dics.parallelism_score(z_, np.arange(n_cond), y_.T))
         # ps.append(dics.parallelism_score(z_noise, cond, y_noise.T))
                 
-        ccgp.append(np.mean(dics.compute_ccgp(z_noise.T, cond, np.squeeze(y_noise), svm.LinearSVC(), twosided=True)))
+        # ccgp.append(np.mean(dics.compute_ccgp(z_noise.T, cond, np.squeeze(y_noise), svm.LinearSVC(), twosided=True)))
         
-    PS.append(ps)
-    CCGP.append(ccgp)
+    # PS.append(ps)
+    # CCGP.append(ccgp)
     inp_align.append(inp)
     out_align.append(out)
 
@@ -225,17 +236,23 @@ correct_align = np.einsum('lik,klj->ilj', correction, np.stack([inp_align,out_al
 correct_bound = np.stack([cos_foo, ub])
 
 #%%
+
+# filt = (prm['activation']=='RayLou')
+filt = (prm['activation']=='TanAytch')
+
 plt.plot(correct_bound[0,:],correct_bound[1,:], 'k--')
 
 # for j in [0.0,0.1,0.2,0.3]:
-for j in [0.0]:
-    filt = (prm['out_weight_distr']=='uniform_tensor')&(prm['activation']=='TanAytch')
+# for j in range(2,6):
+
     
-    mn  = np.array([np.mean(correct_align[:,(prm['input_noise']==j)&(prm['epsilon']==i)&filt], axis=(1,2)) for i in np.linspace(0,1,21)])
-    err = np.array([np.mean(correct_align[:,(prm['input_noise']==j)&(prm['epsilon']==i)&filt], 1).std(1) for i in np.linspace(0,1,21)])
-    
-    plt.errorbar(mn[:,0],mn[:,1], xerr=err[:,0],yerr=err[:,1])
-    
+mn  = np.array([np.mean(correct_align[:,(prm['num_bits']==i)&filt], axis=(1,2)) for i in range(2,6)])
+err = np.array([np.mean(correct_align[:,(prm['num_bits']==i)&filt], 1).std(1) for i in range(2,6)])
+
+plt.errorbar(mn[:,0],mn[:,1], xerr=err[:,0],yerr=err[:,1], linestyle='', marker='o')
+
+tplt.square_axis()
+
 # plt.scatter(correct_align[0,...], correct_align[1,...])
 
 #%%

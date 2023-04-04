@@ -108,6 +108,7 @@ layers = [1, 2, 2]
 
 Data = gram.HierarchicalData(layers, fan_out=K, respect_hierarchy=respect)
 
+#%%
 ll = Data.labels(Data.terminals)
 labs = np.where(np.isnan(ll), np.nanmax(ll)+1, ll)
 

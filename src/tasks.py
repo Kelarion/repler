@@ -105,7 +105,7 @@ class IndependentCategorical(object):
         return np.nanmean(n, 0, keepdims=True)[None,:].astype(float)
 
     def __call__(self, idx, noise=None):
-        return torch.tensor(self.labels[:,idx]).T
+        return torch.tensor(self.labels[:,idx]).float().T
 
     def subspace_information(self):
         """
@@ -376,6 +376,40 @@ class LogicalFunctions(IndependentBinary):
 # class HierarchicalLabels(IndependentBinary):
 
 ## Tasks which produce continuous representations of the binary tasks
+
+class LinearExpansion(object):
+
+    def __init__(self, task, dim_pattern, noise_var=0.1, center=True, random=False):
+
+        self.latent = task
+
+        self.dim_output = dim_pattern
+        self.noise_var = noise_var
+        self.num_cond = task.num_cond
+        self.num_var = task.num_var
+
+        self.center = center
+
+        if not random:
+            np.random.seed(0)
+        C = np.random.rand(dim_pattern, dim_pattern)
+        self.expansion = la.qr(C)[0][:task.num_var,:]
+
+        self.__name__ = f'Linear_{dim_pattern}D_{noise_var:.2f}snr_' + self.latent.__name__ 
+
+    def __call__(self ,labels, noise=None):
+
+        if noise is None:
+            noise = self.noise_var
+
+        if self.center:
+            L = 2*self.latent(labels) - 1
+        else:
+            L = self.latent(labels)
+        means = L @ self.expansion
+        return torch.tensor(means + np.random.randn(len(labels), self.dim_output)*noise).float()
+
+
 class RandomPatterns(object):
     def __init__(self, num_cond, dim_pattern, noise_var=0.1, center=True, random=False):
 

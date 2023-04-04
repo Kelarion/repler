@@ -265,9 +265,9 @@ def proj_coef(A, B):
 
 #%% debugging
 
-# GT = gram.RegularTree([1,2], fan_out=2, respect_hierarchy=False)
-GT = gram.RegularTree([1,1,4], fan_out=2, respect_hierarchy=False)
-# GT = gram.RegularTree([1,2,2], fan_out=2, respect_hierarchy=False)
+# GT = gram.RegularTree([1,1,1], fan_out=2, respect_hierarchy=False)
+# GT = gram.RegularTree([1,1,4], fan_out=2, respect_hierarchy=False)
+GT = gram.RegularTree([1,2], fan_out=2, respect_hierarchy=True)
 # GT = gram.RegularTree([1,1,2,4,8,16], fan_out=2, respect_hierarchy=False)
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,4])])
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,3]), set([0,1]), set([2,3])])
@@ -330,6 +330,9 @@ A = [np.eye(N)[:,[i]]*np.eye(N)[[i],:] for i in range(N)]
 constraints = [X >> 0]
 constraints += [cvx.trace(A[i]@X) == 1 for i in range(N) ]
 constraints += [cvx.trace(X@H) == 1]
+
+# enforce non-obtuse triangles
+constraints += [X - X[:,[i]] - X[[i],:] + X[i,i] >= 0 for i in range(N)]
 
 scl = (np.sum(center(K_)*(y@y.T))/(1e-12 + np.sum(center(y@y.T)**2)))
 prob = cvx.Problem(cvx.Maximize(cvx.trace(center(K_ - scl*(y@y.T))@X)), constraints)

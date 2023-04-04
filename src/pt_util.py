@@ -62,13 +62,13 @@ class BalancedBinary:
 		self.Ks = Ks
 		self.normalize = normalize
 
-		self.__name__ = 'balanced_binary'
+		self.__name__ = f"balanced_binary_{Ks}"
 
 	def __call__(self, *dims):
 		"""
 		BalancedBinary(dim_out, dim_in)
 		"""
-
+        
 		dim_out = dims[-2]
 		dim_in = dims[-1]
 
@@ -107,6 +107,7 @@ class BalancedBinary:
 
 		return Ws
 
+# class 
 
 # def balanced_binary(dim_out, dim_in):
 

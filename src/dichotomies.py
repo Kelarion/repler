@@ -7,6 +7,7 @@ from torch.nn.parameter import Parameter
 import numpy as np
 import scipy.linalg as la
 import scipy.special as spc
+import scipy.optimize as opt
 from itertools import combinations, permutations, islice, filterfalse, chain
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
@@ -219,6 +220,65 @@ def parallelism_score(z, cond, coloring, eps=1e-12, debug=False, average=True):
     else:
         return np.max(ps)
 
+
+def efficient_parallelism(z, coloring, tol=1e-6):
+    """
+    z is shape (features, items)
+    coloring is shape (items,)
+
+    Efficient computation of parallelism score, which generalizes to 
+    unbalanced colorings. 
+    """
+
+    N = len(coloring)
+
+    ## set the "positives" to be the smaller set
+    if np.sum(coloring > tol) > N//2:
+        y = 1 - coloring
+    else:
+        y = coloring
+
+    ids = np.argsort(1-y)
+    z_ = z[:, ids]
+    y_ = y[ids] > tol # convert to binary if it isn't
+    k = N - np.sum(y_)
+
+    pos = np.arange(np.sum(y_), dtype=int)
+    neg = np.arange(np.sum(y_), N, dtype=int)
+
+    ## compute (squared) distances
+    Kz = z_.T@z_
+    norms = Kz[range(N), range(N)]
+    d = norms[:,None] + norms[None,:] - 2*Kz
+
+    ## find approximate optimal pairing
+    aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_])
+
+    ## account for multiple pairing (imbalance)
+    order = np.argsort(aye)
+    _, pos_reps = np.unique(aye, return_counts=True)
+    reps = np.concatenate([pos_reps, np.ones(len(neg), dtype=int)], dtype=int)
+    extra = np.sum(pos_reps - 1)
+
+    i_id = np.arange(np.sum(pos_reps))
+    j_id = jay[order]
+
+    y_copy = np.repeat(y_, reps)
+    d_copy = np.repeat(np.repeat(d, reps, axis=0), reps, axis=1)
+
+    ## create matrices 
+    mask = np.ones((N+extra,N+extra), dtype=bool)
+    mask[i_id, neg[j_id]+extra] = 0
+    mask[neg[j_id]+extra, i_id] = 0
+
+    numer = mask*d_copy*np.outer(-(2*y_copy-1),(2*y_copy-1))
+    denom = np.sqrt(np.outer(d_copy[~mask],d_copy[~mask]))
+
+    total = np.sum(numer/np.where(denom <= tol, tol, denom))
+
+    return total/(2*k*(k-1))
+
+
 def hierarchical_parallelism(z, y_super, y_sub):
 
     sigs = [util.decompose_covariance(z[y_sup==s,:].T,y_sub[y_sup==s])[1] for s in np.unique(y_sup)]
@@ -228,3 +288,4 @@ def hierarchical_parallelism(z, y_super, y_sub):
     foo1, foo2 = np.nonzero(np.triu(np.ones(dots.shape),1))
 
     return np.mean(csim[foo1,foo2])
+
