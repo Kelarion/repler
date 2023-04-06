@@ -1,3 +1,1 @@
-# Geometry of Representations in Deep Causal Blockchain GANs
-
-Information must be lost, or at best preserved, when something is represented by a neural population. In this sense, the process of abstraction and generalisation can be seen as learning to lose the 'right kind' of information, and 'nicely' organising the rest. Here, I would like to study the design principles of neural representations. In particular, I'm interested in which high-dimensional representations best support the transfer of knowledge/performance between different, but abstractly related, task domains (i.e. "transfer learning"). Based on previous work, taking a geometric perspective on those representations should be very informative.
+# All of my code
