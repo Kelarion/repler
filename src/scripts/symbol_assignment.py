@@ -1075,7 +1075,7 @@ def feasible(S_unq, num_s, included, remaining):
 
 
 
-def BDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
+def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     """
     Binary distance factorization (working name) of K. 
     
@@ -1158,33 +1158,36 @@ def BDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     return vecs, num_s
 
 #%%
-def cBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6):
+def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6):
     """
     Binary distance factorization (working name) of K. Using the non-integer 
     formulation.
     """
     
-    N = len(C)
+    N = len(K)
     inds = util.LexOrder()
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
-        samps = np.sign(np.random.multivariate_normal(np.zeros(N), C, size=num_samp))
-        K = samps.T@samps/num_samp
+        samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
+        C_ = samps.T@samps/num_samp
     else:
-        K = C
+        C_ = K
     
-    d = 1 - K
+    d = 1 - C_
+    
+    # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution
+    C = 1 - alpha*d
     
     orig = np.argmin(np.sum(d, axis=0)) 
     
     ### center around arbitrary (?) point
-    K_o = (K[orig,orig]- K[[orig],:] - K[:,[orig]] + K)/4
+    K_o = (C[orig,orig]- C[[orig],:] - C[:,[orig]] + C)/4
     
     sgn = (-1)**(sparse + 1)
     
     idx = np.arange(N)
-    # i0 = idx[idx != orig][0]
     first = np.setdiff1d(idx, [orig])[np.argmin(d[orig,:][np.setdiff1d(idx, [orig])])]
     
     B = np.array([[1,1],[0,1]])
@@ -1193,18 +1196,12 @@ def cBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6
     included = [first]
     remaining = np.setdiff1d(idx, [orig, first]).tolist()
     
-    while len(remaining) > 0:
+    for n in tqdm(range(2,N)):
 
         ## Most "explainable" item <=> closest item
         this_i = remaining[np.argmin(np.sum(d[included,:][:,remaining], axis=0))]
         
         ### new features
-        # prog = lp(sgn*pi,
-        #           A_ub=pi[None,:], b_ub=K_o[this_i,this_i],
-        #           A_eq=B@np.diag(pi), b_eq=K_o[included,this_i],
-        #           bounds=[0,1],
-        #           method='highs')
-        
         prog = lp(sgn*pi,
                   A_eq=B@np.diag(pi), b_eq=K_o[[this_i] + included,this_i],
                   bounds=[0,1],
@@ -1214,7 +1211,7 @@ def cBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6
             x = prog.x
         else:
             raise Exception('Inconsistency at %d items'%len(included))
-    
+        
         ## Split clusters as necessary 
         new_pi = []
         new_b = []
@@ -1238,20 +1235,31 @@ def cBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6
         included.append(this_i)
         remaining.remove(this_i)
     
+    ## Fix the matrix
+    B[0] = 0
+    trivial = (B.sum(0) == N) | (B.sum(0) == 0)
+    B = B[:,~trivial]
+    pi = pi[~trivial]/np.sum(pi[~trivial])
+    
+    feat_idx = np.argsort(-pi)
+    
     ### fill in remaining difference vectors 
-    B = B[np.argsort(included)]
+    idx = np.append(orig, included)
+    idx_order = np.argsort(idx)
+    
+    B = B[idx_order][:,feat_idx]
+    pi = pi[feat_idx]
     
     B_full = np.vstack([np.mod(B[(i+1):] + B[i], 2) for i in range(N)])
     
-    pt_id = np.sort(included)
+    pt_id = idx[idx_order]
     ix = inds(np.concatenate([pt_id[(i+1):] for i in range(N)]), 
               np.concatenate([np.ones(N-i-1)*i for i in range(N)]))
-    
     
     ### convert to 'canonical' form
     vecs, pts = color_points(B_full, ix)
     
-    return vecs, pi
+    return vecs.T, pi
 
 
 #%%
@@ -1273,7 +1281,8 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     ## Regularize to minimum-norm correlation matrix
     ## this should be re-visited, doesn't work well for e.g. identity matrix
     d = 1 - C_   
-    alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+    # alpha = np.sum(d)/np.sum(d**2)   # alpha which minimizes correlations
+    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution
     C = 1 - alpha*d
     
     ## Fit features
@@ -1284,7 +1293,7 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     
     included = [first]
     remaining = np.setdiff1d(range(P), first).tolist()
-    for n in range(1,P):
+    for n in tqdm(range(1,P)):
         
         ## Most "explainable" item <=> closest item
         new = remaining[np.argmin(np.sum(d[included,:][:,remaining], axis=0))]
@@ -1337,7 +1346,7 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     ## remove trivial cluster
     mono = np.abs(S.sum(0)) == P
     S = S[:,~mono]
-    pi = pi[~mono]
+    pi = pi[~mono]/np.sum(pi[~mono])
     
     ## report smallest cluster
     S = S@np.diag(-np.sign(S.sum(0) + 1e-5)).astype(int)
