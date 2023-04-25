@@ -29,12 +29,12 @@ send_remotely = True
 
 ### Set parameters to iterate over
 ##############################
-exp_prm = {'experiment': exp.LogicTask,
-		   'inp_dics': [tasks.StandardBinary(3).positives],
-		   'out_dics': [ [(0,1,3,5),(0,2,3,6),(0,1,2,4)], [(0,3,5,6)] ],
-		   'dim_inp': 3,
-		   'noise': [0, 0.1],
-		   }
+# exp_prm = {'experiment': exp.LogicTask,
+# 		   'inp_dics': [tasks.StandardBinary(3).positives],
+# 		   'out_dics': [ [(0,1,3,5),(0,2,3,6),(0,1,2,4)], [(0,3,5,6)] ],
+# 		   'dim_inp': 3,
+# 		   'noise': [0, 0.1],
+# 		   }
 
 # exp_prm = {'experiment': exp.FeedforwardExperiment,
 # 		   'inputs': [tasks.RandomPatterns(4, 100), ],
@@ -42,6 +42,15 @@ exp_prm = {'experiment': exp.LogicTask,
 # 		   				tasks.IndependentCategorical(np.eye(4)),
 # 		   				tasks.HierarchicalLabels([1,2])]
 		   # }
+
+exp_prm = {'experiment': exp.RandomOrthogonal,
+		   'num_bits':2,
+		   'num_targets': [1,2],
+		   'signal':[0, 0.5, 1, 3],
+		   'seed': list(range(12)),
+		   'dim_inp': 100,
+		   'input_noise': 0,
+		   }
 
 # net_args = {'model': stud.SimpleMLP,
 # 			'num_init': 20,
@@ -52,9 +61,9 @@ exp_prm = {'experiment': exp.LogicTask,
 # 			}
 
 net_args = {'model': stud.SimpleMLP,
-			'num_init': 20,
-			'width': 16,
-			'depth': [5, 10, 20],
+			'num_init': 10,
+			'width': 128,
+			'depth': 1,
 			'p_targ': stud.Bernoulli,
 			'activation':['Tanh', 'ReLU']
 			}

@@ -397,7 +397,7 @@ class LinearExpansion(object):
 
         self.__name__ = f'Linear_{dim_pattern}D_{noise_var:.2f}snr_' + self.latent.__name__ 
 
-    def __call__(self ,labels, noise=None):
+    def __call__(self, labels, noise=None):
 
         if noise is None:
             noise = self.noise_var
@@ -408,6 +408,27 @@ class LinearExpansion(object):
             L = self.latent(labels)
         means = L @ self.expansion
         return torch.tensor(means + np.random.randn(len(labels), self.dim_output)*noise).float()
+
+
+class Embedding(object):
+
+    def __init__(self, vals, noise=0):
+        """
+        Dimensions are weighted binary classes
+        """
+
+        self.num_cond = len(vals)
+        self.num_var = vals.shape[1]
+        self.dim_output = vals.shape[1]
+        self.noise = noise
+
+        self.means = vals
+
+        self.__name__ = "Embedding_%d_%d"%(self.num_cond, self.dim_output)
+
+    def __call__(self, labels):
+
+        return torch.tensor(self.means[labels]).float()
 
 
 class RandomPatterns(object):

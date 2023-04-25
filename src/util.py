@@ -115,7 +115,7 @@ class LexOrderK:
         top = (maxval+1)*below_r + maxval*above_r
         bot = (all_K+1)*(below_r + above_r) - 1 # same trick as above
 
-        n = binom(sorted_items, this_k).sum(0) + binom(top, bot).sum(0)
+        n = spc.binom(sorted_items, this_k).sum(0) + spc.binom(top, bot).sum(0)
 
         return np.squeeze(np.where(np.isin(r, self.K), n, -1).astype(int))
     
@@ -479,6 +479,9 @@ def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=Non
 #     R[normlzr>0] = np.sqrt(V[normlzr>0]/np.sqrt(normlzr[normlzr>0]))
 #     return R
 
+def center_kernel(K):
+    return K - K.mean(-2,keepdims=True) - K.mean(-1,keepdims=True) + K.mean((-1,-2),keepdims=True)
+
 def centered_kernel_alignment(K1,K2):
 
     K1_ = K1 - np.nanmean(K1,-2,keepdims=True) - np.nanmean(K1,-1,keepdims=True) + np.nanmean(K1,(-1,-2),keepdims=True)
@@ -486,7 +489,6 @@ def centered_kernel_alignment(K1,K2):
     denom = np.sqrt(np.nansum((K1_**2),(-1,-2))*np.nansum((K2_**2),(-1,-2)))
 
     return np.nansum((K1_*K2_),(-1,-2))/np.where(denom, denom, 1e-12)
-
 
 def kernel_alignment(k, l):
     """
@@ -751,36 +753,90 @@ def unbalanced_assignment(cost, adj=None):
 ############# Binary variables ###############
 ##############################################
 
-def mutual_information(binary):
+# def mutual_information(binary):
+#     """
+#     Input: binary matrix (num_item, num_cluster)
+#     Output: mutual information (num_cluster, num_cluster)
+#     """
+    
+#     a = np.stack([binary.T, 1-binary.T])
+    
+#     # p(a)
+#     p_a = a.sum(-1)/binary.shape[0]
+#     Ha = np.sum(-p_a*np.log2(p_a, where=p_a>0), 0)
+    
+#     # p(a | b=1)
+#     p_ab = a@binary / binary.sum(0)
+#     Hab = np.sum(-p_ab*np.log2(p_ab, where=p_ab>0), 0) # entropy
+    
+#     # p(a | b=0)
+#     p_ab_ = a@(1-binary) / (1-binary).sum(0)
+#     Hab_ = np.sum(-p_ab_*np.log2(p_ab_, where=p_ab_>0), 0) # entropy
+    
+#     return Ha[:,None] - binary.mean(0)[None,:]*Hab - (1-binary).mean(0)[None,:]*Hab_
+
+def mutual_information(nary):
     """
-    Input: binary matrix (num_item, num_cluster)
-    Output: mutual information (num_cluster, num_cluster)
+    Input: n-ary matrix (num_item, num_var), with n unique values
+    Output: mutual information (num_var, num_var)
+
+    note: n can be different for each variable
     """
     
-    a = np.stack([binary.T, 1-binary.T])
+    n = int(nary.max() + 1) # number of values for each variable
+    itm = len(nary)
+    binarized = np.eye(n)[nary].T # shape is (vals, vars, items)
     
-    # p(a)
-    p_a = a.sum(-1)/binary.shape[0]
-    Ha = np.sum(-p_a*np.log2(p_a, where=p_a>0), 0)
+    ## p(a) 
+    p_a = binarized.mean(-1) # shape is (vals, var)
     
-    # p(a | b=1)
-    p_ab = a@binary / binary.sum(0)
-    Hab = np.sum(-p_ab*np.log2(p_ab, where=p_ab>0), 0) # entropy
+    ## p(a, b) shape is (vals, vals, var, var)
+    p_ab = np.einsum('ijk,lmk->iljm ', binarized, binarized)/itm
     
-    # p(a | b=0)
-    p_ab_ = a@(1-binary) / (1-binary).sum(0)
-    Hab_ = np.sum(-p_ab_*np.log2(p_ab_, where=p_ab_>0), 0) # entropy
+    ## marginal entropy
+    Ha = np.sum(-p_a*np.log(p_a, where=p_a > 1e-6), 0)
     
-    return Ha[:,None] - binary.mean(0)[None,:]*Hab - (1-binary).mean(0)[None,:]*Hab_
+    ## conditional entropy, H(a | b)
+    p_a_b = p_ab/np.where(p_a > 1e-6, p_a, np.inf)[:,None,:,None]
+    Hab = np.sum(-p_ab*np.log(p_a_b, where=p_a_b > 1e-6), (0,1)) 
+    
+    return Ha[None,:] - Hab
+
+def conjunctive_MI(these_vars, those_vars):
+    """
+    these_vars (num_item, num_these) binary matrix
+    those_vars (num_item, num_those) binary matrix
+    
+    Compute the mutual information between the conjunction of 
+    these_vars and conjunction of those_vars. The conjunction is 
+    an n-ary variable indexing unique combinations of each variable.
+
+    For example, if the variables are [1,1,2,2] and [1,2,1,2], then
+    this has a 4-valued conjunction, [1,2,3,4]. Meanwhile, if the two 
+    variables are [1,2,2,2] and [2,1,2,2], this only has a 3-valued
+    conjunction, [1,2,3,3].
+    """
+
+    _, c1 = np.unique(these_vars, axis=0, return_inverse=True)
+    _, c2 = np.unique(those_vars, axis=0, return_inverse=True)
+
+    return mutual_information(np.stack([c1,c2]).T)
+
+def F2(n):
+    """
+    All elements of F2(n), i.e. all n-bit binary vectors
+    """
+    return np.mod(np.arange(2**int(n))[:,None]//(2**np.arange(int(n))[None,:]),2)
 
 
-def gf2elim(M):
+def gf2elim(B):
     """
     Gaussian elimination over Z/2 (a.k.a. GF(2))
 
     From someone's github ... 
     """
 
+    M = B.copy()
     m,n = M.shape
 
     i=0
@@ -810,7 +866,6 @@ def gf2elim(M):
         j +=1
 
     return M
-
 
 def get_depths(clus):
     """
@@ -864,8 +919,141 @@ def dot2dist(K):
     return (np.abs(np.diag(K)[:,None] + np.diag(K)[None,:] - 2*K))
 
 #########################################
+######## Uuuummmmmmmmmmmmmmmmmm #########
+#########################################
+
+class Quadric:
+    
+    def __init__(self, Q, p, r):
+        """
+        Quadric surface, all points x satisfying
+        x'Qx + p'x + r = 0
+        """
+        
+        self.Q = Q
+        self.p = p
+        self.r = r
+    
+    def __call__(self, x):
+        """
+        Evaluate the value of surface equation
+        """
+        return self.qform(x) + self.p@x + self.r
+    
+    def qform(self, x, y=None):
+        """
+        Quadratic component of the surface equation
+        """
+        
+        if y is None:
+            y = x
+        return ((self.Q@x)*y).sum(0)
+
+    def project(self, x, s):
+        """
+        project x onto the quadric, from perspective point s
+        
+        i.e., find where the line containing x and s intersects with the surface
+        (in general there can be 2 intersection points, this returns the closest)
+        """
+        
+        a = self.qform(s - x)
+        b = self.p@(s-x) + 2*self.qform(x, s-x)
+        c = self.qform(x) + self.p@x + self.r
+        
+        disc = b**2 - 4*a*c # impossible that this is negative
+        disc = disc*(disc>0)
+        
+        p1 = x + ((-b + np.sqrt(disc))/(2*a))*(s - x)
+        p2 = x + ((-b - np.sqrt(disc))/(2*a))*(s - x)
+        
+        d1 = np.sum((x - p1)**2, 0)
+        d2 = np.sum((x - p2)**2, 0)
+        
+        return np.where(d1<=d2, p1, p2)
+
+def sample_aligned(y, c, size=1, alph_src=None, alph_targ=None, sym=True):
+    """
+    Sample a random point x in the simplex, satisfying
+    
+    <x, y>/|x||y| = c
+    
+    assumes y is simplex-valued
+    """
+
+    y = y > 0  # reference point
+    N = len(y)
+
+    k = int(np.log2(N+1))
+    # first_bits = np.cumsum(1-y) <= k
+
+    if alph_src is None:
+        alph_src = np.ones(N)
+    if alph_targ is None:
+        alph_targ = np.ones(N-np.sum(y))
+    
+    ## sample perspective points
+    y_ = np.zeros((N, size)) # waluigi
+    y_[y <= 0] = np.random.dirichlet(alph_targ, size=size).T
+    # if sym:
+    #     y_[first_bits] = y_[first_bits].mean(0)
+
+    ## define surface
+    V = la.eigh( np.eye(N) - np.ones((N,N))/N )[1][:,1:] 
+    A = (c**2)*np.eye(N) - np.outer(y,y)/np.sum(y)
+    
+    S = Quadric(V.T@A@V, 2*A.mean(0)@V, A.mean())
+
+    ## sample source points
+    u = np.random.dirichlet(alph_src, size=size)
+    # if sym:
+    #     u[first_bits] = u[first_bits].mean(-1)
+    x = (u@V).T
+    
+    ## select perspective points
+    orig = np.where(S(x)<=0, V.T@y_, V.T@y[:,None]/np.sum(y))
+    
+    return V@S.project(x, orig) + 1/N
+
+
+def average_aligned(y, c, size=1):
+    """
+    Sample a random point x in the simplex, satisfying
+    
+    <x, y>/|x||y| = c
+    
+    assumes y is simplex-valued
+    """
+
+    y = y > 0  # reference point
+    N = len(y)
+
+    ## define surface
+    V = la.eigh( np.eye(N) - np.ones((N,N))/N )[1][:,1:] 
+    A = (c**2)*np.eye(N) - np.outer(y,y)/np.sum(y)
+    
+    S = Quadric(V.T@A@V, 2*A.mean(0)@V, A.mean())
+
+    return V@S.project(y@V, ((1-y)/np.sum(1-y))@V) + 1/N
+
+
+
+def dirichlet_slice(N, k, size=1):
+    """
+    Special slice of a dirichlet distribution, where the first k the entries
+    are constrained to have equal weight.
+    """
+    
+    d = np.random.dirichlet(np.ones(N), size=size)
+    d[...,:k] = d[...,:k].mean(-1)
+
+    return d
+
+
+#########################################
 ######## Miscelaneous (for now) #########
 #########################################
+
 
 def random_basis(dim):
     C = np.random.randn(dim, dim)

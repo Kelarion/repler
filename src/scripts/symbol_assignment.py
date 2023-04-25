@@ -858,7 +858,7 @@ def color_points(symbols, edges):
     symbol's arrows. 
     
     """
-    
+    inds = util.LexOrder() 
     # N = len(np.unique(inds.inv(edges)))
     pts = np.unique(inds.inv(edges)).astype(int)
     
@@ -1177,7 +1177,7 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
     d = 1 - C_
     
     # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
-    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution
+    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
     C = 1 - alpha*d
     
     orig = np.argmin(np.sum(d, axis=0)) 
@@ -1282,7 +1282,7 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     ## this should be re-visited, doesn't work well for e.g. identity matrix
     d = 1 - C_   
     # alpha = np.sum(d)/np.sum(d**2)   # alpha which minimizes correlations
-    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution
+    alpha = (1+np.max(d))/(P/2) # unproven: this is largest alpha which returns sparsest solution
     C = 1 - alpha*d
     
     ## Fit features
@@ -1397,6 +1397,61 @@ def extract_rank_one(A, rand=False, kern=None):
     prob.solve()
     
     return X.value
+
+
+def orthogonal_rank_one(A):
+    """
+    Random rank-1 cut matrix orthogonal to A
+    """
+    
+    N = len(A)
+    # psi = oriented_tricycles(N)
+    
+    # l, v = la.eigh(A@A.T)
+    # null = v[:, l <=1e-6]
+    
+    # g = np.random.multivariate_normal(np.zeros(N), null@null.T)[:,None]
+   
+    g = np.random.randn(N,1)
+    
+    # active = (np.abs(psi@inv_matrix_map(A) - 1) <= 1e-5) 
+   
+    X = cvx.Variable((N,N), symmetric='True')
+    constraints = [X >> 0]
+    constraints += [cvx.diag(X) == 1]
+    constraints += [X@A == 0]
+    # constraints += [X[:,[i]] + X[[i],:] - X <= 1 for i in range(N)]
+    # constraints += [X[:,[i]] + X[[i],:] + X >= -1 for i in range(N)]
+    
+    prob = cvx.Problem(cvx.Maximize(cvx.trace(g@g.T@X)), constraints)
+    prob.solve()
+    
+    return X.value
+
+
+def randomard(N):
+    """
+    Random hadamard matrix of order N, where N is a multiple of 4
+    """
+    
+    H = np.ones((N,1))
+    
+    while H.shape[1] < N:
+        
+        new_col = np.round(orthogonal_rank_one(H), 6)
+        if np.abs(new_col**2 - 1).max() > 1e-4:
+            it = 0
+            while np.abs(new_col**2 - 1).max() > 1e-4:
+                new_col = np.round(orthogonal_rank_one(H), 6)
+                if it > 10:
+                    raise Exception
+                it += 1
+            
+        H = np.hstack([H, np.sign(new_col[:,[0]])])
+    
+    return H
+
+
 
 
 def deflate(A, X):

@@ -88,6 +88,53 @@ class LogicTask(exp.FeedforwardExperiment):
 #         super(LogicTask, self).__init__(inps, outs)
         
 
+class RandomOrthogonal(exp.FeedforwardExperiment):
+
+    def __init__(self, num_bits, num_targets, signal, dim_inp, input_noise=0.1, seed=None):
+
+        self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
+
+        self.num_cond = 2**num_bits
+        self.num_var = num_bits
+        self.signal = signal
+        self.alignment = np.sqrt(signal/(self.num_cond - 1))
+        
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed 
+
+        ## Generate hadamard matrix
+        F = util.F2(num_bits) # F2
+        lex = np.sort(F, axis=1)*(np.argsort(F, axis=1) + 1) 
+        idx = np.lexsort(np.hstack([lex, F.sum(1, keepdims=True)]).T)
+        F = F[idx] # put it in kinda-lexicographic order
+        
+        H = np.mod(F@F[1:].T, 2)
+        
+        ## Choose targets to be equally difficult
+        this_l = np.where(spc.binom(num_bits, np.arange(num_bits+1)) >= num_targets)[0][-1]
+        these_targs = (F[1:].sum(1) == this_l)
+        these_targs *= np.cumsum(these_targs) <= num_targets
+        
+        ## Draw inputs
+        pi_x = util.sample_aligned(1*these_targs, self.alignment, size=1)
+        pi_x = np.squeeze(np.abs(pi_x))
+
+        ## Define tasks
+        mns = tasks.Embedding((2*H-1)@np.diag(np.sqrt(pi_x)))
+        inps = tasks.LinearExpansion(mns, dim_inp, noise_var=input_noise, center=False)
+        outs = tasks.BinaryLabels(H[:,these_targs].T)
+
+        super(RandomOrthogonal, self).__init__(inps, outs)
+
+    def exp_folder_hierarchy(self):
+
+        FOLDERS = (f"/{self.signal}_signal/"
+                   f"/seed_{'None' if self.seed is None else self.seed}/")
+
+        return FOLDERS
+
+
 class EpsilonSeparableXOR(exp.FeedforwardExperiment):
 
     def __init__(self, dim_inp, epsilon=0.0, input_noise=0.1):
@@ -141,25 +188,25 @@ class EpsilonSeparableXOR(exp.FeedforwardExperiment):
         return FOLDERS
 
 
-class RandomInputMultiClass(exp.FeedforwardExperiment):
+# class RandomInputMultiClass(exp.FeedforwardExperiment):
 
-    def __init__(self, dim_inp, num_bits, num_class, class_imbalance=0, input_noise=0.1,
-        center=True):
-        """
-        Number of items is 2**num_bits
+#     def __init__(self, dim_inp, num_bits, num_class, class_imbalance=0, input_noise=0.1,
+#         center=True):
+#         """
+#         Number of items is 2**num_bits
 
-        Only works for imbalance=0
-        """
+#         Only works for imbalance=0
+#         """
 
-        self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
+#         self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
 
-        labs = (1+la.hadamard(2**num_bits)[1:(num_class+1)])/2
-        out_task = tasks.BinaryLabels(labs.astype(int))
+#         labs = (1+la.hadamard(2**num_bits)[1:(num_class+1)])/2
+#         out_task = tasks.BinaryLabels(labs.astype(int))
 
-        inp_task = tasks.RandomPatterns(2**num_bits, dim_inp, 
-            noise_var=input_noise, center=center, random=False)
+#         inp_task = tasks.RandomPatterns(2**num_bits, dim_inp, 
+#             noise_var=input_noise, center=center, random=False)
 
-        super(RandomInputMultiClass, self).__init__(inp_task, out_task)
+#         super(RandomInputMultiClass, self).__init__(inp_task, out_task)
 
     # def init_metrics(self):
     #     self.metrics = {'train_loss': [],

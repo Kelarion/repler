@@ -476,7 +476,21 @@ def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None,
 ################# Polytopes ####################
 ################################################
 
-def plotytope(vertices=None, halfspace=None, 
+def polytope(vertices, ax=None, **plot_args):
+
+    vertices = vertices.tolist()
+    vertices.append(vertices[0]) #repeat the first point to create a 'closed loop'
+
+    xs, ys = zip(*vertices) #create lists of x and y values
+
+    if ax is None:
+        ax = plt.axes()
+
+    ax.plot(xs, ys, **plot_args)
+
+    return ax
+
+def polytope3d(vertices=None, halfspace=None, 
     color=(0.5,0.5,0.5), alpha=0.5, ax=None, plot_verts=True, **vert_args):
     """
     Plot a convex polytope in 3d
@@ -511,6 +525,7 @@ def plotytope(vertices=None, halfspace=None,
             ax.scatter(vertices[:,0],vertices[:,1], vertices[:,2], **vert_args)
 
     return ax
+
 
 ##############################################
 ########### General utility ##################

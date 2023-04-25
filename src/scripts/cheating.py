@@ -120,6 +120,8 @@ def ellipsoid_step(C, b, zero_tol=1e-10, mult_tol=1e-6):
     prob = cvx.Problem(cvx.Maximize(cvx.log_det(Q)), constr)
     prob.solve()
     
+    print(Q.value)
+    
         # find point on ellipse with maximum norm 
     P = la.inv(Q.value)@la.inv(Q.value)
     rr = r.value
@@ -225,27 +227,54 @@ def mvee(points, tol = 0.001):
     return A
 
 
-def mutual_information(binary):
+# def mutual_information(binary):
+#     """
+#     Input: binary matrix (num_item, num_cluster)
+#     Output: mutual information (num_cluster, num_cluster)
+#     """
+    
+#     a = np.stack([binary.T, 1-binary.T])
+    
+#     # p(a)
+#     p_a = a.sum(-1)/binary.shape[0]
+#     Ha = np.sum(-p_a*np.log2(p_a, where=p_a>0), 0)
+    
+#     # p(a | b=1)
+#     p_ab = a@binary / binary.sum(0)
+#     Hab = np.sum(-p_ab*np.log2(p_ab, where=p_ab>0), 0) # entropy
+    
+#     # p(a | b=0)
+#     p_ab_ = a@(1-binary) / (1-binary).sum(0)
+#     Hab_ = np.sum(-p_ab_*np.log2(p_ab_, where=p_ab_>0), 0) # entropy
+    
+#     return Ha[:,None] - binary.mean(0)[None,:]*Hab - (1-binary).mean(0)[None,:]*Hab_
+
+def mutual_information(nary):
     """
-    Input: binary matrix (num_item, num_cluster)
-    Output: mutual information (num_cluster, num_cluster)
+    Input: n-ary matrix (num_item, num_var), with n unique values
+    Output: mutual information (num_var, num_var)
+
+    note: n can be different for each variable
     """
     
-    a = np.stack([binary.T, 1-binary.T])
+    n = int(nary.max() + 1) # number of values for each variable
+    itm = len(nary)
+    binarized = np.eye(n)[nary].T # shape is (vals, vars, items)
     
-    # p(a)
-    p_a = a.sum(-1)/binary.shape[0]
-    Ha = np.sum(-p_a*np.log2(p_a, where=p_a>0), 0)
+    ## p(a) 
+    p_a = binarized.mean(-1) # shape is (vals, var)
     
-    # p(a | b=1)
-    p_ab = a@binary / binary.sum(0)
-    Hab = np.sum(-p_ab*np.log2(p_ab, where=p_ab>0), 0) # entropy
+    ## p(a, b) shape is (vals, vals, var, var)
+    p_ab = np.einsum('ijk,lmk->iljm ', binarized, binarized)/itm
     
-    # p(a | b=0)
-    p_ab_ = a@(1-binary) / (1-binary).sum(0)
-    Hab_ = np.sum(-p_ab_*np.log2(p_ab_, where=p_ab_>0), 0) # entropy
+    ## marginal entropy 
+    Ha = np.sum(-p_a*np.log(p_a, where=p_a > 1e-6), 0)
     
-    return Ha[:,None] - binary.mean(0)[None,:]*Hab - (1-binary).mean(0)[None,:]*Hab_
+    ## conditional entropy, H(a | b)
+    p_a_b = p_ab/np.where(p_a > 1e-6, p_a, np.inf)[:,None,:,None]
+    Hab = np.sum(-p_ab*np.log(p_a_b, where= (p_a_b > 1e-6)), (0,1)) 
+    
+    return Ha[None,:] - Hab
 
 
 def intersect_vars(b1, b2):
@@ -267,7 +296,7 @@ def proj_coef(A, B):
 
 # GT = gram.RegularTree([1,1,1], fan_out=2, respect_hierarchy=False)
 # GT = gram.RegularTree([1,1,4], fan_out=2, respect_hierarchy=False)
-GT = gram.RegularTree([1,2], fan_out=2, respect_hierarchy=True)
+GT = gram.RegularTree([1,2,4], fan_out=2, respect_hierarchy=True)
 # GT = gram.RegularTree([1,1,2,4,8,16], fan_out=2, respect_hierarchy=False)
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,4])])
 # GT = gram.LabelledItems(labels=[set([0,2]), set([0,3]), set([1,2]), set([1,3]), set([0,1]), set([2,3])])

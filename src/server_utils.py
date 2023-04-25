@@ -24,6 +24,18 @@ import experiments as exp
 import grammars as gram
 
 
+class Variable:
+
+    def __init__(self, vals):
+
+        self.vals = vals
+
+
+# def parse_params(dictionary):
+
+    
+
+
 def send_to_server(exp_prm, net_args, opt_args, run_remote=True):
     """ 
     if run_remote=False, will just run the first experiment locally (for debugging)
