@@ -43,11 +43,22 @@ send_remotely = True
 # 		   				tasks.HierarchicalLabels([1,2])]
 		   # }
 
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits':(2,2,3,3,3,4,4,4,4,5,5,5,5,5),
+# 		   'num_targets': (1,2,1,2,3,1,2,3,4,1,2,3,4,5),
+# 		   'signal':[0, 0.5, 1],
+# 		   'seed': None,
+# 		   'use_mean': True,
+# 		   'dim_inp': 100,
+# 		   'input_noise': 0.1,
+# 		   }
+
 exp_prm = {'experiment': exp.RandomOrthogonal,
-		   'num_bits':2,
-		   'num_targets': [1,2],
-		   'signal':[0, 0.5, 1, 3],
-		   'seed': list(range(12)),
+		   'num_bits':(2,2,3,3,3,4,4,4,4,5,5,5,5,5),
+		   'num_targets': (1,2,1,2,3,1,2,3,4,1,2,3,4,5),
+		   'signal':[0, 0.5, 1],
+		   'seed': list(np.arange(6)),
+		   'use_mean': False,
 		   'dim_inp': 100,
 		   'input_noise': 0,
 		   }
@@ -60,17 +71,19 @@ exp_prm = {'experiment': exp.RandomOrthogonal,
 # 			'activation':['Tanh', 'ReLU']
 # 			}
 
-net_args = {'model': stud.SimpleMLP,
+net_args = {'model': stud.ShallowNetwork,
 			'num_init': 10,
 			'width': 128,
-			'depth': 1,
 			'p_targ': stud.Bernoulli,
-			'activation':['Tanh', 'ReLU']
+			'activation':[pt_util.TanAytch(), pt_util.RayLou()],
+			'init_inp_var': (1e-2, 1),
+			'init_out_var': (1e-2, 1)
 			}
 
 opt_args = {'skip_metrics': True,
 			'nepoch': 1000,
-			'verbose': False
+			'verbose': False,
+			'train_outputs': False
 			}
 
 

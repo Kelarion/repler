@@ -90,18 +90,21 @@ class LogicTask(exp.FeedforwardExperiment):
 
 class RandomOrthogonal(exp.FeedforwardExperiment):
 
-    def __init__(self, num_bits, num_targets, signal, dim_inp, input_noise=0.1, seed=None):
+    def __init__(self, num_bits, num_targets, signal, dim_inp, 
+        input_noise=0.1, seed=None, use_mean=False):
 
         self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
 
         self.num_cond = 2**num_bits
         self.num_var = num_bits
         self.signal = signal
-        self.alignment = np.sqrt(signal/(self.num_cond - 1))
+        self.alignment = np.sqrt(num_targets*signal/(self.num_cond - 1))
         
         if seed is not None:
             np.random.seed(seed)
-            self.seed = seed 
+            self.seed = seed
+        elif use_mean:
+            self.seed = np.inf
 
         ## Generate hadamard matrix
         F = util.F2(num_bits) # F2
@@ -117,7 +120,11 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
         these_targs *= np.cumsum(these_targs) <= num_targets
         
         ## Draw inputs
-        pi_x = util.sample_aligned(1*these_targs, self.alignment, size=1)
+        if use_mean:
+            pi_x = util.average_aligned(1*these_targs, self.alignment, size=1)
+        else:
+            pi_x = util.sample_aligned(1*these_targs, self.alignment, size=1)
+        # print(pi_x)
         pi_x = np.squeeze(np.abs(pi_x))
 
         ## Define tasks
