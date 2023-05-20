@@ -202,10 +202,16 @@ def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
         these_comps = np.arange(len(S)) < num_comp
     return X.T@U[:,these_comps]
 
-def participation_ratio(X):
+def participation_ratio_old(X):
     """ (..., n_feat, n_sample) """
     _, evs = pca(X)
     return (np.sum(evs, -1)**2)/np.sum(evs**2, -1)
+
+def participation_ratio(X):
+    """ (..., n_feat, n_sample) """
+    ## computes in a more numerically stable way
+    C = center_kernel(X@X.T)
+    return (np.trace(C)**2)/np.trace(C@C)
 
 def sample_normalize(data, sigma, eps=1e-10):
     """ 
@@ -748,6 +754,64 @@ def unbalanced_assignment(cost, adj=None):
         return l, r-P
 
 
+def is_cyclic(graph):
+    """
+    Return True if the directed graph has a cycle.
+    The graph must be represented as a dictionary mapping vertices to
+    iterables of neighbouring vertices. For example:
+
+    >>> cyclic({1: (2,), 2: (3,), 3: (1,)})
+    True
+    >>> cyclic({1: (2,), 2: (3,), 3: (4,)})
+    False
+
+    By Gareth Rees on stack exchange
+    (https://codereview.stackexchange.com/questions/86021/)
+
+    """
+    visited = set()
+    path = [object()]
+    path_set = set(path)
+    stack = [iter(graph)]
+    while stack:
+        for v in stack[-1]:
+            if v in path_set:
+                return True
+            elif v not in visited:
+                visited.add(v)
+                path.append(v)
+                path_set.add(v)
+                stack.append(iter(graph.get(v, ())))
+                break
+        else:
+            path_set.remove(path.pop())
+            stack.pop()
+    return False
+
+def recursive_topological_sort(graph):
+    """
+    Returns a the topological sort of graph, a partial ordering. 
+    Must be a DAG
+
+    By Blckknght on stack exchange
+    (stackoverflow.com/questions/47192626/)
+    """
+
+    result = []
+    seen = set()
+
+    def recursive_helper(node):
+        for neighbor in graph[node]:
+            if neighbor not in seen:
+                seen.add(neighbor)
+                recursive_helper(neighbor)
+        result.insert(0, node)              # this line replaces the result.append line
+
+    for node in graph.keys():
+        if node not in seen:
+            recursive_helper(node)
+
+    return result
 
 ##############################################
 ############# Binary variables ###############
@@ -972,7 +1036,7 @@ class Quadric:
         
         return np.where(d1<=d2, p1, p2)
 
-def sample_aligned(y, c, size=1, alph_src=None, alph_targ=None, sym=True):
+def sample_aligned(y, c, size=1, scale=1, sym=True):
     """
     Sample a random point x in the simplex, satisfying
     
@@ -983,18 +1047,16 @@ def sample_aligned(y, c, size=1, alph_src=None, alph_targ=None, sym=True):
 
     y = y > 0  # reference point
     N = len(y)
+    p = np.sum(y)
 
     k = int(np.log2(N+1))
     # first_bits = np.cumsum(1-y) <= k
 
-    if alph_src is None:
-        alph_src = np.ones(N)
-    if alph_targ is None:
-        alph_targ = np.ones(N-np.sum(y))
-    
-    ## sample perspective points
-    y_ = np.zeros((N, size)) # waluigi
-    y_[y <= 0] = np.random.dirichlet(alph_targ, size=size).T
+    # if alph_src is None:
+    alph_src = np.ones(N)/scale
+    # if alph_targ is None:
+    alph_targ = np.ones(N-np.sum(y))/scale
+
     # if sym:
     #     y_[first_bits] = y_[first_bits].mean(0)
 
@@ -1010,6 +1072,26 @@ def sample_aligned(y, c, size=1, alph_src=None, alph_targ=None, sym=True):
     #     u[first_bits] = u[first_bits].mean(-1)
     x = (u@V).T
     
+    ## sample perspective points from largest facet which is entirely >= c
+    if p < N:
+        y_ = np.zeros((N, size)) # waluigi
+        y_[y <= 0] = np.random.dirichlet(alph_targ, size=size).T
+
+    else:
+        ## find nearest facet 
+        num_comp = int(np.floor(np.round((np.sqrt(N)/(N*c))**(-2), 6))) 
+        if num_comp < 1:
+            raise ValueError('alignment too low!')
+        elif num_comp > N:
+            raise ValueError('alignment too high!')
+        fac = np.argsort(np.argsort(u.T, axis=0), axis=0) >= N-num_comp 
+        idx = np.where(fac.T)
+
+        vals = np.random.dirichlet(np.ones(num_comp), size=size)
+        y_ = np.zeros((size, N))
+        y_[idx] += vals.flatten() # god i hate this shit
+        y_ = y_.T
+
     ## select perspective points
     orig = np.where(S(x)<=0, V.T@y_, V.T@y[:,None]/np.sum(y))
     

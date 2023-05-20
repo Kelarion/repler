@@ -690,37 +690,8 @@ import dichotomies as dics
 # #     return np.array(M) 
 
 
-def gf2elim(M):
-
-    m,n = M.shape
-
-    i=0
-    j=0
-
-    while i < m and j < n:
-        # find value and index of largest element in remainder of column j
-        k = np.argmax(M[i:, j]) +i
-
-        # swap rows
-        #M[[k, i]] = M[[i, k]] this doesn't work with numba
-        temp = np.copy(M[k])
-        M[k] = M[i]
-        M[i] = temp
-
-        aijn = M[i, j:]
-
-        col = np.copy(M[:, j]) #make a copy otherwise M will be directly affected
-
-        col[i] = 0 #avoid xoring pivot row with itself
-
-        flip = np.outer(col, aijn)
-
-        M[:, j:] = M[:, j:] ^ flip
-
-        i += 1
-        j +=1
-
-    return M
+def gauss_projection(c):
+    return 0.5 + (np.arcsin(c) - np.arccos(c))/np.pi
 
 
 #%%
@@ -1169,15 +1140,21 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
-        samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
-        C_ = samps.T@samps/num_samp
+        # samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
+        # C_ = samps.T@samps/num_samp
+        C_ = gauss_projection(K)
     else:
         C_ = K
     
     d = 1 - C_
     
-    # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
-    alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+    if sparse:
+        # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+        alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+    else:
+        if not np.mod(N, 2):
+            alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
+        
     C = 1 - alpha*d
     
     orig = np.argmin(np.sum(d, axis=0)) 
@@ -1273,16 +1250,23 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
-        samps = np.sign(np.random.multivariate_normal(np.zeros(P), K, size=num_samp))
-        C_ = samps.T@samps/num_samp
+        # samps = np.sign(np.random.multivariate_normal(np.zeros(P), K, size=num_samp))
+        # C_ = samps.T@samps/num_samp
+        C_ = gauss_projection(K)
     else:
         C_ = K
     
     ## Regularize to minimum-norm correlation matrix
     ## this should be re-visited, doesn't work well for e.g. identity matrix
     d = 1 - C_   
-    # alpha = np.sum(d)/np.sum(d**2)   # alpha which minimizes correlations
-    alpha = (1+np.max(d))/(P/2) # unproven: this is largest alpha which returns sparsest solution
+    
+    if sparse:
+        # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+        alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+    else:
+        if not np.mod(N, 2):
+            alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
+            
     C = 1 - alpha*d
     
     ## Fit features
@@ -1355,6 +1339,35 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
 
 
 #%%
+
+def in_hull(points, x):
+    n_points = len(points)
+    n_dim = len(x)
+    c = np.zeros(n_points)
+    A = np.r_[points.T,np.ones((1,n_points))]
+    b = np.r_[x, np.ones(1)]
+    prog = lp(c, A_eq=A, b_eq=b)
+    return prog.success
+
+def find_edges(V):
+    """
+    Brute force search for edges between vertices V
+    """
+    
+    P = len(V)
+    edges = []
+    
+    for i in range(P):
+        for j in range(i+1, P):
+            
+            rest = ~np.isin(np.arange(P), [i,j])
+            mid = 0.5*(V[i] + V[j])
+            
+            if not in_hull(V[rest], mid):
+                edges.append((i,j))
+    
+    return edges
+    
 
 def center(K):
     return K - K.mean(-2,keepdims=True) - K.mean(-1,keepdims=True) + K.mean((-1,-2),keepdims=True)

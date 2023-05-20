@@ -379,7 +379,8 @@ class LogicalFunctions(IndependentBinary):
 
 class LinearExpansion(object):
 
-    def __init__(self, task, dim_pattern, noise_var=0.1, center=True, random=False):
+    def __init__(self, task, dim_pattern, noise_var=0.1, 
+        centered=True, random=False, sqrt_N_norm=True):
 
         self.latent = task
 
@@ -388,12 +389,14 @@ class LinearExpansion(object):
         self.num_cond = task.num_cond
         self.num_var = task.num_var
 
-        self.center = center
+        self.centered = centered
 
         if not random:
             np.random.seed(0)
         C = np.random.rand(dim_pattern, dim_pattern)
         self.expansion = la.qr(C)[0][:task.num_var,:]
+        if sqrt_N_norm:
+            self.expansion *= np.sqrt(self.dim_output)
 
         self.__name__ = f'Linear_{dim_pattern}D_{noise_var:.2f}snr_' + self.latent.__name__ 
 
@@ -402,7 +405,7 @@ class LinearExpansion(object):
         if noise is None:
             noise = self.noise_var
 
-        if self.center:
+        if not self.centered:
             L = 2*self.latent(labels) - 1
         else:
             L = self.latent(labels)

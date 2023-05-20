@@ -90,21 +90,30 @@ class LogicTask(exp.FeedforwardExperiment):
 
 class RandomOrthogonal(exp.FeedforwardExperiment):
 
-    def __init__(self, num_bits, num_targets, signal, dim_inp, 
-        input_noise=0.1, seed=None, use_mean=False):
+    def __init__(self, num_bits, num_targets, dim_inp, signal=None, alignment=None, 
+        input_noise=0.1, seed=None, scale=1):
 
         self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
 
+        ## Parse parameters
         self.num_cond = 2**num_bits
         self.num_var = num_bits
-        self.signal = signal
-        self.alignment = np.sqrt(num_targets*signal/(self.num_cond - 1))
+        if alignment is not None:
+            self.alignment = alignment
+            self.signal = (self.num_cond - 1)*(alignment**2)/num_targets
+            if signal is not None:
+                warnings.warn('Both signal and alignment provided, using the alignment')
+        elif signal is not None:
+            self.signal = signal
+            self.alignment = np.sqrt(num_targets*signal/(self.num_cond - 1))
+        else:
+            raise ValueError('Must provide either signal or alignment')
         
         if seed is not None:
             np.random.seed(seed)
             self.seed = seed
-        elif use_mean:
-            self.seed = np.inf
+
+        self.scale = scale
 
         ## Generate hadamard matrix
         F = util.F2(num_bits) # F2
@@ -115,21 +124,22 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
         H = np.mod(F@F[1:].T, 2)
         
         ## Choose targets to be equally difficult
-        this_l = np.where(spc.binom(num_bits, np.arange(num_bits+1)) >= num_targets)[0][-1]
-        these_targs = (F[1:].sum(1) == this_l)
+        num_guys = spc.binom(num_bits, np.arange(num_bits+1))
+        if np.max(num_guys) < num_targets:
+            this_l = np.where(np.cumsum(num_guys) >= num_targets)[0][-1]
+        else:
+            this_l = np.where(num_guys >= num_targets)[0][-1]
+        these_targs = (F[1:].sum(1) >= this_l)
         these_targs *= np.cumsum(these_targs) <= num_targets
         
-        ## Draw inputs
-        if use_mean:
-            pi_x = util.average_aligned(1*these_targs, self.alignment, size=1)
-        else:
-            pi_x = util.sample_aligned(1*these_targs, self.alignment, size=1)
-        # print(pi_x)
+        ## Draw inputs 
+        pi_x = util.sample_aligned(1*these_targs, self.alignment, 
+                                    size=1, scale=np.max([scale, 1e-12]))
         pi_x = np.squeeze(np.abs(pi_x))
 
         ## Define tasks
         mns = tasks.Embedding((2*H-1)@np.diag(np.sqrt(pi_x)))
-        inps = tasks.LinearExpansion(mns, dim_inp, noise_var=input_noise, center=False)
+        inps = tasks.LinearExpansion(mns, dim_inp, noise_var=input_noise)
         outs = tasks.BinaryLabels(H[:,these_targs].T)
 
         super(RandomOrthogonal, self).__init__(inps, outs)
@@ -137,7 +147,8 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
     def exp_folder_hierarchy(self):
 
         FOLDERS = (f"/{self.signal}_signal/"
-                   f"/seed_{'None' if self.seed is None else self.seed}/")
+                   f"/seed_{'None' if self.seed is None else self.seed}/"
+                   f"/scale_{self.scale}/")
 
         return FOLDERS
 

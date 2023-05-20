@@ -20,7 +20,7 @@ import tasks
 import students as stud
 import experiments as exp
 import grammars as gram
-import server_utils 
+import server_utils as su
 
 ###############################################################################
 
@@ -43,25 +43,68 @@ send_remotely = True
 # 		   				tasks.HierarchicalLabels([1,2])]
 		   # }
 
+
 # exp_prm = {'experiment': exp.RandomOrthogonal,
-# 		   'num_bits':(2,2,3,3,3,4,4,4,4,5,5,5,5,5),
-# 		   'num_targets': (1,2,1,2,3,1,2,3,4,1,2,3,4,5),
+# 		   'num_bits':(2,3,3,3,4,4,4,4,5,5,5,5,5),
+# 		   'num_targets': (1,1,2,3,1,2,3,4,1,2,3,4,5),
 # 		   'signal':[0, 0.5, 1],
 # 		   'seed': None,
 # 		   'use_mean': True,
 # 		   'dim_inp': 100,
-# 		   'input_noise': 0.1,
+# 		   'input_noise': [0.1, 1],
 # 		   }
 
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits':(2,3,3,3,4,4,4,4,5,5,5,5,5),
+# 		   'num_targets': (1,1,2,3,1,2,3,4,1,2,3,4,5),
+# 		   'signal':[0, 0.5, 1],
+# 		   'seed': list(range(6)),
+# 		   'scale': 0.5,
+# 		   'dim_inp': 100,
+# 		   'input_noise': [0.1, 1],
+# 		   }
+
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits':(2,3,4,5),
+# 		   'num_targets': (3, 7, 15, 31),
+# 		   'signal': [0, 0.25, 0.5, 0.75, 1],
+# 		   'seed': list(range(6)),
+# 		   'scale': 0.5,
+# 		   'dim_inp': 100,
+# 		   'input_noise': [0.1, 1],
+# 		   }
+
+
 exp_prm = {'experiment': exp.RandomOrthogonal,
-		   'num_bits':(2,2,3,3,3,4,4,4,4,5,5,5,5,5),
-		   'num_targets': (1,2,1,2,3,1,2,3,4,1,2,3,4,5),
-		   'signal':[0, 0.5, 1],
-		   'seed': list(np.arange(6)),
-		   'use_mean': False,
+		   'num_bits': 3,
+		   'num_targets': [1,2,3],
+		   'signal':[0, 0.25, 0.5, 0.75, 1],
+		   'seed': list(range(12)),
+		   'scale': 0.5,
 		   'dim_inp': 100,
-		   'input_noise': 0,
+		   'input_noise': 0.1,
 		   }
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits':3,
+# 		   'num_targets': [1,2,3],
+# 		   'signal': [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
+# 		   'seed': 0,
+# 		   'scale': 0,
+# 		   'dim_inp': 100,
+# 		   'input_noise': [0.1, 1],
+# 		   }
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits':(2,2,3,4,5),
+# 		   'num_targets': (2,3,7,15,31),
+# 		   'signal':[0, 0.5, 1],
+# 		   'seed': list(range(6)),
+# 		   'scale': 0.5,
+# 		   'dim_inp': 100,
+# 		   'input_noise': [0.1, 1],
+# 		   }
 
 # net_args = {'model': stud.SimpleMLP,
 # 			'num_init': 20,
@@ -75,18 +118,18 @@ net_args = {'model': stud.ShallowNetwork,
 			'num_init': 10,
 			'width': 128,
 			'p_targ': stud.Bernoulli,
-			'activation':[pt_util.TanAytch(), pt_util.RayLou()],
-			'init_inp_var': (1e-2, 1),
-			'init_out_var': (1e-2, 1)
+			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
 			}
 
 opt_args = {'skip_metrics': True,
 			'nepoch': 1000,
 			'verbose': False,
-			'train_outputs': False
+			'train_outputs': False,
+			'train_out_bias': False,
+			'lr': 1e-1
 			}
 
 
 ### magic
 ##############################
-server_utils.send_to_server(exp_prm, net_args, opt_args, send_remotely)
+su.send_to_server(exp_prm, net_args, opt_args, send_remotely)
