@@ -5,6 +5,7 @@ import re
 
 import torch
 import torchvision
+import torchvision.transforms as transforms
 import torch.optim as optim
 import numpy as np
 import scipy.special as spc
@@ -86,12 +87,41 @@ class LogicTask(exp.FeedforwardExperiment):
 #         outs = tasks.RandomDichotomies(d=out_dics)
 
 #         super(LogicTask, self).__init__(inps, outs)
-        
+    
+
+class Cifar10(exp.NetworkExperiment):
+
+    def __init__(self):
+
+        self.transform = transforms.Compose(
+                            [transforms.ToTensor(),
+                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+        self.dim_inp = 3
+        self.dim_out = 10
+
+        self.test_data_args = {'train': False}
+
+    def init_metrics(self):
+
+        self.metrics = {'train_loss':[]} 
+
+    def draw_data(self, train=True):
+
+        dset = torchvision.datasets.CIFAR10(root='./data', train=train,
+                                        download=True, transform=self.transform)
+
+        cond = torch.tensor(dset.targets)
+
+        inps = torch.tensor(dset.data.transpose(0,3,1,2)).float()
+
+        return cond, (inps, cond)
+
 
 class RandomOrthogonal(exp.FeedforwardExperiment):
 
     def __init__(self, num_bits, num_targets, dim_inp, signal=None, alignment=None, 
-        input_noise=0.1, seed=None, scale=1):
+        input_noise=0.1, seed=None, scale=1, rand_comps=True):
 
         self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
 
@@ -123,15 +153,18 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
         
         H = np.mod(F@F[1:].T, 2)
         
-        ## Choose targets to be equally difficult
-        num_guys = spc.binom(num_bits, np.arange(num_bits+1))
-        if np.max(num_guys) < num_targets:
-            this_l = np.where(np.cumsum(num_guys) >= num_targets)[0][-1]
-        else:
-            this_l = np.where(num_guys >= num_targets)[0][-1]
-        these_targs = (F[1:].sum(1) >= this_l)
-        these_targs *= np.cumsum(these_targs) <= num_targets
-        
+        ## Choose targets
+        # heuristic to make them equally difficult
+        # num_guys = spc.binom(num_bits, np.arange(num_bits+1))
+        # if np.max(num_guys) < num_targets:
+        #     this_l = np.where(np.cumsum(num_guys) >= num_targets)[0][-1]
+        # else:
+        #     this_l = np.where(num_guys >= num_targets)[0][-1]
+        # these_targs = (F[1:].sum(1) >= this_l)
+        # these_targs *= np.cumsum(these_targs) <= num_targets
+        these_targs = np.arange(self.num_cond - 1) < num_targets
+        # print(these_targs)
+
         ## Draw inputs 
         pi_x = util.sample_aligned(1*these_targs, self.alignment, 
                                     size=1, scale=np.max([scale, 1e-12]))

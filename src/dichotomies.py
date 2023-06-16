@@ -113,7 +113,7 @@ def uncorrelated_dichotomies(num_item, pos_items, num_max=None):
     else:
         x = []
         for ix in Dichotomies(len(neg)-1, [], num_max):
-            trn = np.array(pos_conds)[np.append(0,np.array(ix)+1)]
+            trn = np.array(pos_items)[np.append(0,np.array(ix)+1)]
             x.append(np.sort(np.append(trn, np.random.choice(neg, K, replace=False))))
 
     return x
@@ -159,6 +159,90 @@ def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False,
 
     return outs
 
+
+def efficient_ccgp(z, cond, coloring, clf, return_weights=False, 
+        num_pairs=None, max_ctx=None, parallel=True):
+    """
+    A more efficient way of computing CCGP, not sure how equivalent to the actual quantity
+    """
+
+    tol = 1e-6
+
+    N = len(np.unique(cond))
+    pos_conds = np.unique(cond[coloring>0])
+    neg_conds = np.unique(cond[coloring<=0])
+
+    if num_pairs is None:
+        num_pairs = N//2 - 1
+
+    if parallel:
+        ## set the "positives" to be the smaller set
+        # if np.sum(coloring > tol) > N//2:
+        #     y = 1 - coloring
+        # else:
+        # y = coloring
+        y_ = np.array([coloring[cond==c].mean() for c in np.unique(cond)])
+        z_ = np.array([z[:,cond==c].mean(1) for c in np.unique(cond)])
+
+        ids = np.argsort(1-y_)
+        z_ = z_[:, ids]
+        y_ = y_[ids] > tol # convert to binary if it isn't
+
+        pos = np.arange(np.sum(y_), dtype=int)
+        neg = np.arange(np.sum(y_), N, dtype=int)
+
+        ## compute (squared) distances
+        Kz = z_.T@z_
+        norms = Kz[range(N), range(N)]
+        d = norms[:,None] + norms[None,:] - 2*Kz
+
+        ## find approximate optimal pairing
+        aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_])
+
+        pairs = {pos_conds[i]: neg_conds[j] for i,j in zip(aye,jay)}
+
+    ## enumerate over contexts
+
+    if max_ctx is not None and spc.binom(N//2, num_pairs) > max_ctx:
+        idx = np.random.choice(int(spc.binom(N//2, num_pairs)), max_ctx)
+        these = [pos_conds[util.kcomblexorder(N//2, num_pairs, ii)>0] for ii in idx]
+        # print(these)
+    else:
+        these = combinations(pos_conds, num_pairs)
+
+    ccgp = []
+    ws = []
+    for train_pos in these:
+
+        if parallel:
+            ctx = [[pairs[i] for i in train_pos]]
+        else:
+            if spc.binom(N//2, num_pairs) > max_ctx:
+                idx = np.random.choice(int(spc.binom(N//2, num_pairs)), max_ctx)
+                ctx = [neg_conds[util.kcomblexorder(N//2, num_pairs, ii)>0] for ii in idx]
+                # print(these)
+            else:
+                ctx = combinations(neg_conds, num_pairs)
+
+        for train_neg in ctx:
+            train_set = np.concatenate([train_pos, train_neg])
+
+            is_trn = np.isin(cond, train_set)
+
+            clf.fit(z[...,is_trn].T, coloring[is_trn])
+            # print(clf.thrs)
+            perf = clf.score(z[..., ~is_trn].T, coloring[~is_trn])
+            ccgp.append(perf)
+            if return_weights:
+                ws.append(np.append(clf.coef_, clf.intercept_))
+
+    outs = [ccgp]
+    # if debug:
+    #     outs.append(x)
+    if return_weights:
+        outs.append(ws)
+
+    return outs
 
 def parallelism_score(z, cond, coloring, eps=1e-12, debug=False, average=True):
     """ 

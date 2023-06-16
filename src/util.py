@@ -129,6 +129,26 @@ class LexOrderK:
     #     return items
 
 
+def kcomblexorder(n, k, m):
+
+    out = np.zeros(n)
+    while (n>0):
+        if (n>k & k>=0):
+            y = spc.binom(n-1,k)
+        else:
+            y = 0
+        
+        if (m>=y):
+            m = m - y
+            out[n-1] = 1
+            k = k - 1
+        else:
+            out[n-1] = 0
+
+        n = n - 1
+
+    return out
+
 def run_lengths(A, mask_repeats=True):
     """ 
     A is shape (N, ...)
@@ -264,6 +284,20 @@ def decompose_colors(*cols, decomp_func=_cos_sin_col, **kwargs):
     for col in cols:
         all_cols.extend(decomp_func(col, **kwargs))
     return np.stack(all_cols, axis=1)
+
+def flat_torus(*xs):
+    """
+    K-dimensional hypertorus evaluated at xs
+    """
+
+    return np.concatenate([[np.sin(x), np.cos(x)] for x in xs])
+
+def circ_distance(x, y):
+
+    diffs = np.exp(1j*x)/np.exp(1j*y)
+    distances = np.arctan2(diffs.imag,diffs.real)
+
+    return distances
 
 class RFColors():
     def __init__(self, n_units=10, wid=2):
@@ -1136,6 +1170,17 @@ def dirichlet_slice(N, k, size=1):
 ######## Miscelaneous (for now) #########
 #########################################
 
+def pad_to_dense(M):
+    """Appends the minimal required amount of zeroes at the end of each 
+     array in the jagged array `M`, such that `M` looses its jagedness."""
+
+    maxlen = max(r.shape for r in M)
+
+    Z = np.zeros((len(M), *maxlen))*np.nan
+    for enu, row in enumerate(M):
+        Z[tuple([enu]+[slice(i) for i in row.shape])] = row 
+        
+    return Z
 
 def random_basis(dim):
     C = np.random.randn(dim, dim)

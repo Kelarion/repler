@@ -75,16 +75,82 @@ send_remotely = True
 # 		   'input_noise': [0.1, 1],
 # 		   }
 
+# c = su.Real(num=12)
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits': 2,
+# 		   'num_targets': 1,
+# 		   'alignment': 0 << c << np.sqrt(1/3),
+# 		   'seed': (0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
+# 		   'scale': (0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5),
+# 		   'dim_inp': 100,
+# 		   'input_noise': 1,
+# 		   }
+
+# # d = su.Integer(step=1) 
+# d = su.Set([3,5])
+# k = su.Set([1, d])
+# c = su.Real(num=6)
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits': d,
+# 		   'num_targets': k,
+# 		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
+# 		   'seed': list(range(12)),
+# 		   'scale': 0.5,
+# 		   'dim_inp': 100,
+# 		   'input_noise': 1,
+# 		   }
+
+# # # # d = su.Integer(step=1) 
+d = su.Set([2,3,5])
+k = su.Set([1, d])
+c = su.Real(num=12)
 
 exp_prm = {'experiment': exp.RandomOrthogonal,
-		   'num_bits': 3,
-		   'num_targets': [1,2,3],
-		   'signal':[0, 0.25, 0.5, 0.75, 1],
-		   'seed': list(range(12)),
-		   'scale': 0.5,
-		   'dim_inp': 100,
-		   'input_noise': 0.1,
+		   'num_bits': d,
+		   'num_targets': k,
+		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
+		   'seed': 0,
+		   'scale': 0.0,
+		   'dim_inp': 101,
+		   'input_noise': 1,
 		   }
+
+# d = su.Integer(step=1) 
+# d = su.Set([3,5])
+# k = su.Set([2**d - 1])
+# c = su.Real(num=24)
+
+# # exp_prm = {'experiment': exp.RandomOrthogonal,
+# # 		   'num_bits': d,
+# # 		   'num_targets': k,
+# # 		   'alignment': (np.sqrt(d*(2**d - 1))/(2**d - 1)) << c  << 1,
+# # 		   'seed': list(range(12)),
+# # 		   'scale': 0.5,
+# # 		   'dim_inp': 100,
+# # 		   'input_noise': 1,
+# # 		   }
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits': d,
+# 		   'num_targets': k,
+# 		   'alignment': (np.sqrt(d*(2**d - 1))/(2**d - 1)) << c  << 1,
+# 		   'seed': 0,
+# 		   'scale': 0.0,
+# 		   'dim_inp': 100,
+# 		   'input_noise': 1,
+# 		   }
+
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+# 		   'num_bits': 3,
+# 		   'num_targets': [1,2,3],
+# 		   'signal':[0, 0.25, 0.5, 0.75, 1],
+# 		   'seed': list(range(12)),
+# 		   'scale': 0.5,
+# 		   'dim_inp': 100,
+# 		   'input_noise': 0.1,
+# 		   }
 
 # exp_prm = {'experiment': exp.RandomOrthogonal,
 # 		   'num_bits':3,
@@ -118,8 +184,16 @@ net_args = {'model': stud.ShallowNetwork,
 			'num_init': 10,
 			'width': 128,
 			'p_targ': stud.Bernoulli,
+			'inp_bias_shift': [-1, 1],
 			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
 			}
+
+# net_args = {'model': stud.ShallowNetwork,
+# 			'num_init': 10,
+# 			'width': 128,
+# 			'p_targ': stud.Bernoulli,
+# 			'activation': pt_util.RayLou6()
+# 			}
 
 opt_args = {'skip_metrics': True,
 			'nepoch': 1000,

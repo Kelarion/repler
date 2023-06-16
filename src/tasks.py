@@ -372,7 +372,6 @@ class LogicalFunctions(IndependentBinary):
     def xor3(a,b,c): # equiv = 5
         return a^b^c
 
-
 # class HierarchicalLabels(IndependentBinary):
 
 ## Tasks which produce continuous representations of the binary tasks

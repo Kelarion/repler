@@ -276,7 +276,7 @@ class ParamSet:
         if isinstance(self.lb, Parameter) or isinstance(self.ub, Parameter):
             raise TypeError('Not iterable: range depends on other parameters')
 
-        return ParamIter(self)
+        return ParamIter(self).__iter__()
 
     def init_values(self):
         """
@@ -302,9 +302,6 @@ class ParamSet:
 
         self.param.value = values[0]
 
-        # else:
-            
-        #     values = self.param()
 
         if self.param.root_instance:
             return filter(self.valid , values) 
@@ -376,8 +373,6 @@ class ParamSet:
         else:
             raise Exception('Multiplication not defined for %s'%type(other))
 
-        # return ParamIter(self, other)
-
     def __rmod__(self, other):
 
         if isinstance(other, ParamIter):
@@ -389,7 +384,6 @@ class ParamSet:
         else:
             raise Exception('Multiplication not defined for %s'%type(other))
 
-        # return ParamIter(self, other)
 
     def __or__(self, other):
         # print('or')
@@ -425,8 +419,6 @@ class ParamIter:
                 else:
                     raise Exception('Constraining parameters not included!')
 
-        # print(couplings)
-
         ## coupling graph needs to be acyclic
         if util.is_cyclic(self.couplings):
             raise Exception("Parameters have cyclic dependencies, that's bad (`^`)")
@@ -437,7 +429,6 @@ class ParamIter:
         ## Initialize iterators following the partial order
         self.ittrs = [self.sets[i].init_values() for i in self.order] 
         self.current = None
-        self.top_loop = 0
 
         return self 
 
@@ -449,7 +440,7 @@ class ParamIter:
         else:
             max_loop = self.loop_next(-1)
         
-        return (self.current[i] for i in self.inv_ord)
+        return tuple(self.current[i] for i in self.inv_ord)
 
     def loop_next(self, it):
         """
@@ -480,8 +471,6 @@ class ParamIter:
             return ParamIter(*self.sets, *other.sets)
         elif isinstance(other, ParamSet):
             return ParamIter(*self.sets, other)
-        # elif isinstance(other, Parameter):
-        #     return ParamIter(*self.sets, (other << ParamSet(other) << other))
         elif isinstance(other, Parameter):
             return ParamIter(*self.sets, ParamSet(other))
         else:
@@ -495,18 +484,17 @@ class ParamIter:
             return ParamIter(*self.sets, *other.sets)
         elif isinstance(other, ParamSet):
             return ParamIter(*self.sets, other)
-        # elif isinstance(other, Parameter):
-        #     return ParamIter(*self.sets, (other << ParamSet(other) << other))
         elif isinstance(other, Parameter):
             return ParamIter(*self.sets, ParamSet(other))
         else:
             raise Exception('Multiplication not defined for %s'%type(other))
 
+
 ##############################################################################
 ########### Utility functions ################################################
 ##############################################################################
 
-def parse_params(*dicts, forbidden_keys=None):
+def parse_params(dictionary, forbidden_keys=None):
     """
     This takes dict with variable values, and outputs each combination
     """
@@ -521,9 +509,11 @@ def parse_params(*dicts, forbidden_keys=None):
         if k in forbidden_keys:
             continue
         if isinstance(v, Parameter):
+            variable_prms[k] = ParamSet(v)
+        elif isinstance(v, ParamSet):
             variable_prms[k] = v
         elif type(v) is list:
-            variable_prms[k] = Set(v)
+            variable_prms[k] = ParamSet(Set(v))
         elif type(v) is tuple:
             matched_prms[k] = v 
         else:
@@ -534,7 +524,7 @@ def parse_params(*dicts, forbidden_keys=None):
         if len(np.unique([len(v) for v in matched_prms.values()]))>1:
             raise ValueError('Tuple arguments must all be the same length you dingus!')
         tup_keys = tuple(matched_prms.keys())
-        tup_vals = zip(*matched_prms.values())
+        tup_vals = list(zip(*matched_prms.values()))
     else:
         tup_keys = ()
         tup_vals = [()]
@@ -546,20 +536,21 @@ def parse_params(*dicts, forbidden_keys=None):
         var_v = ()
 
     ## Make experiment dictionaries
+
     out_dicts = []
-    for vals in list(itt.product(ParamIter(*var_v), tup_vals)):
-        out_dicts.append( dict(zip(var_k+tup_keys, vals[:-1]+vals[-1]), **fixed_prms) )
+    for var_vals in ParamIter(*var_v):
+        for mch_vals in tup_vals:
+            out_dicts.append( dict(zip(var_k+tup_keys, var_vals+mch_vals), **fixed_prms) )
 
     return out_dicts
-
 
 
 def send_to_server(exp_prm, net_args, opt_args, run_remote=True):
     """ 
     if run_remote=False, will just run the first experiment locally (for debugging)
 
-    any values which are list-type will be combined together independently, any values with are 
-    tuple-type will be matched together 1-1. 
+    any values which are list-type will be combined together independently, any values which 
+    are tuple-type will be matched together 1-1. 
 
     """
 
@@ -627,7 +618,8 @@ def get_all_experiments(exp_prm, net_args, opt_args, bool_friendly=True):
 
     exps = []
 
-    all_vals = []
+    all_keys = list(exp_prm.keys()) + list(net_args.keys()) + list(opt_args.keys())
+    params = {k:[] for k in all_keys if k not in ['experiment', 'model']}
     for this_dset in parse_params(exp_prm, forbidden_keys=['experiment']):
 
         exp_info = {'experiment':exp_prm['experiment'], 'exp_args':this_dset}
@@ -640,15 +632,23 @@ def get_all_experiments(exp_prm, net_args, opt_args, bool_friendly=True):
             for this_opt in parse_params(opt_args):
 
                 exps.append({'exp_prm':exp_info, 'net_args':net_info, 'opt_args':this_opt})
-                all_vals.append(vals[:-1]+vals[-1] + net_vals[:-1]+net_vals[-1] + opt_vals[:-1]+opt_vals[-1])
-    
-    all_vals = np.array(all_vals, dtype=object)
-    params = {}
-    for i, k in enumerate(var_k + tup_keys + var_n_k + tup_net_keys + var_o_k + tup_opt_keys):
-        if bool_friendly:
-            params[k] = np.array([stringify(v) for v in all_vals[:,i]])
-        else:
-            params[k] = np.array([v for v in all_vals[:,i]])
+
+                for k,v in this_dset.items():
+                    params[k].append(v)
+                for k,v in this_net.items():
+                    params[k].append(v)
+                for k,v in this_opt.items():
+                    params[k].append(v)
+
+    for k,v in params.items():
+        # if bool_friendly:
+        #     params[k] = np.array([stringify(vv) for vv in v])
+        # else:
+        arr_v = np.array(v)
+        if arr_v.dtype.name == 'object':
+            arr_v = np.array([stringify(vv) for vv in arr_v])
+        
+        params[k] = arr_v
 
     return exps, params
 
@@ -661,13 +661,14 @@ def stringify(thing):
     whatisit = type(thing)
 
     if 'builtin' not in whatisit.__module__:
+        # return thing.__repr__()
         if '__name__' in dir(thing):
             return thing.__name__
         else:
             return thing.__class__.__name__
     elif callable(thing):
         return thing.__name__
-    elif whatisit in [int, float, str, bool]:
+    else:
         return thing
 
 

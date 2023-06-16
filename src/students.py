@@ -66,6 +66,26 @@ class Feedforward(nn.Module):
         h = self.network(x)
         return h
 
+class ConvLayers(nn.Module):
+
+    def __init__(self, dim_layers, kern, nonlinearity='ReLU'):
+        super().__init__()
+
+        onion = OrderedDict()
+
+        for l in range(len(dim_layers)-1):
+            onion['conv%d'%l] = nn.Conv2d(dim_layers[l], dim_layers[l+1], kern)
+            if nonlinearity is not None:
+                onion['link%d'%l] = getattr(nn, nonlinearity)()
+            onion['pool%d'%l] = nn.MaxPool2d(2, 2)
+
+        self.network = nn.Sequential(onion)
+
+    def forward(self, x):
+        h = self.network(x)
+        return h
+
+
 class AttentionLayer(nn.Module):
     def __init__(self, N_in, n_head=1, N_qk=None, N_v=None, queries=False):
         """ Scaled dot-product attention, optional key, query, and value maps """
@@ -694,6 +714,53 @@ class NeuralNet(nn.Module):
         with open(from_path, 'rb') as f:
             self.load_state_dict(torch.load(f))
         
+
+class ConvNet(NeuralNet):
+    ## TODO: support different loss functions
+
+    def __init__(self, dim_inp, dim_out, conv_width, ff_width, kern, activation, 
+        depth=1, fixed_readout=True):
+
+        super().__init__()
+
+        self.conv = ConvLayers([dim_inp] + [conv_width]*depth, 
+            kern=kern, nonlinearity=activation)
+
+        ff_layers = [conv_width*(kern**2)] + [ff_width]*depth
+        self.ff = Feedforward(ff_layers, nonlinearity=activation)
+
+        self.out = nn.Linear(ff_width, dim_out)
+        if fixed_readout:
+            self.out.weight.requires_grad = False
+            self.out.bias.requires_grad = False
+
+        self.__name__ = f'CNN_{conv_width}_{ff_width}_{kern}_{activation}'
+
+    def forward(self, x):
+
+        return self.out(self.ff(torch.flatten(self.conv(x), 1)))
+
+    def grad_step(self, data, **opt_args):
+
+        if not self.initialized:
+            self.init_optimizer(**opt_args)
+
+        running_loss = 0
+
+        for i, batch in enumerate(data):
+            nums, labels = batch
+            self.optimizer.zero_grad()
+
+            output = self.forward(nums)
+            loss = F.cross_entropy(output, labels)
+            loss.backward()
+            self.optimizer.step()
+
+            running_loss += loss.item()
+
+        return running_loss / (i+1)
+
+
 class VAE(NeuralNet):
     """Basic VAE class"""
     def __init__(self, encoder, decoder, latent, obs):
@@ -875,9 +942,9 @@ class ShallowNetwork(NeuralNet):
     """ Manually-trained network with one hidden layer """
 
     def __init__(self, dim_inp, width, dim_out, activation, p_targ, 
-                    init_inp_var=None, inp_bias_var=None, 
+                    init_inp_var=None, inp_bias_var=None, inp_bias_shift=0,
                     inp_weight_distr=torch.randn, inp_bias_distr=torch.randn,
-                    init_out_var=None, out_bias_var=None, 
+                    init_out_var=None, out_bias_var=None, out_bias_shift=0,
                     out_weight_distr=torch.randn, out_bias_distr=torch.randn):
 
         super(ShallowNetwork, self).__init__()
@@ -899,8 +966,8 @@ class ShallowNetwork(NeuralNet):
 
         # self.b1 = nn.Parameter(torch.FloatTensor(width, 1).uniform_(-inp_bias_var,inp_bias_var))
         # self.b2 = nn.Parameter(torch.FloatTensor(dim_out, 1).uniform_(-out_bias_var,out_bias_var))
-        self.b1 = nn.Parameter(torch.FloatTensor(inp_bias_distr(width, 1))*inp_bias_var)
-        self.b2 = nn.Parameter(torch.FloatTensor(out_bias_distr(dim_out, 1))*out_bias_var)
+        self.b1 = nn.Parameter(torch.FloatTensor(inp_bias_distr(width, 1))*inp_bias_var + inp_bias_shift)
+        self.b2 = nn.Parameter(torch.FloatTensor(out_bias_distr(dim_out, 1))*out_bias_var + out_bias_shift)
 
         self.nx = dim_inp
         self.ny = dim_out
@@ -912,6 +979,8 @@ class ShallowNetwork(NeuralNet):
         self.initialized = False
 
         self.__name__ = f'Shallow_{width}_{activation.__class__.__name__}'
+        if np.abs(inp_bias_shift) > 0:
+            self.__name__ += f'_{inp_bias_shift}'
 
     def forward(self, x):
         """ x is shape (dim_x, ...) """

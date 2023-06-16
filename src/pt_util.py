@@ -138,6 +138,38 @@ class RayLou(nn.ReLU):
         else:
             return (x>0).float()
 
+class RayLou6(nn.ReLU6):
+    def __init__(self, linear_grad=False):
+        super(RayLou6,self).__init__()
+        self.linear_grad = linear_grad
+    def deriv(self, x):
+        if self.linear_grad:
+            return torch.ones(x.shape)
+        else:
+            return ((x<6)&(x>0)).float()
+
+class RayLou1(nn.ReLU6):
+    def __init__(self, ub=1, linear_grad=False):
+        super(RayLou1,self).__init__()
+        self.linear_grad = linear_grad
+        self.ub = ub
+    def deriv(self, x):
+        if self.linear_grad:
+            return torch.ones(x.shape)
+        else:
+            return ((x<1)&(x>0)).float()
+
+class LeakyRayLou(nn.LeakyReLU):
+    def __init__(self, eps=-1e-2, linear_grad=False):
+        super(LeakyRayLou,self).__init__(negative_slope=eps)
+        self.linear_grad = linear_grad
+        self.eps = eps
+    def deriv(self, x):
+        if self.linear_grad:
+            return torch.ones(x.shape)
+        else:
+            return (self.eps*(x<0) + 1*(x>0)).float()
+
 class Poftslus(nn.Softplus):
     def __init__(self, beta=1, linear_grad=False):
         super(Poftslus,self).__init__(beta=beta)

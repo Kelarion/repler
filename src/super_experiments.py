@@ -33,14 +33,22 @@ warnings.simplefilter("ignore", category=ConvergenceWarning)
 class NetworkExperiment():
 
     def __init__(self):
-
+        """
+        Needs to define: test_data_args, dim_inp, dim_out
+        """
         return NotImplementedError
+
 
     def init_metrics(self):
 
-        return NotImplementedError
+        self.metrics = {'train_loss': []}
+
 
     def draw_data(self):
+        """
+        Needs to return a tuple of conditions and data, where
+        the data is itself a tuple of inputs and outputs
+        """
 
         return NotImplementedError
 
@@ -132,6 +140,9 @@ class NetworkExperiment():
 
     def compute_metrics(self):
         """ Here goes anything specific to an experiment """
+        pass
+
+    def compute_representation_metrics(self, skip_rep_metrics=True):
         pass
 
     def save_experiment(self, SAVE_DIR):
@@ -307,52 +318,6 @@ class FeedforwardExperiment(NetworkExperiment):
         Kz_mean = util.dot_product(z_test.detach().T, z_test.detach().T)
         self.metrics['hidden_kernel'][-1].append(Kz_mean)
 
-        # if not skip_metrics:
-        #     dics = dic.Dichotomies(self.inputs.num_cond, 
-        #                             self.outputs.positives+self.inputs.positives)
-        #     dic_shat = dic.Dichotomies(self.inputs.num_cond, 
-        #                             self.outputs.positives+self.inputs.positives)
-
-        #     # distance correlations
-        #     # didx = np.random.choice(n_compute,np.min([n_compute, 2000]),replace=False)
-        #     # Z = z_train[didx,...].T
-        #     # X = self.train_data[0][idx_trn,...][didx,...].T
-        #     # Y = self.train_data[1][idx_trn,...][didx,...].T
-        #     # metrics['dcorr_input'].append(util.distance_correlation(Z, X))
-        #     # metrics['dcorr_output'].append(util.distance_correlation(Z, Y))
-
-        #     # z_mean = np.stack([z_train[self.train_conditions[idx_trn]==i,:].mean(0).detach().numpy() \
-        #     #     for i in np.unique(self.train_conditions[idx_trn])]).T
-        #     # Kern_z = util.dot_product(z_mean-z_mean.mean(1,keepdims=True), z_mean-z_mean.mean(1,keepdims=True))
-        #     # metrics['hidden_kernel'].append(Kern_z)
-
-        #     # shattering dimension #####################################
-        #     dclf = ta.LinearDecoder(N, dic_shat.ntot, svm.LinearSVC)
-
-        #     trn_conds_all = np.array([dic_shat.coloring(self.train_conditions) \
-        #         for _ in dic_shat])
-        #     # print(trn_conds_all)
-        #     dclf.fit(z_train.T, trn_conds_all.T)
-
-        #     tst_conds_all = np.array([dic_shat.coloring(self.test_conditions) \
-        #         for _ in dic_shat])
-        #     SD = dclf.test(z_test.T, tst_conds_all.T)
-
-        #     self.metrics['decoding'][-1].append(SD)  
-            
-        #     # various abstraction metrics #########################
-        #     gclf = svm.LinearSVC()
-
-        #     PS = np.zeros(dics.ntot)
-        #     CCGP = np.zeros(dics.ntot)
-        #     for i, _ in enumerate(dics):
-        #         coloring = dics.coloring(self.test_conditions)
-        #         PS[i] = dic.parallelism_score(z_test, self.test_conditions, coloring)
-        #         CCGP[i] = np.mean(dic.compute_ccgp(z_test.T, self.test_conditions, 
-        #                                            coloring,gclf, twosided=True))
-
-        #     self.metrics['parallelism'][-1].append(PS)
-        #     self.metrics['ccgp'][-1].append(CCGP)
 
     def folder_hierarchy(self):
 

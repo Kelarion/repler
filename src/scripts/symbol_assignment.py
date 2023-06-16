@@ -53,385 +53,6 @@ import dichotomies as dics
 
 #%%
 
-# def concepts(distances, sparse=True):
-    
-#     S, p = edge_symbols(distances, sparse=sparse)
-#     vecs, sets = color_points(S, p)
-#     V, l = np.unique(vecs, axis=0, return_counts=True)
-    
-#     return V, l
-
-# def edge_symbols(distances, sparse=True, weights=None):
-#     """
-#     to each edge drawn between a pair of points, assign a set of symbols which
-#     represent the binary components that change between said points. 
-    
-#     distances (N, N) should be a hamming distance matrix: integral, symmetric,
-#                     zero on the diagonal, obeys the triangle inequality.
-#     """
-    
-#     N = len(distances)
-    
-#     # choose an order in which to add items
-#     # idx = np.arange(N) # i don't think the order should matter ... oops it does
-#     idx = choose_order(distances, sparse)
-#     dist = np.round(distances).astype(int)[idx,:][:,idx] # now we can ignore idx
-    
-#     if dist[0,1] > 0:
-#         S = np.ones((1,dist[0,1])) # this will be size (N*(N-1)/2, S) 
-#     else:
-#         S = np.zeros((1,1))
-#     points = inds(0, 1) # start and end point of edges
-    
-#     # for i in range(2,N):
-#     for i in range(2, 69):
-#         # d_ik = dist[i,:i]
-#         # choose an arrow from new item to any old item
-#         # j = np.argmax(((-1)**sparse)*dist[i,:i])
-#         # j = np.argmin(dist[i,:i])
-#         j = i - 1
-        
-#         adj_ovlp, pts = compute_overlaps(dist[:i,:i], dist[i,:i], target=j)
-        
-#         aye, jay = inds.inv(points) # sorry about the names
-#         adj = (aye==j)|(jay==j) # all co-incident edges
-#         dis = ~adj
-        
-#         adj_idx = np.sort(np.where(adj)[0])
-#         dis_idx = np.where(dis)[0]
-        
-#         sym_ij = symbol_program(S[adj_idx], S[dis_idx], dist[i,j], adj_ovlp[np.argsort(pts)], 
-#                                 w=weights, sparse=sparse)
-        
-#         resid = int(dist[i,j] - np.sum(sym_ij)) # create new symbols to make up the distance
-#         if resid > 0:
-#             sym_ij = np.append(sym_ij, np.ones(resid))
-#             S = np.append(S, np.zeros((len(S), resid)), axis=1)
-        
-#         # assign symbols to the other edges using composition rules (i.e. addition mod 2)
-#         sym_ik = np.mod(sym_ij + S[adj].squeeze(), 2)
-        
-#         # extend arrays and keep account of edge endpoints
-#         S = np.vstack([S, sym_ij[None,:], sym_ik]) # sorry again
-#         inds_ik = inds(np.where(aye[adj]==j, i, aye[adj]), np.where(jay[adj]==j, i, jay[adj]))
-#         points = np.hstack([points, inds(i,j), inds_ik])
-        
-#         S = S[np.argsort(points)]
-#         points = np.sort(points)
-    
-#     # convert indices back to original
-#     p1, p2 = inds.inv(points)
-#     old_points = inds(idx[p1.astype(int)], idx[p2.astype(int)])
-    
-#     return S, old_points
-
-# def compute_overlaps(old_dist, new_dist, target=None):
-#     """
-#     given a new arrow, compute its overlaps with co-incident arrows
-    
-#     dist (num_item, num_item) hamming matrix
-#     new_dist (num_item, ) hamming distance of new object to old ones
-#     target (0 <= int < num_item) which old item is the target (default closest)
-#     sparse (bool) do we minimize overlap between non-composing arrows? (default true)
-#     """
-    
-#     if target is None:
-#         target = np.argmin(new_dist)
-    
-#     N = len(old_dist)
-    
-#     edge = []
-#     ovlp = []
-#     for s,t in combinations(range(N), 2):
-#         if target == s: 
-#             ovlp.append(np.max([0, (new_dist[s] + old_dist[s,t] - new_dist[t])/2]))
-#         elif target == t:
-#             ovlp.append(np.max([0, (new_dist[t] + old_dist[s,t] - new_dist[s])/2]))
-#         else:
-#             continue
-    
-#         edge.append(inds(s,t))
-    
-#     return np.array(ovlp), np.array(edge)
-
-
-# def symbol_program(A_adj, A_dis, targ_length, ovlp, sparse=False,
-#                    w=None, solver='highs', int_tol=1e-6):
-#     """
-#     Find a binary vector x, corresponding to an unknown edge, which fits the 
-#     constraints of the known geometry and previously inferred symbols. Mostly 
-#     a wrapper for a linear program solver.
-    
-#     A_adj $( N-1, S)$ symbols of known edges co-incident with target edge
-#     A_dis $( (N-1)(N/2 - 1), S)$ symbols of edges disjoint with target edge
-#     ovlp $(N-1, )$ overlap of target edge with co-indincident edges
-#     weights $( (N-1)(N/2 - 1), )$ weight on each disjoint edge -- the weighted
-#             sum of overlaps with disjoint edges will be maximized
-    
-#     returns 
-    
-#     """
-    
-#     Adj_unq, ids = np.unique(A_adj, axis=0, return_index=True)
-    
-#     n_adj, n_sym = Adj_unq.shape
-#     n_dis = len(A_dis)
-    
-#     if w is None:
-#         if sparse:
-#             w = np.ones((1,n_dis))
-#         else:
-#             w = -np.ones((1,n_dis))
-    
-#     if n_dis > 0:
-#         c = w@A_dis
-#     else:
-#         c = np.ones((1,n_sym))
-    
-#     prog = lp(c,
-#               A_ub=np.ones((1,n_sym)), b_ub=targ_length, 
-#               A_eq=Adj_unq, b_eq=ovlp[ids],
-#               bounds=[0,1],
-#               method=solver)
-    
-#     if prog.success:
-#         if not np.all(np.abs(np.round(prog.x) - prog.x) <= int_tol):
-#             raise Exception('Solution not integer, goddamnit!')
-#         else:
-#             return np.round(prog.x).astype(int)
-#     else:
-#         raise Exception('Linear program failed!')
-
-
-# def combined_program(A_adj, A_dis, targ_length, ovlp, sparse=False,
-#                      w=None, solver='highs', int_tol=1e-6):
-
-    
-    
-#     A_unq, ix, num_s = np.unique(A_adj, axis=1, return_counts=True, return_inverse=True)
-    
-#     A_int = A_unq*num_s[None,:]
-    
-#     prog = lp(np.ones((1,len(num_s))), 
-#               A_ub=num_s[None,:], b_ub=targ_length, 
-#               A_eq=A_int, b_eq=ovlp,
-#               bounds=[0,1],
-#               method=solver)
-
-    
-
-# def choose_order(distances, sparse):
-    
-#     i0 = np.random.choice(len(distances))
-#     order = [i0]
-#     idx = np.zeros(len(distances))
-#     idx[i0] = 1
-    
-#     while np.sum(idx) < len(distances):
-        
-#         score = (((-1)**sparse)*distances[idx>0,:]).min(0)
-#         best = np.argmax(np.where(idx, -np.inf, score))
-#         idx[best] = 1
-#         order.append(best)
-    
-#     return np.array(order)
-
-    
-# ##### 
-
-# # def compute_overlaps(old_dist, new_dist, target=None, sparse=True):
-# #     """
-# #     given a new arrow, compute its overlaps with all other arrows
-    
-# #     dist (num_item, num_item) hamming matrix
-# #     new_dist (num_item, ) hamming distance of new object to old ones
-# #     target (0 <= int < num_item) which old item is the target (default closest)
-# #     sparse (bool) do we minimize overlap between non-composing arrows? (default true)
-# #     """
-    
-# #     if target is None:
-# #         target = np.argmin(new_dist)
-    
-# #     N = len(old_dist)
-    
-# #     arrow = []
-# #     ovlp = []
-# #     for s,t in combinations(range(N), 2):
-# #         arrow.append(inds(s,t))
-# #         if target == s: 
-# #             ovlp.append((new_dist[s] + old_dist[s,t] - new_dist[t])/2)
-# #         elif target == t:
-# #             ovlp.append((new_dist[t] + old_dist[s,t] - new_dist[s])/2)
-# #         else: 
-# #             # we're computing the minimum overlap between the two arrows
-# #             # which still satisfy the rules of composition 
-            
-# #             # in terms of the known overlaps between arrows: 
-# #             # |(ij)*(kl)| = |(ij)*(il)| + |(ij)*(ik)| - 2 |(ij)*(il)*(ik)|
-# #             # which i'm re-writing in terms of the distances
-            
-# #             ov = new_dist[target] + (new_dist[s] + new_dist[t] - old_dist[s,target] - old_dist[t,target])/2
-# #             if sparse:
-# #                 # upper bound:
-# #                 # |(ij)*(il)*(ik)| =  min{(ij)*(il), (ij)*(ik), (il)*(ik)} 
-# #                 ov -= np.min([new_dist[target] + new_dist[s] - old_dist[s,target], 
-# #                               new_dist[target] + new_dist[t] - old_dist[t,target],
-# #                               new_dist[s] + new_dist[t] - old_dist[s,t]])
-# #             else:
-# #                 # lower bound  
-# #                 # |(ij)*(il)*(ik)| =  
-# #                 ov -= np.max([0,np.max([new_dist[target] + new_dist[s] - old_dist[s,t] - old_dist[target,t],
-# #                                         new_dist[t] + new_dist[s] - old_dist[s,target] - old_dist[target,t],
-# #                                         new_dist[target] + new_dist[t] - old_dist[s,target] - old_dist[s,t]])])
-            
-# #             ovlp.append(ov)
-        
-# #     return np.array(arrow), np.array(ovlp)
-
-# # def compute_overlaps(symb, pts, new_dist, target=None, sparse=True):
-# #     """
-# #     given a new arrow, compute its overlaps with all other arrows
-    
-# #     dist (num_item, num_item) hamming matrix
-# #     new_dist (num_item, ) hamming distance of new object to old ones
-# #     target (0 <= int < num_item) which old item is the target (default closest)
-# #     sparse (bool) do we minimize overlap between non-composing arrows? (default true)
-# #     """
-    
-# #     if target is None:
-# #         target = np.argmin(new_dist)
-    
-# #     old_dist = symb.sum(1)
-    
-# #     N = len(new_dist)
-    
-# #     arrow = []
-# #     ovlp = []
-# #     for s,t in combinations(range(N), 2):
-# #         arrow.append(inds(s,t))
-# #         if target == s: 
-# #             ovlp.append((new_dist[s] + old_dist[inds(s,t)] - new_dist[t])/2)
-# #         elif target == t:
-# #             ovlp.append((new_dist[t] + old_dist[inds(s,t)] - new_dist[s])/2)
-# #         else: 
-# #             # we're computing the minimum overlap between the two edges
-# #             # which still satisfy the rules of composition 
-            
-# #             # first find all (known) incident edges to the unknown edge
-# #             others = np.array([m for m in range(N) if m != target])
-# #             inc = np.isin(pts, inds(target, others))
-# #             known_ovlp = symb[inc]@np.squeeze(symb[pts==inds(s,t)]) # overlap of known edge
-# #             unk_ovlp = (new_dist[target] + symb[inc].sum(1) - new_dist[others])/2
-            
-# #             if sparse: 
-# #                 ov = np.max(known_ovlp + unk_ovlp - old_dist[inc])
-# #             else:
-# #                 ov = np.min([new_dist[target] - unk_ovlp + known_ovlp, 
-# #                              old_dist[inds(s,t)] - known_ovlp + unk_ovlp])
-            
-# #             ovlp.append(ov)
-                 
-# #     return np.array(arrow), np.array(ovlp)
-
-# def edge_symbols2(distances, sparse=True, weights=None):
-#     """
-#     to each edge drawn between a pair of points, assign a set of symbols which
-#     represent the binary components that change between said points. 
-    
-#     distances (N, N) should be a hamming distance matrix: integral, symmetric,
-#                     zero on the diagonal, obeys the triangle inequality.
-#     """
-    
-#     N = len(distances)
-    
-#     # choose an order in which to add items
-#     # idx = np.arange(N) # i don't think the order should matter ... oops it does
-#     idx = choose_order(distances, sparse)
-#     dist = np.round(distances).astype(int)[idx,:][:,idx] # now we can ignore idx
-    
-#     S = np.ones((1,dist[0,1])) # this will be size (N*(N-1)/2, S) 
-#     points = inds(0, 1) # start and end point of edges
-    
-#     for i in range(2,N):
-#     # for i in idx[2:4]:
-#         # d_ik = dist[i,:i]
-#         # choose an arrow from new item to any old item
-#         # j = np.argmax(((-1)**sparse)*dist[i,:i])
-#         j = np.argmin(dist[i,:i])
-#         # j = 0
-        
-#         adj_ovlp, pts = compute_overlaps(dist[:i,:i], dist[i,:i], target=j)
-        
-#         aye, jay = inds.inv(points) # sorry about the names
-#         adj = (aye==j)|(jay==j) # all co-incident edges
-#         dis = ~adj
-        
-#         if np.sum(dis) > 0:
-#             C, d = make_integer_system(S, dist[i,j])
-            
-#             d - C[:,adj]@adj_ovlp[np.argsort(pts)]
-            
-#             prog = lp(-((-1)**sparse)*np.ones(sum(dis)), 
-#                       A_ub=C[:,dis], 
-#                       b_ub=d - C[:,adj]@adj_ovlp[np.argsort(pts)],
-#                       bounds=[0, dist[i,j]],
-#                       method=solver)
-            
-#             dis_ovlp = prog.x
-            
-#             sym_ij, warn = solve_integer_system(np.vstack([S[dis], S[adj]]), 
-#                                             np.concatenate([dis_ovlp, adj_ovlp]))
-            
-#         else:
-#             dis_ovlp = []
-#             sym_ij, warn = solve_integer_system(S, adj_ovlp)
-        
-        
-#         # sym_ij = symbol_program(S[adj_idx], S[dis_idx], dist[i,j], adj_ovlp[np.argsort(pts)], 
-#         #                         weights=weights, sparse=sparse)
-        
-#         resid = int(dist[i,j] - np.sum(sym_ij)) # create new symbols to make up the distance
-#         if resid > 0:
-#             sym_ij = np.append(sym_ij, np.ones(resid))
-#             S = np.append(S, np.zeros((len(S), resid)), axis=1)
-        
-#         # assign symbols to the other edges using composition rules (i.e. addition mod 2)
-#         sym_ik = np.mod(sym_ij + S[adj].squeeze(), 2)
-        
-#         # extend arrays and keep account of edge endpoints
-#         S = np.vstack([S, sym_ij[None,:], sym_ik]) # sorry again
-#         inds_ik = inds(np.where(aye[adj]==j, i, aye[adj]), np.where(jay[adj]==j, i, jay[adj]))
-#         points = np.hstack([points, inds(i,j), inds_ik])
-        
-#         S = S[np.argsort(points)]
-#         points = np.sort(points)
-    
-#     # convert indices back to original
-#     p1, p2 = inds.inv(points)
-#     old_points = inds(idx[p1.astype(int)], idx[p2.astype(int)])
-    
-#     return S, old_points
-
-# # def infer_overlaps(S, adj, ):
-# #     """
-# #     given a new arrow, compute its overlaps with co-incident arrows
-    
-# #     dist (num_item, num_item) hamming matrix
-# #     new_dist (num_item, ) hamming distance of new object to old ones
-# #     target (0 <= int < num_item) which old item is the target (default closest)
-# #     sparse (bool) do we minimize overlap between non-composing arrows? (default true)
-# #     """
-    
-    
-    
-# #     prog = lp(c, 
-# #               A_ub=np.ones((1,n_sym)), b_ub=targ_length, 
-# #               A_eq=Adj_unq, b_eq=adj_ovlp[ids],
-# #               bounds=[0,1],
-# #               method=solver)
-    
-# #     return np.array(ovlp), np.array(edge)
-
 
 # def make_integer_system(A, new_dist):
 #     """
@@ -508,7 +129,6 @@ import dichotomies as dics
 #     else:
 #         return P[:,idx], k.squeeze()
     
-# # def solve_integer_system():
 
 # def solve_integer_system(symb, cap):
 #     """
@@ -546,98 +166,6 @@ import dichotomies as dics
     
 #     return flow, warning
 
-# # def arrow_symbols(distances, sparse=True):
-# #     """
-# #     to each arrow drawn between a pair of points, assign a set of symbols which
-# #     represent the binary components that change between said points. 
-    
-# #     distances (N, N) should be a hamming distance matrix: integer-valued, 
-# #                     symmetric, with zero on the diagonal
-# #     """
-    
-# #     dist = np.round(distances).astype(int)
-# #     N = len(distances)
-    
-# #     # choose an order in which to add items
-# #     idx = np.arange(N) # i don't think the order should matter ... 
-# #     S = np.ones((1,dist[idx[0],idx[1]])) # this will be size (N*(N-1)/2, S) 
-# #     points = inds(idx[0], idx[1]) # start and end point of arrows
-    
-# #     for i in idx[2:]:
-# #     # for i in idx[2:4]:
-# #         d_ik = dist[i,:i]
-# #         # choose an arrow from new item to any old item
-# #         j = np.argmin(d_ik)
-        
-# #         # compute overlaps with all other arrows
-# #         # pts, ovlp = compute_overlaps(dist[:i,:i], d_ik, target=j, sparse=sparse)
-# #         pts, ovlp = compute_overlaps(S, points, d_ik, target=j, sparse=sparse)
-        
-# #         # assign it symbols using as many existing symbols as possible
-# #         sym_ij, warn = assign_symbols(S[np.argsort(points)], ovlp[np.argsort(pts)])
-# #         if warn:
-# #             print('warning!')
-# #             break
-# #         resid = int(dist[i,j] - np.sum(sym_ij)) # create new symbols to make up the distance
-# #         if resid > 0:
-# #             sym_ij = np.append(sym_ij, np.ones(resid))
-# #             S = np.append(S, np.zeros((len(S), resid)), axis=1)
-        
-# #         # assign symbols to the other arrows using composition rules (Z/2)
-# #         aye, jay = inds.inv(points) # sorry about the nomenclature
-# #         these = (aye==j)|(jay==j)
-# #         sym_ik = np.mod(sym_ij + S[these].squeeze(), 2)
-        
-# #         # extend arrays and keep account of arrow endpoints
-# #         S = np.vstack([S, sym_ij[None,:], sym_ik]) # sorry again
-# #         inds_ik = inds(np.where(aye[these]==j, i, aye[these]), np.where(jay[these]==j, i, jay[these]))
-# #         points = np.hstack([points, inds(i,j), inds_ik])
-    
-# #     return S, points
-
-    
-# def color_points(symbols, edges):
-#     """
-#     Given the set of arrow-symbols, color the start and end points accordingly. 
-#     Does this by finding the coloring of the bipartite graph associated with each
-#     symbol's arrows. 
-    
-#     """
-    
-#     # ideally we can merge symbols which always occur together, but i'm feeling
-#     # lazy right now and it seems like something that should be done carefully
-    
-#     # N = len(np.unique(inds.inv(edges)))
-#     pts = np.unique(inds.inv(edges)).astype(int)
-    
-#     # the arrows which share a given symbol cannot form an odd cycle, which 
-#     # means they form a bipartite graph (i.e. a binary coloring)
-#     vecs = []
-#     # sets = []
-#     for i in range(symbols.shape[1]):
-#         e = np.stack(inds.inv(edges[symbols[:,i]>0])).astype(int).T.tolist()
-        
-#         G = nx.Graph()
-#         G.add_edges_from(e)
-#         pos, neg = nx.bipartite.sets(G)
-#         if len(pos)<=len(neg):
-#             # sets.append(pos)
-#             vecs.append(1*np.isin(pts,list(pos)))
-#         else:
-#             # sets.append(neg)
-#             vecs.append(1*np.isin(pts,list(neg)))
-#         # vecs.append(1*np.isin(np.arange(N),list(neg)))
-
-#     return np.array(vecs), pts
-#     # return np.unique(vecs, axis=0), np.unique(sets)
-
-# # def chunk_symbols(symbols):
-# #     """
-# #     given the symbols associated with each point, group mutually-exclusive
-# #     symbols into multi-valued variables, defined potentially only on subsets
-# #     of points.
-# #     """
-    
 
 # #### these functions are for a generic max flow approach, which won't work unfortunately
 # # def make_flow_network(symb, new_item):
@@ -871,181 +399,6 @@ def feasible(S_unq, num_s, included, remaining):
     return [fark(slack, this_b)[0] for this_b in b.T]
     
 
-# def BDF(K, orig=0, thresh=1e-6, sparse=True):
-#     """
-#     Binary distance factorization (working name) of K. 
-    
-#     """
-    
-#     ### center around arbitrary (?) point
-#     K_o = K[orig,orig]- K[[orig],:] - K[:,[orig]] + K
-    
-#     N = len(K)
-#     sgn = ((-1)**sparse)
-    
-#     idx = np.argsort(sgn*np.diag(K_o))
-#     i0 = idx[idx != orig][0]
-    
-#     S_unq = np.array([[0],[1]])
-#     num_s = np.array([K_o[i0,i0]])
-    
-#     included = [orig, i0]
-#     remaining = np.setdiff1d(idx, [orig, i0]).tolist()
-    
-#     while len(remaining) > 0:
-
-#         ### find next item to fit 
-#         diffs = []
-#         mins = []
-        
-#         # found = False
-#         for j,o in enumerate(included):
-#             A = np.mod(S_unq+S_unq[[j]], 2)*num_s[None,:]
-            
-#             this_K = K[o,o]- K[[o],:] - K[:,[o]] + K
-            
-#             bs = this_K[included,:][:,remaining]
-#             maxlen = this_K[remaining, remaining]
-            
-#             o_diffs = []
-#             o_mins = []
-            
-#             for i in range(len(remaining)):
-                
-#                 prog = lp(-1*sgn*num_s,
-#                           A_ub=num_s[None,:], b_ub=maxlen[i],
-#                           A_eq=A, b_eq=bs[:,i],
-#                           bounds=[0,1],
-#                           method='highs')
-        
-#                 prog2 = lp(sgn*num_s,
-#                             A_ub=num_s[None,:], b_ub=maxlen[i],
-#                             A_eq=A, b_eq=bs[:,i],
-#                             bounds=[0,1],
-#                             method='highs')
-#                 # prog = lp(-1*sgn*np.ones(len(c)),
-#                 #           A_ub=np.ones((1,len(c))), b_ub=maxlen[i],
-#                 #           A_eq=S_unq, b_eq=bs[:,i],
-#                 #           bounds=[(0,n) for n in num_s],
-#                 #           method='highs')
-                
-#                 # succ.append(prog.success)
-                
-#                 if prog.success and prog2.success:
-#                     o_diffs.append(np.abs((prog2.x - prog.x)*num_s).sum())
-#                 else:
-#                     o_diffs.append(np.nan)
-                
-        
-#                 if prog.success:
-#                     o_mins.append(prog.x@num_s / maxlen[i])
-#                 else:
-#                     # xs.append( prog.x*num_s )
-#                     o_mins.append(np.nan)
-            
-#             diffs.append(o_diffs)
-#             mins.append(o_mins)
-                
-#         diffs = np.array(diffs)
-#         mins = np.array(mins)
-        
-#         valid = ~(np.isnan(diffs)+np.isnan(mins))
-        
-#         if np.any(valid):
-            
-#             min_diff = diffs == np.nanmin(diffs[valid])
-#             if sparse:
-#                 these_o, these_i = np.where(min_diff&(mins == np.nanmax(mins[min_diff])))
-#             else:
-#                 these_o, these_i = np.where(min_diff&(mins == np.nanmin(mins[min_diff])))
-                
-#             id_best = these_i[0]
-#             orig_best = these_o[0]
-#             o = included[orig_best]
-                
-#             this_i = remaining[id_best]
-            
-#             K_o = K[o,o]- K[[o],:] - K[:,[o]] + K
-            
-#             ### new features
-#             prog = lp(-1*sgn*np.ones(len(num_s)),
-#                       A_ub=np.ones((1,len(num_s))), b_ub=K_o[this_i,this_i],
-#                       A_eq=S_unq, b_eq=K_o[included,this_i],
-#                       bounds=[(0,n) for n in num_s],
-#                       method='highs',
-#                       integrality=1)
-            
-#             x_int = np.round(prog.x).astype(int)
-            
-#             # print(x_int)
-#             # print(S_unq)
-            
-#             S_unq = np.mod(S_unq+S_unq[[orig_best]], 2)
-            
-#             # print(S_unq)
-            
-            
-#             # ### transform back to reference basis
-#             # x_int = np.abs(S_unq[orig_best]*num_s - x_int)
-            
-            
-#         else:
-#             raise Exception('Inconsistency at %d items'%len(included))
-        
-        
-        
-#         # id_best = next_item(-1*sgn*num_s, 
-#         #                     S_unq, num_s, 
-#         #                     K_o[included,:][:,remaining],
-#         #                     K_o[remaining,remaining],
-#         #                     sparse=sparse)
-#         # x_int = next_item(-1*sgn*num_s, 
-#         #                     S_unq, num_s, 
-#         #                     K, included, remaining,
-#         #                     sparse=sparse)
-        
-#         # if id_best is None:
-#         #     raise Exception('Inconsistency at %d items'%len(included))
-            
-#         # this_i = remaining[id_best]
-        
-#         # ### new features
-#         # prog = lp(-1*sgn*np.ones(len(num_s)),
-#         #           A_ub=np.ones((1,len(num_s))), b_ub=K_o[this_i,this_i],
-#         #           A_eq=S_unq, b_eq=K_o[included,this_i],
-#         #           bounds=[(0,n) for n in num_s],
-#         #           method='highs',
-#         #           integrality=1)
-        
-#         # x_int = np.round(prog.x).astype(int)
-        
-#         ### Split clusters to account for fractional membership
-#         new_S_unq, new_num_s = update(S_unq, num_s, x_int, K_o[this_i,this_i])
-        
-#         S_unq = new_S_unq[:, np.argsort(-new_num_s)]
-#         num_s = new_num_s[np.argsort(-new_num_s)]
-        
-#         ### Discard clusters (find a good way to do this)
-#         # S_unq, num_s = cull(S_unq, num_s, thresh=thresh)
-        
-#         included.append(this_i)
-#         remaining.remove(this_i)
-    
-#     ### fill in remaining difference vectors 
-#     S_unq = S_unq[np.argsort(included)]
-#     S_full = np.vstack([S_unq]+[np.mod(S_unq[(i+1):,:]+S_unq[[i],:],2) for i in range(N-1)])
-    
-#     pt_id = np.append(orig, np.sort(included))
-#     ix = inds(np.concatenate([np.ones(N-n-1)*i for n,i in enumerate(pt_id)]), 
-#               np.concatenate([np.sort(included)[n:] for n in range(N)]))
-    
-#     ### convert to 'canonical' form
-#     vecs, pts = color_points(S_full, ix)
-    
-#     return vecs, num_s
-
-
-
 def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     """
     Binary distance factorization (working name) of K. 
@@ -1054,6 +407,7 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     
     N = len(C)
     inds = util.LexOrder()
+    sgn = ((-1)**sparse)
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
@@ -1062,19 +416,16 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     else:
         K = C
     
-    
     d = 1 - K/num_samp
     
-    orig = np.argmin(np.sum(d, axis=0)) 
+    orig = np.argmin(sgn*np.sum(d, axis=0)) 
     
     ### center around arbitrary (?) point
     K_o = K[orig,orig]- K[[orig],:] - K[:,[orig]] + K
     
-    sgn = ((-1)**sparse)
-    
     idx = np.arange(N)
     # i0 = idx[idx != orig][0]
-    first = np.setdiff1d(idx, [orig])[np.argmin(d[orig,:][np.setdiff1d(idx, [orig])])]
+    first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
     
     S_unq = np.array([[0],[1]])
     num_s = np.array([K_o[first,first]])
@@ -1085,7 +436,7 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     while len(remaining) > 0:
 
         ## Most "explainable" item <=> closest item
-        this_i = remaining[np.argmin(np.sum(d[included,:][:,remaining], axis=0))]
+        this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         ### new features
         prog = lp(-1*sgn*np.ones(len(num_s)),
@@ -1129,7 +480,7 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     return vecs, num_s
 
 #%%
-def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6):
+def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     """
     Binary distance factorization (working name) of K. Using the non-integer 
     formulation.
@@ -1137,51 +488,53 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
     
     N = len(K)
     inds = util.LexOrder()
+    sgn = (-1)**(sparse + 1) # + if sparse else -
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
-        # samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
-        # C_ = samps.T@samps/num_samp
-        C_ = gauss_projection(K)
+        if num_samp is None:
+            C_ = gauss_projection(K)
+        else:
+            samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
+            C_ = samps.T@samps/num_samp
     else:
         C_ = K
     
     d = 1 - C_
     
     if sparse:
-        # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
-        alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+        alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+        # alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
     else:
         if not np.mod(N, 2):
             alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
         
     C = 1 - alpha*d
     
-    orig = np.argmin(np.sum(d, axis=0)) 
+    orig = np.argmin(sgn*np.sum(d, axis=0)) 
     
     ### center around arbitrary (?) point
-    K_o = (C[orig,orig]- C[[orig],:] - C[:,[orig]] + C)/4
-    
-    sgn = (-1)**(sparse + 1)
+    K_o = (C[orig,orig] - C[[orig],:] - C[:,[orig]] + C)/4
     
     idx = np.arange(N)
-    first = np.setdiff1d(idx, [orig])[np.argmin(d[orig,:][np.setdiff1d(idx, [orig])])]
+    first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
     
-    B = np.array([[1,1],[0,1]])
-    pi = np.array([1-K_o[first,first], K_o[first,first]])
+    B = np.ones((1,1), dtype=int)
+    pi = np.array([K_o[first,first]])
     
     included = [first]
     remaining = np.setdiff1d(idx, [orig, first]).tolist()
     
-    for n in tqdm(range(2,N)):
+    while len(remaining) > 0:
 
-        ## Most "explainable" item <=> closest item
-        this_i = remaining[np.argmin(np.sum(d[included,:][:,remaining], axis=0))]
+        ## Most "explainable" item <=> closest/furthest item
+        this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         ### new features
-        prog = lp(sgn*pi,
-                  A_eq=B@np.diag(pi), b_eq=K_o[[this_i] + included,this_i],
-                  bounds=[0,1],
+        prog = lp(sgn*np.ones(len(pi)),
+                  A_ub=np.ones((1,len(pi))), b_ub=K_o[this_i,this_i],
+                  A_eq=B, b_eq=K_o[included,this_i],
+                  bounds=[[0,p] for p in pi],
                   method='highs')
         
         if prog.success:
@@ -1190,21 +543,22 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
             raise Exception('Inconsistency at %d items'%len(included))
         
         ## Split clusters as necessary 
-        new_pi = []
-        new_b = []
-        for i,x_i in enumerate(x):
-            
-            if np.abs(x_i**2 - x_i) <= zero_tol:
-                new_b.append(int(np.round(x_i)))
-                new_pi.append(pi[i])
-            
-            else:
-                
-                new_b += [0, 1]
-                new_pi += [pi[i]*(1-x_i), pi[i]*x_i]
+        has = x > zero_tol
+        split = x < pi
         
-        B = np.vstack([np.repeat(B, 1 + (np.abs(x**2 - x) >= zero_tol), axis=1), new_b])
-        pi = np.array(new_pi)
+        new_B = np.block([[B, B[:,has&split]], 
+                          [has, np.zeros(sum(has&split))]])
+        new_pi = np.concatenate([np.where(has, x, pi), pi[has&split] - x[has&split]])
+        
+        resid = K_o[this_i, this_i] - np.sum(x) # create new symbols to make up the distance
+        if resid > 0:
+            new_B = np.hstack([new_B, np.eye(len(new_B))[:,[-1]]])
+            new_pi = np.concatenate([new_pi, [resid]])
+            
+        # new_pi /= np.sum(new_pi)
+        
+        B = new_B
+        pi = new_pi
         
         ### Discard clusters (find a good way to do this)
         # S_unq, num_s = cull(S_unq, num_s, thresh=thresh)
@@ -1213,7 +567,7 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
         remaining.remove(this_i)
     
     ## Fix the matrix
-    B[0] = 0
+    B = np.vstack([np.zeros(len(pi)), B])
     trivial = (B.sum(0) == N) | (B.sum(0) == 0)
     B = B[:,~trivial]
     pi = pi[~trivial]/np.sum(pi[~trivial])
@@ -1241,12 +595,126 @@ def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6)
 
 #%%
 
-def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
+## this version of BDF does not produce the sparsest solutions
+
+# def BDF(K, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000, zero_tol=1e-6):
+#     """
+#     Binary distance factorization (working name) of K. Using the non-integer 
+#     formulation.
+#     """
+    
+#     N = len(K)
+#     inds = util.LexOrder()
+#     sgn = (-1)**(sparse)
+    
+#     ## "Project" into cut polytope, if it isn't already there
+#     if not in_cut:
+#         # samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
+#         # C_ = samps.T@samps/num_samp
+#         C_ = gauss_projection(K)
+#     else:
+#         C_ = K
+    
+#     d = 1 - C_
+    
+#     if sparse:
+#         alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+#         # alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+#     else:
+#         if not np.mod(N, 2):
+#             alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
+        
+#     C = 1 - alpha*d
+    
+#     orig = np.argmin(sgn*np.sum(d, axis=0)) 
+    
+#     ### center around arbitrary (?) point
+#     K_o = (C[orig,orig] - C[[orig],:] - C[:,[orig]] + C)/4
+    
+#     idx = np.arange(N)
+#     first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
+    
+#     B = np.array([[1,1],[0,1]])
+#     pi = np.array([1-K_o[first,first], K_o[first,first]])
+    
+#     included = [first]
+#     remaining = np.setdiff1d(idx, [orig, first]).tolist()
+    
+#     for n in tqdm(range(2,N)):
+
+#         ## Most "explainable" item <=> closest item
+#         this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
+        
+#         ### new features
+#         prog = lp(sgn*pi,
+#                   A_eq=B@np.diag(pi), b_eq=K_o[[this_i] + included,this_i],
+#                   bounds=[0,1],
+#                   method='highs')
+        
+#         if prog.success:
+#             x = prog.x
+#         else:
+#             raise Exception('Inconsistency at %d items'%len(included))
+        
+#         ## Split clusters as necessary 
+#         new_pi = []
+#         new_b = []
+#         for i,x_i in enumerate(x):
+            
+#             if np.abs(x_i**2 - x_i) <= zero_tol:
+#                 new_b.append(int(np.round(x_i)))
+#                 new_pi.append(pi[i])
+            
+#             else:
+                
+#                 new_b += [0, 1]
+#                 new_pi += [pi[i]*(1-x_i), pi[i]*x_i]
+        
+#         B = np.vstack([np.repeat(B, 1 + (np.abs(x**2 - x) >= zero_tol), axis=1), new_b])
+#         pi = np.array(new_pi)
+        
+#         ### Discard clusters (find a good way to do this)
+#         # S_unq, num_s = cull(S_unq, num_s, thresh=thresh)
+        
+#         included.append(this_i)
+#         remaining.remove(this_i)
+    
+#     ## Fix the matrix
+#     B[0] = 0
+#     trivial = (B.sum(0) == N) | (B.sum(0) == 0)
+#     B = B[:,~trivial]
+#     pi = pi[~trivial]/np.sum(pi[~trivial])
+    
+#     feat_idx = np.argsort(-pi)
+    
+#     ### fill in remaining difference vectors 
+#     idx = np.append(orig, included)
+#     idx_order = np.argsort(idx)
+    
+#     B = B[idx_order][:,feat_idx]
+#     pi = pi[feat_idx]
+    
+#     B_full = np.vstack([np.mod(B[(i+1):] + B[i], 2) for i in range(N)])
+    
+#     pt_id = idx[idx_order]
+#     ix = inds(np.concatenate([pt_id[(i+1):] for i in range(N)]), 
+#               np.concatenate([np.ones(N-i-1)*i for i in range(N)]))
+    
+#     ### convert to 'canonical' form
+#     vecs, pts = color_points(B_full, ix)
+    
+#     return vecs.T, pi
+
+
+#%%
+
+def SDF(K, zero_tol=1e-10, sparse=True, in_cut=False, thresh=1e-5, num_samp=5000):
     """
     Sign distance factorization
     """
     
     P = len(K)
+    sgn = (-1)**(sparse + 1)
     
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
@@ -1261,11 +729,11 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     d = 1 - C_   
     
     if sparse:
-        # alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
-        alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
+        alpha = np.sum(d)/np.sum(d**2)   # distance scale which minimizes correlations
+        # alpha = (1+np.max(d))/(N/2) # unproven: this is largest alpha which returns sparsest solution?
     else:
-        if not np.mod(N, 2):
-            alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
+        if not np.mod(P, 2):
+            alpha = (P**2)/(d.sum()) # project onto balanced dichotomies
             
     C = 1 - alpha*d
     
@@ -1278,16 +746,17 @@ def SDF(K, zero_tol=1e-10, in_cut=False, thresh=1e-5, num_samp=5000):
     included = [first]
     remaining = np.setdiff1d(range(P), first).tolist()
     for n in tqdm(range(1,P)):
+    # for n in tqdm(range(1,4)):
         
         ## Most "explainable" item <=> closest item
-        new = remaining[np.argmin(np.sum(d[included,:][:,remaining], axis=0))]
+        new = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         if n > 2:
             
             ## Average gradient of the nth moment
             w = np.mean([S[[these]].prod(0) for these in combinations(range(n), n-np.mod(n+1,1))], axis=0)
 
-            prog = lp(w*pi, A_eq=S@np.diag(pi), b_eq=C[included, new], bounds=[-1,1])
+            prog = lp(sgn*w*pi, A_eq=S@np.diag(pi), b_eq=C[included, new], bounds=[-1,1])
             x = prog.x
             
             ## deal with out-of-bounds solutions
@@ -1493,8 +962,6 @@ def kurtope(N):
     
     
     
-
-
 def sign_comp_iteration(A):
     
     
@@ -1801,132 +1268,6 @@ def kurtosis_inequalities(N):
     data = (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols)))
     return sprs.csr_array(data), b
 
-# all_S = []
-# all_included = []
-# # for orig in range(N):
-# for orig in [0]:
-    
-#     # i0 = np.argmax(np.diag(clean_K))
-    
-#     idx = np.argsort(-np.diag(K_o[orig]))
-#     i0 = idx[0]
-    
-#     # S = np.ones((1,dist[orig,i0]))
-    
-#     # S_frame = [np.ones((1,dist[orig,i])) for i in range(N)]
-#     S_unq = np.ones((1,1))
-#     num_s = np.array([K_o[orig][i0,i0]])
-#     S_int = S_unq*num_s[None,:]
-    
-#     included = [i0]
-#     remaining = np.setdiff1d(idx, [orig, i0]).tolist()
-    
-#     while len(remaining) > 0:
 
-#         diffs = []
-#         mins = []
-#         xs = []
-#         succ = []
-#         # found = False
-#         for i in remaining:
-            
-#             prog = lp(num_s,
-#                       A_ub=num_s[None,:], b_ub=K_o[orig][i,i],
-#                       A_eq=S_int, b_eq=K_o[orig][included,i],
-#                       bounds=[0,1],
-#                       method='highs')
-
-#             # prog = lp(np.ones(len(num_s)),
-#             #           A_ub=np.ones((1,len(num_s))), b_ub=K_o[orig][i,i],
-#             #           A_eq=S_unq, b_eq=K_o[orig][included,i],
-#             #           bounds=[(0,n) for n in num_s],
-#             #           method='highs',
-#             #           integrality=1)
-
-#             prog2 = lp(-num_s,
-#                         A_ub=num_s[None,:], b_ub=K_o[orig][i,i],
-#                         A_eq=S_int, b_eq=K_o[orig][included,i],
-#                         bounds=[0,1],
-#                         method='highs')
-            
-#             succ.append(prog.success)
-            
-#             if prog.success and prog2.success:
-#                 diffs.append(np.abs((prog2.x - prog.x)*num_s).sum())
-#             else:
-#                 diffs.append(np.nan)
-            
-
-#             if prog.success:
-#                 xs.append( prog.x*num_s )
-#                 mins.append(prog.x@num_s / K_o[orig][i,i])
-#             else:
-#                 # xs.append( prog.x*num_s )
-#                 mins.append(np.nan)
-                
-#         diffs = np.array(diffs)
-#         mins = np.array(mins)
-        
-#         valid = ~(np.isnan(diffs)+np.isnan(mins))
-#         if sum(valid) > 0:
-#             print(len(included))
-#         else:
-#             print('done')
-
-#             break
-        
-#         min_diff = diffs == np.nanmin(diffs[valid])
-#         these_i = np.where(min_diff&(mins == np.nanmax(mins[min_diff])))[0]
-#         this_i = remaining[these_i[0]]
-        
-#         prog = lp(np.ones(len(num_s)),
-#                   A_ub=np.ones((1,len(num_s))), b_ub=K_o[orig][this_i,this_i],
-#                   A_eq=S_unq, b_eq=K_o[orig][included,this_i],
-#                   bounds=[(0,n) for n in num_s],
-#                   method='highs',
-#                   integrality=1)
-        
-        
-#         x_int = np.round(prog.x).astype(int)
-        
-#         ### split clusters to account for fractional membership
-#         new_S_unq, new_num_s = update(S_unq, num_s, x_int, K_o[orig][this_i,this_i])
-        
-#         S_unq = new_S_unq[:, np.argsort(-new_num_s)]
-#         num_s = new_num_s[np.argsort(-new_num_s)]
-        
-#         S_unq = S_unq[:,num_s > 5]
-#         num_s = num_s[num_s > 5]
-        
-#         S_int = S_unq*num_s[None,:]
-        
-#         included.append(this_i)
-#         remaining.remove(this_i)
-
-
-# S_unq = S_unq[np.argsort(included)]
-# S_full = np.vstack([S_unq]+[np.mod(S_unq[(i+1):,:]+S_unq[[i],:],2) for i in range(N-1)])
-
-# ix = inds(np.concatenate([np.ones(N-i-1)*i for i in range(N)]), 
-#           np.concatenate([np.arange(i+1,N) for i in range(N)]))
-
-# vecs, pts = color_points(S_full, ix)
-
-
-# S_pred = []
-# pts = []
-# for i, (items, this_S) in enumerate(zip(all_included, all_S)):
-    
-#     aye = np.repeat(range(len(items)), len(items))
-#     jay = np.tile(range(len(items)), len(items))
-    
-#     ix = inds(np.array(items)[aye], np.array(items)[jay])
-#     _, idxs = np.unique(ix, return_index=True)
-#     these = idxs[ix[idxs] > 0]
-    
-#     pts.append( np.concatenate([inds(i,np.array(items)), ix[these]]) )
-#     S_pred.append ( np.vstack([this_S, np.mod(this_S[aye[these]] + this_S[jay[these]], 2)]) )
-    
-    
     
     
