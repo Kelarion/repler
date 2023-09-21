@@ -118,6 +118,7 @@ def uncorrelated_dichotomies(num_item, pos_items, num_max=None):
 
     return x
 
+
 def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False, 
         debug=False, return_weights=False, num_max=None):
     """
@@ -160,39 +161,53 @@ def compute_ccgp(z, cond, coloring, clf, these_vars=None, twosided=False,
     return outs
 
 
-def efficient_ccgp(z, cond, coloring, clf, return_weights=False, 
-        num_pairs=None, max_ctx=None, parallel=True):
+def efficient_ccgp(coloring, clf, z=None, K=None, cond=None, num_pairs=None, max_ctx=None, parallel=True,
+    return_weights=False, return_pairs=False):
     """
     A more efficient way of computing CCGP, not sure how equivalent to the actual quantity
     """
 
     tol = 1e-6
 
-    N = len(np.unique(cond))
+    if cond is not None:
+        N = len(np.unique(cond))
+    else:
+        N = len(coloring)
+        cond = np.arange(N)
     pos_conds = np.unique(cond[coloring>0])
     neg_conds = np.unique(cond[coloring<=0])
 
     if num_pairs is None:
         num_pairs = N//2 - 1
+    # if max_ctx is None:
+    #     max_ctx = 
+
+    if z is not None:
+        dual = False
+    elif K is not None:
+        dual = True
+    else:
+        raise ValueError('Must supply features or kernel')
 
     if parallel:
         ## set the "positives" to be the smaller set
-        # if np.sum(coloring > tol) > N//2:
-        #     y = 1 - coloring
-        # else:
-        # y = coloring
-        y_ = np.array([coloring[cond==c].mean() for c in np.unique(cond)])
-        z_ = np.array([z[:,cond==c].mean(1) for c in np.unique(cond)])
 
+        y_ = np.array([coloring[cond==c].mean() for c in np.unique(cond)])
         ids = np.argsort(1-y_)
-        z_ = z_[:, ids]
         y_ = y_[ids] > tol # convert to binary if it isn't
+
+        if dual:
+            Kz = np.array([[K[cond==c,:][:,cond==c_].mean()  for c in np.unique(cond)] for c_ in np.unique(cond)])
+            Kz = Kz[ids,:][:,ids]
+        else:
+            z_ = np.hstack([z[:,cond==c].mean(1, keepdims=True) for c in np.unique(cond)])
+            z_ = z_[:, ids]
+            Kz = z_.T@z_
 
         pos = np.arange(np.sum(y_), dtype=int)
         neg = np.arange(np.sum(y_), N, dtype=int)
 
         ## compute (squared) distances
-        Kz = z_.T@z_
         norms = Kz[range(N), range(N)]
         d = norms[:,None] + norms[None,:] - 2*Kz
 
@@ -212,6 +227,7 @@ def efficient_ccgp(z, cond, coloring, clf, return_weights=False,
 
     ccgp = []
     ws = []
+    tset = []
     for train_pos in these:
 
         if parallel:
@@ -229,18 +245,27 @@ def efficient_ccgp(z, cond, coloring, clf, return_weights=False,
 
             is_trn = np.isin(cond, train_set)
 
-            clf.fit(z[...,is_trn].T, coloring[is_trn])
-            # print(clf.thrs)
-            perf = clf.score(z[..., ~is_trn].T, coloring[~is_trn])
+            if dual:
+                clf.fit(K[is_trn,:][:,is_trn], coloring[is_trn])
+                # pred = clf.predict(K[~is_trn,:][:,is_trn], coloring[~is_trn])
+                perf = clf.score(K[~is_trn,:][:,is_trn], coloring[~is_trn])
+            else:
+                clf.fit(z[...,is_trn].T, coloring[is_trn])
+                perf = clf.score(z[..., ~is_trn].T, coloring[~is_trn])
+
             ccgp.append(perf)
             if return_weights:
                 ws.append(np.append(clf.coef_, clf.intercept_))
+            if return_pairs:
+                tset.append(train_set)
 
     outs = [ccgp]
     # if debug:
     #     outs.append(x)
     if return_weights:
         outs.append(ws)
+    if return_pairs:
+        outs.append(tset)
 
     return outs
 
@@ -305,7 +330,8 @@ def parallelism_score(z, cond, coloring, eps=1e-12, debug=False, average=True):
         return np.max(ps)
 
 
-def efficient_parallelism(z, coloring, tol=1e-6):
+def efficient_parallelism(coloring, z=None, K=None, 
+        tol=1e-6, norm=True, aux_func='average'):
     """
     z is shape (features, items)
     coloring is shape (items,)
@@ -323,7 +349,6 @@ def efficient_parallelism(z, coloring, tol=1e-6):
         y = coloring
 
     ids = np.argsort(1-y)
-    z_ = z[:, ids]
     y_ = y[ids] > tol # convert to binary if it isn't
     k = N - np.sum(y_)
 
@@ -331,12 +356,31 @@ def efficient_parallelism(z, coloring, tol=1e-6):
     neg = np.arange(np.sum(y_), N, dtype=int)
 
     ## compute (squared) distances
-    Kz = z_.T@z_
+    if K is None:
+        Kz = z[:,ids].T@z[:,ids]
+    else:
+        Kz = K[ids,:][:,ids]
     norms = Kz[range(N), range(N)]
-    d = norms[:,None] + norms[None,:] - 2*Kz
+    d = (norms[:,None] + norms[None,:] - 2*Kz)/2
 
     ## find approximate optimal pairing
-    aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_])
+    if aux_func == 'average':
+        # Rather than maximize the average pairwise alignment, 
+        # maximise the alignment of each pair to the average  
+
+        yy = 2*y_ - 1
+
+        C = np.sum((d[:,:,None] - d[:,None,:])*yy[:,None,None], 0)
+        C /= np.sqrt(np.where(d<1e-5, 1e-5, d))
+        aye, jay = util.unbalanced_assignment(-C[y_,:][:,~y_])
+
+    elif aux_func == 'distsum':
+        aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_])
+
+    # elif aux_func == 'none':
+        # Solve the actual QAP, which takes a long time
+
+
 
     ## account for multiple pairing (imbalance)
     order = np.argsort(aye)
@@ -358,7 +402,10 @@ def efficient_parallelism(z, coloring, tol=1e-6):
     numer = mask*d_copy*np.outer(-(2*y_copy-1),(2*y_copy-1))
     denom = np.sqrt(np.outer(d_copy[~mask],d_copy[~mask]))
 
-    total = np.sum(numer/np.where(denom <= tol, tol, denom))
+    if norm:
+        total = np.sum(numer/np.where(denom <= tol, tol, denom))
+    else:
+        total = np.sum(numer)
 
     return total/(2*k*(k-1))
 

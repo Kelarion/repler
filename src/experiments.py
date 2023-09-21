@@ -67,11 +67,35 @@ class LogicTask(exp.FeedforwardExperiment):
 
         super(LogicTask, self).__init__(inps, outs)
 
-    # def init_metrics(self):
 
-    #     super().init_metrics()
+class OODFF(exp.FeedforwardExperiment):
 
-    #     self.metrics['hidden_kernel'] = []
+    def __init__(self, inputs, outputs, train_split):
+
+        self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
+
+        self.train_split = train_split
+
+        super(OODFF, self).__init__(inputs, outputs)
+
+        self.test_data_args = {'num_dat':1000, 'train': False}
+
+
+    def draw_data(self, num_dat, train=True):
+
+        if train:
+            samps = self.train_split
+        else:
+            samps = np.setdiff1d(np.arange(self.inputs.num_cond), self.train_split)
+
+        condition = np.random.choice(samps, num_dat, replace=True)
+        
+        inps = self.inputs(condition)
+        outs = self.outputs(condition)
+
+        return condition, (inps, outs)
+
+
 
 # class LogicTask(exp.FeedforwardExperiment):
 
@@ -149,9 +173,9 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
         F = util.F2(num_bits) # F2
         lex = np.sort(F, axis=1)*(np.argsort(F, axis=1) + 1) 
         idx = np.lexsort(np.hstack([lex, F.sum(1, keepdims=True)]).T)
-        F = F[idx] # put it in kinda-lexicographic order
+        # F = F[idx] # put it in kinda-lexicographic order
         
-        H = np.mod(F@F[1:].T, 2)
+        H = np.mod(F@F[idx[1:]].T, 2)
         
         ## Choose targets
         # heuristic to make them equally difficult
@@ -184,6 +208,67 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
                    f"/scale_{self.scale}/")
 
         return FOLDERS
+
+
+class RandomKernelClassification(exp.FeedforwardExperiment):
+
+    def __init__(self, num_points, num_targets, dim_inp, signal=None, alignment=None, 
+        input_noise=0.1, seed=None, scale=1):
+
+        self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
+
+        ## Parse parameters
+        self.num_cond = num_points
+        self.num_var = num_points
+        if alignment is not None:
+            self.alignment = alignment
+            self.signal = (self.num_cond - 1)*(alignment**2)/num_targets
+            if signal is not None:
+                warnings.warn('Both signal and alignment provided, using the alignment')
+        elif signal is not None:
+            self.signal = signal
+            self.alignment = np.sqrt(num_targets*signal/(self.num_cond - 1))
+        else:
+            raise ValueError('Must provide either signal or alignment')
+        
+        if seed is not None:
+            np.random.seed(seed)
+            self.seed = seed
+
+        self.scale = scale
+
+        ## Generate hadamard matrix
+        num_bits = int(np.ceil(np.log2(num_points)))
+        F = util.F2(num_bits) # F2
+        lex = np.sort(F, axis=1)*(np.argsort(F, axis=1) + 1) 
+        idx = np.lexsort(np.hstack([lex, F.sum(1, keepdims=True)]).T) 
+        H = np.mod(F@F[idx[1:]].T, 2)
+        
+        ## Choose targets
+        these_targs = np.arange(self.num_cond-1) < num_targets
+        Y = H[:,these_targs]
+
+        ## Draw inputs 
+        Ky = (2*Y-1)@(2*Y-1).T
+        Kx = util.random_psd(Ky, self.alignment,
+                            size=1, scale=np.max([scale, 1e-12]))
+        lx, vx = la.eigh(np.squeeze(Kx))
+
+        ## Define tasks
+        mns = tasks.Embedding(vx@np.diag(np.sqrt(np.abs(lx))))
+        inps = tasks.LinearExpansion(mns, dim_inp, noise_var=input_noise)
+        outs = tasks.BinaryLabels(H[:,these_targs].T)
+
+        super(RandomKernelClassification, self).__init__(inps, outs)
+
+    def exp_folder_hierarchy(self):
+
+        FOLDERS = (f"/{self.signal}_signal/"
+                   f"/seed_{'None' if self.seed is None else self.seed}/"
+                   f"/scale_{self.scale}/")
+
+        return FOLDERS
+
 
 
 class EpsilonSeparableXOR(exp.FeedforwardExperiment):

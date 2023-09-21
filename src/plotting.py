@@ -586,10 +586,23 @@ def scatter3d(X, ax=None, **scat_args):
 
     return ax
 
-def diverging_clim(ax):
-    for im in ax.get_images():
-        cmax = np.max(np.abs(im.get_clim()))
-        im.set_clim(-cmax,cmax)
+def plot3d(X, ax=None, **line_args):
+    """
+    X is shape (N, M, 3), with N lines of length M. If there's only one, X can 
+    just be shape (N, 3)
+    """
+
+    if ax is None:
+        ax = plt.subplot(111, projection='3d')
+    if np.ndim(X) > 2:
+        for i in range(X.shape[-2]):
+            lines = ax.plot(X[...,i,0],X[...,i,1],X[...,i,2], **line_args)
+    else:
+        lines = ax.plot(X[:,0],X[:,1],X[:,2], **line_args)
+
+    set_axes_equal(ax)
+
+    return ax
 
 def pairwise_lines(X, col=(0.5,0.5,0.5), ax=None):
 
@@ -598,6 +611,7 @@ def pairwise_lines(X, col=(0.5,0.5,0.5), ax=None):
     num_dat = X.shape[0]
     for ix in combinations(range(num_dat),2):
         ax.plot(X[ix,0],X[ix,1],X[ix,2],color=col)
+
 
 def color_cycle(cmap, num_col):
     # return getattr(cm,cmap)(np.linspace(0,1,num_col))

@@ -692,13 +692,20 @@ class NeuralNet(nn.Module):
     """Abstract class for all pytorch models, to enforce some regularity"""
     def __init__(self):
         super(NeuralNet,self).__init__()
-    
+
     def forward(self):
         raise NotImplementedError
         
     def grad_step(self):
         """ Needs init_optimizer """
         raise NotImplementedError
+
+    def init_weights(self, scale=None):
+        """ Initialize weights of model, with optional scaling """
+        if scale is None:
+            scale = 1
+        for p in self.parameters():
+            p.data.normal_(0, scale/np.sqrt(p.shape[1]))
 
     def init_optimizer(self, opt_alg=optim.Adam, **opt_alg_args):
         self.optimizer = opt_alg(self.parameters(), **opt_alg_args)
@@ -927,13 +934,16 @@ class MultiGLM(NeuralNet):
 class SimpleMLP(MultiGLM):
 
     def __init__(self, dim_inp, width, dim_out, p_targ, activation='ReLU', 
-                    depth=1, p_latent=None, **ff_args):
+                    depth=1, p_latent=None, init_scale=None, **ff_args):
 
         enc = Feedforward([dim_inp] + [width]*depth, nonlinearity=activation, **ff_args)
 
         dec = nn.Linear(width, dim_out)
 
         super(SimpleMLP, self).__init__(enc, dec, p_targ(dim_out), p_latent)
+
+        if init_scale is not None:
+            self.init_weights(init_scale)
 
         self.__name__ = f'MLP_{depth}_{width}_{activation}'
 
@@ -978,7 +988,7 @@ class ShallowNetwork(NeuralNet):
 
         self.initialized = False
 
-        self.__name__ = f'Shallow_{width}_{activation.__class__.__name__}'
+        self.__name__ = f'Shallow_{width}_{str(activation)}'
         if np.abs(inp_bias_shift) > 0:
             self.__name__ += f'_{inp_bias_shift}'
 

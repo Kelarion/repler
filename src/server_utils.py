@@ -46,6 +46,10 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
         self.checks = [] # logical functions of the parameter
 
     def generate_values(self):
+        """
+        This function needs to be implemented in descendent classes, 
+        it should return an interable
+        """
 
         raise NotImplementedError
 
@@ -69,7 +73,7 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
         Custom behavior for deepcopy, so root refers to original instance
         """
 
-        clss = Parameter
+        clss = self.__class__
         result = clss.__new__(clss)
         memo[id(self)] = result
         for k,v in self.__dict__.items():

@@ -418,7 +418,8 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     
     d = 1 - K/num_samp
     
-    orig = np.argmin(sgn*np.sum(d, axis=0)) 
+    orig = np.argmin(sgn*np.sum(d, axis=0))
+    # orig = np.argmax(sgn*np.sum(d, axis=0))
     
     ### center around arbitrary (?) point
     K_o = K[orig,orig]- K[[orig],:] - K[:,[orig]] + K
@@ -426,6 +427,7 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
     idx = np.arange(N)
     # i0 = idx[idx != orig][0]
     first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
+    # first = np.setdiff1d(idx, [orig])[np.argmax(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
     
     S_unq = np.array([[0],[1]])
     num_s = np.array([K_o[first,first]])
@@ -437,6 +439,7 @@ def intBDF(C, thresh=1e-6, in_cut=False, sparse=True, num_samp=5000):
 
         ## Most "explainable" item <=> closest item
         this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
+        # this_i = remaining[np.argmax(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         ### new features
         prog = lp(-1*sgn*np.ones(len(num_s)),
@@ -508,15 +511,18 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     else:
         if not np.mod(N, 2):
             alpha = (N**2)/(d.sum()) # project onto balanced dichotomies
-        
+    alpha = 1
+    
     C = 1 - alpha*d
     
-    orig = np.argmin(sgn*np.sum(d, axis=0)) 
+    # orig = np.argmax(sgn*np.sum(d, axis=0))
+    orig = np.argmin(sgn*np.sum(d, axis=0))
     
     ### center around arbitrary (?) point
     K_o = (C[orig,orig] - C[[orig],:] - C[:,[orig]] + C)/4
     
     idx = np.arange(N)
+    # first = np.setdiff1d(idx, [orig])[np.argmax(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
     first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
     
     B = np.ones((1,1), dtype=int)
@@ -526,8 +532,10 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     remaining = np.setdiff1d(idx, [orig, first]).tolist()
     
     while len(remaining) > 0:
+    # for n in tqdm(range())
 
         ## Most "explainable" item <=> closest/furthest item
+        # this_i = remaining[np.argmax(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         ### new features
@@ -554,9 +562,7 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
         if resid > 0:
             new_B = np.hstack([new_B, np.eye(len(new_B))[:,[-1]]])
             new_pi = np.concatenate([new_pi, [resid]])
-            
-        # new_pi /= np.sum(new_pi)
-        
+
         B = new_B
         pi = new_pi
         
@@ -741,7 +747,7 @@ def SDF(K, zero_tol=1e-10, sparse=True, in_cut=False, thresh=1e-5, num_samp=5000
     S = np.ones((1,1), dtype=int) # signs
     pi = np.ones(1)    # probabilities
     
-    first = np.argmin(np.sum(d, axis=0)) 
+    first = np.argmax(np.sum(d, axis=0)) 
     
     included = [first]
     remaining = np.setdiff1d(range(P), first).tolist()
@@ -749,7 +755,7 @@ def SDF(K, zero_tol=1e-10, sparse=True, in_cut=False, thresh=1e-5, num_samp=5000
     # for n in tqdm(range(1,4)):
         
         ## Most "explainable" item <=> closest item
-        new = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
+        new = remaining[np.argmax(sgn*np.sum(d[included,:][:,remaining], axis=0))]
         
         if n > 2:
             
@@ -849,10 +855,11 @@ def extract_rank_one(A, rand=False, kern=None):
     """
     
     N = len(A)
-    psi = oriented_tricycles(N)
+    # psi = oriented_tricycles(N)
     
     l, v = la.eigh(center(A))
-    null = v[:,l <= 1e-6]
+    H = center(np.eye(N))
+    # null = v[:,l <= 1e-6]
     
     if rand:
         # g = np.random.randn(N,1)
@@ -861,21 +868,24 @@ def extract_rank_one(A, rand=False, kern=None):
     else:
         g = v[:, l >= l.max()-1e-6]
    
-    active = (np.abs(psi@inv_matrix_map(A) - 1) <= 1e-5) 
+    # active = (np.abs(psi@inv_matrix_map(A) - 1) <= 1e-5) 
    
     X = cvx.Variable((N,N), symmetric='True')
     constraints = [X >> 0]
     constraints += [cvx.diag(X) == 1]
-    constraints += [cvx.trace(null@null.T@X) == 0]
-    constraints += [X[:,[i]] + X[[i],:] - X <= 1 for i in range(N)]
-    constraints += [X[:,[i]] + X[[i],:] + X >= -1 for i in range(N)]
+    # constraints += [cvx.trace(X@H) == 1]
+
+    # constraints += [cvx.trace(null@null.T@X) == 0]
+    # constraints += [X[:,[i]] + X[[i],:] - X <= 1 for i in range(N)]
+    # constraints += [X[:,[i]] + X[[i],:] + X >= -1 for i in range(N)]
     if kern is not None:
         constraints += [cvx.trace(k@X) == 0 for k in kern]
-    if active.sum() > 0:
-        constraints += [cvx.trace(np.triu(matrix_map(p)-np.eye(N))@X) == 1 for p in psi[active]]
+    # if active.sum() > 0:
+    #     constraints += [cvx.trace(np.triu(matrix_map(p)-np.eye(N))@X) == 1 for p in psi[active]]
     #constraints += [cvx.trace(C@X)/2 <= 1 for C in matrix_map(psi)]
     
     prob = cvx.Problem(cvx.Maximize(cvx.trace(g@g.T@X)), constraints)
+    # prob = cvx.Problem(cvx.Maximize(cvx.trace(A@X)), constraints)
     prob.solve()
     
     return X.value

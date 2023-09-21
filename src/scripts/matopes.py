@@ -15,6 +15,8 @@ class NicePolytope:
         self.A = A_eq
         self.b = b_eq
         
+        self.n_con, self.n_dim = self.A.shape
+        
         self.zero_tol = 1e-12
     
     def adj(self, x, c=None):
@@ -27,21 +29,22 @@ class NicePolytope:
         if c is None:
             c = x/la.norm(x)
         
-        B_ids = np.where(x > self.zero_tol)[0].tolist()
-        N_ids = np.where(x <= self.zero_tol)[0].tolist()
+        B_ids = np.where(x > self.zero_tol)[0].tolist() # basic variables
+        N_ids = np.where(x <= self.zero_tol)[0].tolist() # non-basic varaibles
         
-        B = self.A[:,B_ids]
+        B = self.A[:,B_ids] 
         N = self.A[:,N_ids]
         
-        exes = np.repeat(x[:,None], len(N_ids), axis=1)
+        exes = np.repeat(x[:,None], len(N_ids), axis=1) 
         
         ### Edge difference vectors
-        d = -la.pinv(B)@N
+        d = -la.pinv(B)@N 
+        diffs = np.zeros((self.n_dim, self.n_con))
         diffs[B_ids,:] = d
-        diffs += np.eye(len(diffs))[:,N_ids]
+        diffs += np.eye(self.n_dim)[:,N_ids]
         
         ### Get step sizes
-        ratios = x_[B_ids,None]/np.where(-d >= 1e-6, -d, np.nan)
+        ratios = x[B_ids,None]/np.where(-d >= 1e-6, -d, np.nan)
         step = np.nanmin(ratios, axis=0)[None,:]
         
         ### Check feasibility
@@ -77,10 +80,3 @@ class NicePolytope:
         
         # return new_x[perm]
         
-
-    
-# U,s,V = la.svd(S_int)
-# A_p = np.vstack([V[len(s):,:].T, -V[len(s):,:].T])
-# xi = V[:len(s),:].T@np.diag(1/s)@U.T@K[0,included[:-1],included[-1]]
-# b_p = np.concatenate([1-xi, xi])
-

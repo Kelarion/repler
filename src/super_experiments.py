@@ -313,7 +313,6 @@ class FeedforwardExperiment(NetworkExperiment):
         out_align = util.centered_kernel_alignment(Ky, Kz)
         self.metrics['target_alignment'][-1].append(out_align)
 
-        
         _, z_test = self.model(self.inputs(range(self.inputs.num_cond), noise=0))[:2]
         Kz_mean = util.dot_product(z_test.detach().T, z_test.detach().T)
         self.metrics['hidden_kernel'][-1].append(Kz_mean)

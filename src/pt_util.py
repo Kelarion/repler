@@ -132,32 +132,73 @@ class RayLou(nn.ReLU):
     def __init__(self, linear_grad=False):
         super(RayLou,self).__init__()
         self.linear_grad = linear_grad
+
+        self.__name__ = self.__class__.__name__
+
     def deriv(self, x):
         if self.linear_grad:
             return torch.ones(x.shape)
         else:
             return (x>0).float()
+    
+    def __repr__(self):
+        return f"RayLou({'linear' if self.linear_grad else ''})"
 
 class RayLou6(nn.ReLU6):
     def __init__(self, linear_grad=False):
         super(RayLou6,self).__init__()
         self.linear_grad = linear_grad
+
+    def __repr__(self):
+        return f"RayLou6({'linear' if self.linear_grad else ''})"
+
     def deriv(self, x):
         if self.linear_grad:
             return torch.ones(x.shape)
         else:
             return ((x<6)&(x>0)).float()
 
-class RayLou1(nn.ReLU6):
+class RayLouUB(nn.ReLU6):
     def __init__(self, ub=1, linear_grad=False):
-        super(RayLou1,self).__init__()
+        super(RayLouUB,self).__init__()
         self.linear_grad = linear_grad
         self.ub = ub
+
+        # self.__class__.__name__ = f"RayLou{ub:.1f}"
+        self.__name__ = f"RayLou{ub:.1f}"
+
+    def forward(self, x):
+        return nn.ReLU6()(x*6/self.ub)/6*self.ub
+
+    def __repr__(self):
+        return f"RayLouUB({self.ub:.1f})"
+
     def deriv(self, x):
         if self.linear_grad:
             return torch.ones(x.shape)
         else:
-            return ((x<1)&(x>0)).float()
+            return ((x<=self.ub)&(x>0)).float()
+
+class RayLouShift(nn.ReLU):
+    def __init__(self, shift=0, linear_grad=False):
+        super(RayLouShift,self).__init__()
+        self.linear_grad = linear_grad
+        self.shift = shift
+
+        # self.__class__.__name__ = f"RayLou{ub:.1f}"
+        self.__name__ = f"RayLou{shift:.1f}"
+
+    def forward(self, x):
+        return nn.ReLU()(x + self.shift)
+
+    def __repr__(self):
+        return f"RayLouShift({self.shift:.1f})"
+
+    def deriv(self, x):
+        if self.linear_grad:
+            return torch.ones(x.shape)
+        else:
+            return ((x>-self.shift)).float()
 
 class LeakyRayLou(nn.LeakyReLU):
     def __init__(self, eps=-1e-2, linear_grad=False):
@@ -196,6 +237,7 @@ class TanAytch(nn.Tanh):
         super(TanAytch,self).__init__()
         self.linear_grad = linear_grad
         self.rand_grad = rand_grad
+        self.__name__ = self.__class__.__name__
     def deriv(self, x):
         if self.linear_grad:
             if self.rand_grad:
@@ -204,6 +246,9 @@ class TanAytch(nn.Tanh):
                 return torch.ones(x.shape)
         else:
             return 1-nn.Tanh()(x).pow(2)
+
+    def __repr__(self):
+        return f"TanAytch({'linear' if self.linear_grad else ''})"
 
 class NoisyTanAytch(nn.Tanh):
     def __init__(self, noise=1, linear_grad=False, rand_grad=False):

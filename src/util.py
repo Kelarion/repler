@@ -8,6 +8,7 @@ import scipy
 import scipy.linalg as la
 import scipy.special as spc
 import scipy.sparse as sprs
+import scipy.stats as sts
 from scipy.spatial.distance import pdist, squareform
 from scipy.optimize import linear_sum_assignment 
 from scipy.optimize import linprog as lp
@@ -15,15 +16,14 @@ from itertools import permutations, combinations
 import itertools as itt
 import mpmath as mpm
 
-
 ##########################
 #### All by Matteo #######
 ##########################
 
 
-############################
-######### Indexing #########
-############################
+#################################################
+######### Indexing ##############################
+#################################################
 
 class LexOrder:
     """
@@ -264,6 +264,48 @@ def part2expo(pr,N):
     exps = np.linspace(0,5,100)
     parts = np.array([expo2part(p, N) for p in exps])
     return exps[np.argmin(np.abs(parts-pr))]
+
+################################################
+############ CCA ###############################
+################################################
+
+def rotation(theta):
+    """
+    generate the 2d rotation matrix with angle theta
+    """
+    return np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
+
+def random_canonical_bases(d, n, angles):
+    """
+    Generate (d,n) orthonormal matrices A and B, such that
+
+    A.T@B = diag(cos(angles))
+
+    """
+
+    if d <= n:
+        raise ValueError('subspace cannot be same or higher dimension than ambient!')
+    elif d < 2*n:
+        raise ValueError('subspaces too big')
+
+    A = sts.ortho_group.rvs(d)[:,:n]
+    nullity = d - n
+
+    l,v = la.eigh(A@A.T)
+    kernA = v[:,:nullity]
+    C = kernA@sts.ortho_group.rvs(nullity)[:,:n]
+
+    B = []
+    for i in range(n):
+        ac = np.stack([A[:,i],C[:,i]])
+
+        R = np.eye(d)
+        R -= np.outer(A[:,i], A[:,i]) + np.outer(C[:,i], C[:,i])
+        R += ac.T@rotation(angles[i])@ac
+        B.append(R@A[:,i])
+
+    return A, np.stack(B).T
+
 
 #############################
 ####### Color wheel #########
@@ -519,8 +561,18 @@ def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=Non
 #     R[normlzr>0] = np.sqrt(V[normlzr>0]/np.sqrt(normlzr[normlzr>0]))
 #     return R
 
+###################################################################
+############ Kernels ##############################################
+###################################################################
+
 def center_kernel(K):
     return K - K.mean(-2,keepdims=True) - K.mean(-1,keepdims=True) + K.mean((-1,-2),keepdims=True)
+
+def center_elliptope(K):
+    P = len(K)
+
+    d = 1-K
+    return 1 - (P**2)/(d.sum())*d
 
 def centered_kernel_alignment(K1,K2):
 
@@ -565,6 +617,99 @@ def partial_kernel_alignment(k1, k2, k3):
 
     return (r12 - r23*r13)/np.where(denom>0, denom, 1e-12)
     # return np.where(denom>0, (r12 - r23*r13)/denom, 0)
+
+def SDP(A, centering=False, kern=None):
+    """
+    Looking for rank-1 binary components of A, symmetric PSD
+    """
+    
+    N = len(A)
+    # psi = oriented_tricycles(N)
+    
+    l, v = la.eigh(center_kernel(A))
+    H = center_kernel(np.eye(N))
+
+    X = cvx.Variable((N,N), symmetric='True')
+    constraints = [X >> 0]
+    constraints += [cvx.diag(X) == 1]
+
+    if centering:
+        constraints += [cvx.trace(X@H) == 1]
+    if kern is not None:
+        constraints += [cvx.trace(k@X) == 0 for k in kern]
+
+    prob = cvx.Problem(cvx.Maximize(cvx.trace(A@X)), constraints)
+    prob.solve()
+    
+    return X.value
+
+
+def SDP_rank1(A, rand=False, kern=None):
+    """
+    Looking for rank-1 binary components of A, symmetric PSD
+    """
+    
+    N = len(A)
+    # psi = oriented_tricycles(N)
+    
+    l, v = la.eigh(center_kernel(A))
+    H = center_kernel(np.eye(N))
+    # null = v[:,l <= 1e-6]
+    
+    if rand:
+        g = np.random.multivariate_normal(np.zeros(N), A)[:,None]
+    else:
+        g = v[:, l >= l.max()-1e-6]
+   
+
+    X = cvx.Variable((N,N), symmetric='True')
+    constraints = [X >> 0]
+    constraints += [cvx.diag(X) == 1]
+    # constraints += [cvx.trace(X@H) == 1]
+
+
+    if kern is not None:
+        constraints += [cvx.trace(k@X) == 0 for k in kern]
+
+    prob = cvx.Problem(cvx.Maximize(cvx.trace(g@g.T@X)), constraints)
+    # prob = cvx.Problem(cvx.Maximize(cvx.trace(A@X)), constraints)
+    prob.solve()
+    
+    return X.value
+
+
+def mat(x):
+    
+    inds = LexOrder()
+
+    aye, jay = inds.inv(np.arange(x.shape[-1]))
+    
+    N = int(aye.max())+1
+    
+    A = np.zeros((*x.shape[:-1], N, N))
+    
+    A[...,aye,jay] = x
+    A[...,jay,aye] = x
+    
+    return A + np.expand_dims(np.eye(N), tuple(range(np.ndim(x)-1)))
+
+def vec(A):
+
+    inds = LexOrder()
+
+    N = A.shape[-1]
+    trind = inds.inv(np.arange(0.5*N*(N-1), dtype=int))
+    
+    return A[...,trind[0], trind[1]]
+
+def embed(K):
+    """
+    Generate euclidean embedding of kernel K
+    """
+
+    l, v = la.eigh(K)
+
+    return v@np.diag(np.sqrt(l))
 
 #####################################
 ######### Gaussian process ##########
@@ -719,6 +864,49 @@ def flow_conservation_matrix(nodes, edges, capacities):
     return np.array(M)
 
 
+def bipartite_incidence(adj):
+    """
+    Convert bipartite adjacency matrix to an incidence matrix
+    """
+
+    P, N = adj.shape
+
+    inds = LexOrder()
+
+    left = np.arange(P) 
+    right = np.arange(P, P+N)
+    aye, jay = np.where(adj)
+    
+    ne = len(aye)
+    edges = inds(left[aye], right[jay])
+
+    cols = np.repeat(np.arange(len(edges)), 2)
+    rows = np.empty((2*ne,), dtype=int)
+    rows[0::2] = left[aye]
+    rows[1::2] = right[jay]
+
+    return sprs.coo_matrix((np.ones(2*ne), (rows, cols))), edges
+
+
+def quadratic_assignment(cost_tensor, adj=None):
+    """
+    Quadratic assignment problem, 
+
+    min Sum_{i,j,k,l} Q_{ijkl} x_{ij} x_{kl}
+
+    Supply cost tensor Q, shape ()
+
+    """
+
+    inds = LexOrder()
+    
+    if adj is None:
+        adj = np.ones((P, N))
+
+    Inc, edges = bipartite_incidence(adj)
+    ne = len(edges)
+
+
 def unbalanced_assignment(cost, adj=None):
     """
     cost is shape (P, N) with P <= N
@@ -754,22 +942,11 @@ def unbalanced_assignment(cost, adj=None):
         C = cost
 
     ## bipartite incidence matrix
-    left = np.arange(P) 
-    right = np.arange(P, P+N)
     if adj is None:
-        aye, jay = np.where(np.ones((P,N)))
-    else:
-        aye, jay = np.where(adj)
+        adj = np.ones((P,N))
     
-    ne = len(aye)
-    edges = inds(left[aye], right[jay])
-
-    cols = np.repeat(np.arange(len(edges)), 2)
-    rows = np.empty((2*ne,), dtype=int)
-    rows[0::2] = left[aye]
-    rows[1::2] = right[jay]
-
-    Inc = sprs.coo_matrix((np.ones(2*ne), (rows, cols)))
+    Inc, edges = bipartite_incidence(adj)
+    ne = len(edges)
 
     ## modify for slack variables
     I = sprs.coo_matrix( (-np.ones(P), (np.arange(P), np.arange(P)) ), shape=(P+N,P))
@@ -965,6 +1142,64 @@ def gf2elim(B):
 
     return M
 
+def addsum(Z, *ids):
+    """
+    Augment the columns of Z with the (F2-) sum of columns ids
+    """
+
+    if np.all(np.abs(Z**2 - Z) <= 1e-6): # 0/1
+        xors = np.stack([np.mod(Z[:,idx].sum(-1),2) for idx in ids]).T
+    elif np.all(np.abs(Z**2 - 1) <= 1e-6): # +/- 1
+        xors =  np.stack([Z[:,idx].prod(-1) for idx in ids]).T
+    else:
+        raise ValueError('Z must be binary')
+
+    if np.ndim(xors) < np.ndim(Z):
+        xors = xors[...,None]
+
+    return np.concatenate([Z, xors], axis=-1)
+
+
+def LSBF(Z, *ids):
+    """
+    Linearly separable boolean functions
+    Augment the columns of Z with the (R^N-) sum of columns ids
+    """
+
+    if np.all(np.abs(Z**2 - 1) <= 1e-6):
+        sums =  np.stack([np.sign(2*Z[:,idx].sum(-1) - Z.sum(-1)) for idx in ids]).T
+    elif np.all(np.abs(Z**2 - Z) <= 1e-6):
+        Z_ = 2*Z - 1
+        sums =  np.stack([(2*Z_[:,idx].sum(-1) >= Z_.sum(-1)) for idx in ids]).T
+
+    # if np.ndim(sums) < np.ndim(Z):
+    #     sums = sums[...,None]
+
+    return sums
+
+
+def independent_sets(N, this_set):
+    """
+    `N`: (int) must be a multiple of 4
+    `this_set`: (list) list of N/2 integers, all < N
+
+    Generate all subsets of [N] which are 'independent' of `this_set`.
+    By 'independent', I mean that if an item in [N] belongs to `this_set`, it
+    has equal probabliity of belonging to `that_set`.
+    """
+
+    K = N//4
+    n_tot = 0.5*spc.binom(N//2, K)**2
+
+    neg = np.setdiff1d(range(N),this_set)
+
+    x = np.concatenate([[np.sort(np.concatenate([p,n])) for n in combinations(neg,K)] \
+        for p in combinations(this_set,K)])
+    those_sets = x[:len(x)//2]
+
+    return those_sets
+
+
 def get_depths(clus):
     """
     Not super sure what this does, I think it takes a binary matrix
@@ -1014,7 +1249,18 @@ def dot2dist(K):
     """
     Dot product to squared distances
     """
-    return (np.abs(np.diag(K)[:,None] + np.diag(K)[None,:] - 2*K))
+
+    n = K.shape[-1]
+    norms = K[..., np.arange(n), np.arange(n)]
+
+    return (np.abs(norms[...,None] + norms[...,None,:] - 2*K))
+
+
+####################################################
+######## Vector manipulation #######################
+####################################################
+
+# def complement():
 
 #########################################
 ######## Uuuummmmmmmmmmmmmmmmmm #########
@@ -1036,7 +1282,7 @@ class Quadric:
         """
         Evaluate the value of surface equation
         """
-        return self.qform(x) + self.p@x + self.r
+        return self.qform(x) + self.lform(x) + self.r
     
     def qform(self, x, y=None):
         """
@@ -1045,7 +1291,15 @@ class Quadric:
         
         if y is None:
             y = x
-        return ((self.Q@x)*y).sum(0)
+
+        Qx = np.einsum('ij,...j->...i', self.Q, x)
+        yQx = (Qx*y).sum(-1, keepdims=True)
+
+        return yQx
+
+    def lform(self, x):
+
+        return np.sum(self.p*x, -1, keepdims=True)
 
     def project(self, x, s):
         """
@@ -1056,21 +1310,72 @@ class Quadric:
         """
         
         a = self.qform(s - x)
-        b = self.p@(s-x) + 2*self.qform(x, s-x)
-        c = self.qform(x) + self.p@x + self.r
+        b = self.lform(s-x) + 2*self.qform(x, s-x)
+        c = self.qform(x) + self.lform(x) + self.r
         
         disc = b**2 - 4*a*c # impossible that this is negative
         disc = disc*(disc>0)
         
-        p1 = x + ((-b + np.sqrt(disc))/(2*a))*(s - x)
-        p2 = x + ((-b - np.sqrt(disc))/(2*a))*(s - x)
-        
-        d1 = np.sum((x - p1)**2, 0)
-        d2 = np.sum((x - p2)**2, 0)
-        
-        return np.where(d1<=d2, p1, p2)
+        # assuming x and s are on opposite sides of the surface
+        alph1 = np.round((-b + np.sqrt(disc))/(2*a), 6)
+        alph2 = np.round((-b - np.sqrt(disc))/(2*a), 6)
 
-def sample_aligned(y, c, size=1, scale=1, sym=True):
+        is_conv1 = ((alph1 >= -1e-6)*(1-alph1 >= -1e-6))
+        is_conv2 = ((alph2 >= -1e-6)*(1-alph2 >= -1e-6))
+
+        if not np.all( is_conv1 | is_conv2): 
+            # at least one should be a convex weight
+            raise Exception('what?')
+
+        alph = np.where(is_conv1, alph1, alph2)
+
+        p = x + alph*(s - x)
+        
+        return p
+
+
+def elliptope_sample(dimension, size=1):
+    """
+    Onion method from Ghosh and Henderson (2003) 
+    https://dl.acm.org/doi/pdf/10.1145/937332.937336
+
+    adapted from a blog post I found
+    """
+
+    d = dimension + 1
+
+    prev_corr = np.ones((size, 1, 1))
+    for k in range(2, d):
+        # sample y = r^2 from a beta distribution
+        # with alpha_1 = (k-1)/2 and alpha_2 = (d-k)/2
+        y = np.random.beta((k - 1) / 2, (d - k) / 2, size=size)
+        r = np.sqrt(y)
+
+        # sample a unit vector theta uniformly
+        # from the unit ball surface B^(k-1)
+        v = np.random.randn(size, k-1)
+        theta = v / nla.norm(v, axis=-1, keepdims=True)
+
+        # set w = r theta
+        w = r[...,None]*theta
+
+        # set q = prev_corr**(1/2) w
+        l, V = nla.eigh(prev_corr)
+        V_ = (V*np.sqrt(l[:,None]))@np.swapaxes(V, -1,-2)
+        q = (V_@w[...,None])[...,0]
+
+        next_corr = np.zeros((size,k, k))
+        next_corr[..., :(k-1), :(k-1)] = prev_corr
+        next_corr[..., k-1, k-1] = 1
+        next_corr[..., k-1, :(k-1)] = q
+        next_corr[..., :(k-1), k-1] = q
+
+        prev_corr = next_corr
+        
+    return next_corr
+
+
+def sample_aligned(y, c, size=1, scale=1, sym=True, zero=None):
     """
     Sample a random point x in the simplex, satisfying
     
@@ -1081,6 +1386,8 @@ def sample_aligned(y, c, size=1, scale=1, sym=True):
 
     y = y > 0  # reference point
     N = len(y)
+    if zero is not None:
+        N -= np.sum(zero)
     p = np.sum(y)
 
     k = int(np.log2(N+1))
@@ -1104,7 +1411,7 @@ def sample_aligned(y, c, size=1, scale=1, sym=True):
     u = np.random.dirichlet(alph_src, size=size)
     # if sym:
     #     u[first_bits] = u[first_bits].mean(-1)
-    x = (u@V).T
+    x = (u@V)
     
     ## sample perspective points from largest facet which is entirely >= c
     if p < N:
@@ -1127,10 +1434,97 @@ def sample_aligned(y, c, size=1, scale=1, sym=True):
         y_ = y_.T
 
     ## select perspective points
-    orig = np.where(S(x)<=0, V.T@y_, V.T@y[:,None]/np.sum(y))
-    
-    return V@S.project(x, orig) + 1/N
+    orig = np.where(S(x)<=0,  y_.T@V, y.T@V/np.sum(y))
 
+
+    return V@S.project(x, orig).T + 1/N
+
+def random_centered_kernel(d, size=1, scale=1):
+
+    vx = la.eigh(np.eye(d) - 1/d)[1][:,1:]@sts.ortho_group.rvs(d-1, size)
+    lx = d*np.random.dirichlet(np.ones(d-1)/scale, size)
+    X = (vx*lx[:,None,:])@np.swapaxes(vx, -1, -2)
+
+    return X
+
+def random_psd(Y, c=None, size=1, scale=1, sym=True, zero=None):
+    """
+    Sample a random positive semidefinite matrix X, satisfying
+    
+    <X,Y>/|X||Y| = c
+    
+    with Y also positive semidefinite 
+    """
+
+    Y = center_kernel(Y)
+    n = len(Y) # N = n**2
+    Y = (Y/np.trace(Y))*n
+
+    aye, jay = np.where(np.ones((n,n)))
+    inds = LexOrder()
+
+    y = Y[aye, jay]
+    N = len(y) 
+
+    ## sample source points
+    vx = la.eigh(np.eye(n) - 1/n)[1][:,1:]@sts.ortho_group.rvs(n-1, size)
+    lx = n*np.random.dirichlet(np.ones(n-1)/scale, size)
+    X = (vx*lx[:,None,:])@np.swapaxes(vx, -1, -2)
+    x = X[..., aye, jay]
+
+
+    ## define surface
+    # H = np.eye(N) - centering_tensor(n)/n  # row-center X
+    # A = (y@y)*(c**2)*H@H - np.outer(y,y)
+    A = np.outer(y,y) - (c**2)*(y@y)*np.eye(N)
+    
+    S = Quadric(A, np.zeros(N), 0) # it's a quadratic form on the flattened kernel
+
+    ## sample perspective points Z s.t. <Z, Y> = 0
+    ly, vy = la.eigh(Y + 1)
+    kerY = vy[:,ly <= 1e-3] # kernel of Y
+    # kerY = kerY[:, kerY.sum(0)**2 <= 1e-6]
+    nullY = kerY.shape[1] # nullity of Y, assume that it's > 0
+
+    if nullY > 0: # always includes the ones vector
+        # sample Z orthogonal to Y
+        lz = n*np.random.dirichlet(np.ones(nullY)/scale, size=size) 
+        vz = kerY@sts.ortho_group.rvs(nullY, size)
+        Z = (vz*lz[:,None,:])@np.swapaxes(vz, -1, -2)
+        z = Z[..., aye, jay]
+
+    # # this part is a little complicated ... the above kernels are not in the elliptope,
+    # # so in order to project them in while preserving the inner product, we need to 
+    # # explore the space of kernels which produce the same distances
+    # d = dot2dist(z) # convert to distances
+    # # this is the maximum alpha s.t. 1 - alpha*d is positive semi-definite
+    # alph_max = np.array([la.eigvals(np.ones((n,n)), d[i]).max() for i in range(size)])
+    # alph_mean = np.sum(d, axis=(-1,-2))/np.sum(d**2, axis=(-1,-2)) # maximum-dimensional
+
+    # alph = np.random.beta(1, 1, size)*alph_max
+    # Z = 1 - alph*d
+
+    ## select perspective points
+    orig = np.where(S(x)>=0, z, y)
+    
+    ## project and reshape
+    x_proj = S.project(x, orig)
+
+    X_proj = np.empty(X.shape)
+    X_proj[..., aye, jay] = x_proj
+
+    return X_proj
+
+def centering_tensor(N):
+
+    aye, jay = np.where(np.ones((N,N)))
+    aye = np.repeat(aye, N)
+    jay = np.repeat(jay, N)
+
+    kay = jay
+    ell = np.tile(np.arange(N), N**2)
+
+    return sprs.coo_matrix((np.ones(N**3), (aye + N*jay, kay + N*ell)))
 
 def average_aligned(y, c, size=1):
     """
@@ -1194,13 +1588,51 @@ def decimal(binary, base=2):
     d = (binary*(base**np.arange(binary.shape[1]))[None,:]).sum(1)
     return d
 
-def group_mean(X, mask, axis=-1, **mean_args):
+def group_sum(X, groups, axis=-1, **mean_args):
+    """
+    Take the group-wise sum of X along axis
+
+    X is array
+    groups is a 1-d array
+    
+    returns array of shape (X.shape[:axis:], len(unique(groups)) )
+    """
+
+    idx = np.argsort(groups)
+    grps, counts = np.unique(groups, return_counts=True)
+    averager = np.repeat(np.eye(len(grps)), counts, axis=1)
+
+    X_swapped = X.swapaxes(axis, 0)
+    X_sorted = X_swapped[idx]
+
+    X_avg = averager@X_sorted
+
+    return X_avg.swapaxes(axis, 0)
+
+def group_mean(X, groups, axis=-1, **mean_args):
+    """
+    Take the group-wise mean of X along axis
+
+    X is array
+    groups is a 1-d array
+    
+    returns array of shape (X.shape[:axis:], len(unique(groups)) )
+    """
+
+    grps, counts = np.unique(groups, return_counts=True)
+
+    X_summed = group_sum(X, groups, axis, **mean_args)
+    X_avg = X_summes/counts[:,None]
+
+    return X_avg
+
+def mask_mean(X, mask, axis=-1, **mean_args):
     """Take the mean of X along axis, but exluding particular elements"""
     exclude = np.ones(mask.shape)
     exclude[~mask] = np.nan
     return np.nanmean(X*exclude, axis=axis, **mean_args)
 
-def group_std(X, mask, axis=-1, **mean_args):
+def mask_std(X, mask, axis=-1, **mean_args):
     """Take the mean of X along axis, but exluding particular elements"""
     exclude = np.ones(mask.shape)
     exclude[~mask] = np.nan

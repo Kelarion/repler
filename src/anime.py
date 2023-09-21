@@ -255,8 +255,8 @@ class LineAnime3D(object):
         fig=None, ax=None,
         **kwargs):
         ''' 
-        x and y are shape (num_lines, num_data, num_time) 
-        '''
+        x, y and z are shape (num_lines, num_data, num_time) 
+        ''' 
 
         self.x = x
         self.y = y
@@ -427,7 +427,7 @@ class ScatterAnime3D(object):
         self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
             init_func=self.setup_plot, blit=blit, frames=self.tot_frames)
 
-    def save(self,save_dir, fps=30):
+    def save(self, save_dir, fps=30):
         self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
 
     def setup_plot(self):
