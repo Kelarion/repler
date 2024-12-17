@@ -1,6 +1,8 @@
 
 import os, sys
 import pickle
+from dataclasses import dataclass
+# from tqdm import tqdm
 
 import numpy as np
 import numpy.linalg as nla
@@ -14,12 +16,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.optimize import linprog as lp
 from itertools import permutations, combinations
 import itertools as itt
-import mpmath as mpm
-
-##########################
-#### All by Matteo #######
-##########################
-
+import networkx as nx
 
 #################################################
 ######### Indexing ##############################
@@ -210,7 +207,7 @@ def pca(X,**kwargs):
     U,S,_ = nla.svd((X-X.mean(-1, keepdims=True)), full_matrices=False, **kwargs)
     return U, S**2
 
-def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
+def pca_reduce(X=None, thrs=None, num_comp=None, **kwargs):
     """
     takes in (n_feat, n_sample) returns (n_sample, n_comp)
     """
@@ -222,16 +219,34 @@ def pca_reduce(X, thrs=None, num_comp=None, **kwargs):
         these_comps = np.arange(len(S)) < num_comp
     return X.T@U[:,these_comps]
 
-def participation_ratio_old(X):
-    """ (..., n_feat, n_sample) """
-    _, evs = pca(X)
-    return (np.sum(evs, -1)**2)/np.sum(evs**2, -1)
+def pca_kernel(K, thrs=None, num_comp=None):
 
-def participation_ratio(X):
+    l,v = la.eigh(center_kernel(K))
+    l = np.flip(l)
+    v = np.fliplr(v)
+    
+    if thrs is not None:
+        these_comps = np.cumsum(l)/np.sum(l) <=  thrs
+    elif num_comp is not None:
+        these_comps = np.arange(len(l)) < num_comp
+
+    return v[:,these_comps]@np.diag(l[these_comps])@v[:,these_comps].T
+
+# def participation_ratio_old(X):
+#     """ (..., n_feat, n_sample) """
+#     _, evs = pca(X)
+#     return (np.sum(evs, -1)**2)/np.sum(evs**2, -1)
+
+def participation_ratio(X=None, K=None):
     """ (..., n_feat, n_sample) """
     ## computes in a more numerically stable way
-    C = center_kernel(X@X.T)
-    return (np.trace(C)**2)/np.trace(C@C)
+    if X is not None:
+        C = center_kernel(X@X.swapaxes(-1,-2))
+    elif K is not None:
+        C = center_kernel(K)
+    else:
+        raise ValueError('Requires either features (X) or kernel (K)')
+    return (np.trace(C, axis1=-2, axis2=-1)**2)/np.sum(C**2, axis=(-1,-2))
 
 def sample_normalize(data, sigma, eps=1e-10):
     """ 
@@ -275,7 +290,7 @@ def rotation(theta):
     """
     return np.array([[np.cos(theta), -np.sin(theta)],[np.sin(theta), np.cos(theta)]])
 
-def random_canonical_bases(d, n, angles):
+def random_canonical_bases(d, n, angles, m=None):
     """
     Generate (d,n) orthonormal matrices A and B, such that
 
@@ -310,6 +325,58 @@ def random_canonical_bases(d, n, angles):
 #############################
 ####### Color wheel #########
 #############################
+
+# def wavelength_to_rgb(wavelength, gamma=0.8):
+
+#     '''This converts a given wavelength of light to an 
+#     approximate RGB color value. The wavelength must be given
+#     in nanometers in the range from 380 nm through 750 nm
+#     (789 THz through 400 THz).
+#     Based on code by Dan Bruton
+#     http://www.physics.sfasu.edu/astro/color/spectra.html
+#     '''
+
+#     wavelength = float(wavelength)
+
+#     bins = [380,440, 490,510,580,645,750]
+#     dbin = np.diff(bins)
+
+
+
+#     if wavelength >= 380 and wavelength <= 440:
+#         attenuation = 0.3 + 0.7 * (wavelength - 380) / (440 - 380)
+#         R = ((-(wavelength - 440) / (440 - 380)) * attenuation) ** gamma
+#         G = 0.0
+#         B = (1.0 * attenuation) ** gamma
+#     elif wavelength >= 440 and wavelength <= 490:
+#         R = 0.0
+#         G = ((wavelength - 440) / (490 - 440)) ** gamma
+#         B = 1.0
+#     elif wavelength >= 490 and wavelength <= 510:
+#         R = 0.0
+#         G = 1.0
+#         B = (-(wavelength - 510) / (510 - 490)) ** gamma
+#     elif wavelength >= 510 and wavelength <= 580:
+#         R = ((wavelength - 510) / (580 - 510)) ** gamma
+#         G = 1.0
+#         B = 0.0
+#     elif wavelength >= 580 and wavelength <= 645:
+#         R = 1.0
+#         G = (-(wavelength - 645) / (645 - 580)) ** gamma
+#         B = 0.0
+#     elif wavelength >= 645 and wavelength <= 750:
+#         attenuation = 0.3 + 0.7 * (750 - wavelength) / (750 - 645)
+#         R = (1.0 * attenuation) ** gamma
+#         G = 0.0
+#         B = 0.0
+#     else:
+#         R = 0.0
+#         G = 0.0
+#         B = 0.0
+#     R *= 255
+#     G *= 255
+#     B *= 255
+#     return (int(R), int(G), int(B))
 
 def _cos_sin_col(col):
     return np.cos(col), np.sin(col)
@@ -565,6 +632,12 @@ def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=Non
 ############ Kernels ##############################################
 ###################################################################
 
+def center(K, n=None):
+    K_1 = K[...,:n].mean(-1,keepdims=True)
+    K_2 = K[...,:n,:].mean(-2,keepdims=True)
+    K_ = K[...,:n,:n].mean((-1,-2),keepdims=True)
+    return K - K_1 - K_2 + K_
+
 def center_kernel(K):
     return K - K.mean(-2,keepdims=True) - K.mean(-1,keepdims=True) + K.mean((-1,-2),keepdims=True)
 
@@ -574,6 +647,36 @@ def center_elliptope(K):
     d = 1-K
     return 1 - (P**2)/(d.sum())*d
 
+def bures(X, Y):
+    """
+    X is shape (n,dx)
+    Y is shape (n,dy)
+    """
+
+    X_ = X - X.mean(0)
+    Y_ = Y - Y.mean(0)
+    U,s,V = la.svd(X_.T@Y_, full_matrices=False)
+
+    return np.trace(X_.T@X_) + np.trace(Y_.T@Y_) - 2*np.sum(s)
+
+# def affnbs(X, Y):
+#     """
+#     Affine NBS
+#     """
+
+#     X_ = X 
+#     U,s,V = la.svd(X_.T@Y_, full_matrices=False)
+
+#     return np.sum(s)/np.sqrt(np.trace(X_.T@X_)*np.trace(Y_.T@Y_))
+
+def nbs(X, Y):
+
+    X_ = X - X.mean(0)
+    Y_ = Y - Y.mean(0)
+    U,s,V = la.svd(X_.T@Y_, full_matrices=False)
+
+    return np.sum(s)/np.sqrt(np.trace(X_.T@X_)*np.trace(Y_.T@Y_))
+
 def centered_kernel_alignment(K1,K2):
 
     K1_ = K1 - np.nanmean(K1,-2,keepdims=True) - np.nanmean(K1,-1,keepdims=True) + np.nanmean(K1,(-1,-2),keepdims=True)
@@ -581,6 +684,9 @@ def centered_kernel_alignment(K1,K2):
     denom = np.sqrt(np.nansum((K1_**2),(-1,-2))*np.nansum((K2_**2),(-1,-2)))
 
     return np.nansum((K1_*K2_),(-1,-2))/np.where(denom, denom, 1e-12)
+
+def centered_distance(K1, K2):
+    return np.sum((center(K1) - center(K2))**2)
 
 def kernel_alignment(k, l):
     """
@@ -678,7 +784,7 @@ def SDP_rank1(A, rand=False, kern=None):
     return X.value
 
 
-def mat(x):
+def mat(x, incl_diag=False):
     
     inds = LexOrder()
 
@@ -693,7 +799,7 @@ def mat(x):
     
     return A + np.expand_dims(np.eye(N), tuple(range(np.ndim(x)-1)))
 
-def vec(A):
+def vec(A, incl_diag=False):
 
     inds = LexOrder()
 
@@ -702,14 +808,97 @@ def vec(A):
     
     return A[...,trind[0], trind[1]]
 
+def outers(V):
+    """
+    Compute outer products of columns of V
+    """
+    return np.einsum('...ik,...jk->...kij', V, V)
+
+
+def spouters(i, j, v=None, incl_diag=True, shape=None):
+    """
+    Outer product of columns of a sparse (i,j,v) matrix ... 
+    since scipy.sparse doesn't support einsum
+
+    values v are optional, default assumes they are all 1
+
+    the row indices of the output are in the lexicographic order, 
+    unless incl_diag is true
+    """
+
+    if shape is None:
+        shape = (np.max(i)+1, np.max(j)+1)
+
+    idx = np.argsort(j) # I think this is redundant?
+    j = j[idx]
+    i = i[idx]
+
+    inds = LexOrder()
+
+    junq, c = np.unique(j, return_counts=True)
+    c2 = spc.binom(c,2).astype(int)
+
+    ## numpy shenanigans
+    pairs = np.arange(np.sum(c2))
+    pairs -= np.repeat(np.cumsum(c2)-c2, c2)
+    aye, jay = inds.inv(pairs) # indices of item pairs
+
+    shift = np.repeat(np.cumsum(c)-c, c2)
+    aye += shift 
+    jay += shift
+
+    j_kron = np.repeat(junq, c2) # features 
+    i_kron = inds(i[aye], i[jay]) # pairs of items
+
+    if incl_diag:
+        ## append diagonal
+        j_kron = np.append(j_kron, j)
+        i_kron = np.append(i_kron, i + int(spc.binom(shape[0], 2)) )
+
+    if v is not None:
+        v_kron = v[aye]*v[jay]
+    else:
+        v_kron = np.ones(len(i_kron))
+
+    return i_kron.astype(int), j_kron.astype(int), v_kron
+
+
+def spunique(sp_matrix, axis=1):
+    ''' Returns a sparse matrix with the unique rows (axis=0)
+    or columns (axis=1) of an input sparse matrix sp_matrix'''
+    if axis == 1:
+        sp_matrix = sp_matrix.T
+
+    old_format = sp_matrix.format
+    dt = np.dtype(sp_matrix)
+    ncols = sp_matrix.shape[1]
+
+    if old_format != 'lil':
+        sp_matrix = sp_matrix.tolil()
+
+    _, ind = np.unique(sp_matrix.data + sp_matrix.rows, return_index=True)
+    rows = sp_matrix.rows[ind]
+    data = sp_matrix.data[ind]
+    nrows_uniq = data.shape[0]
+
+    sp_matrix = sprs.lil_array((nrows_uniq, ncols), dtype=dt)  #  or sp_matrix.resize(nrows_uniq, ncols)
+    sp_matrix.data = data
+    sp_matrix.rows = rows
+
+    ret = sp_matrix.asformat(old_format)
+    if axis == 1:
+        ret = ret.T        
+    return ret
+
 def embed(K):
     """
     Generate euclidean embedding of kernel K
     """
 
-    l, v = la.eigh(K)
+    l, v = la.eigh(center(K))
+    these = (l>1e-6)
 
-    return v@np.diag(np.sqrt(l))
+    return v[:,these]@np.diag(np.sqrt(l[these]))
 
 #####################################
 ######### Gaussian process ##########
@@ -907,7 +1096,7 @@ def quadratic_assignment(cost_tensor, adj=None):
     ne = len(edges)
 
 
-def unbalanced_assignment(cost, adj=None):
+def unbalanced_assignment(cost, adj=None, one_sided=False):
     """
     cost is shape (P, N) with P <= N
     adj is the same shape and binary (default all ones)
@@ -929,14 +1118,14 @@ def unbalanced_assignment(cost, adj=None):
     ## left set is at most smaller than right set
     P, N = cost.shape
 
+    if ((P == N) or one_sided) and (adj is None): 
+        # scipy is certainly faster than me
+        return linear_sum_assignment(cost)
+
     if N < P: 
         transpose = True
         C = cost.T
         P, N = C.shape
-
-    elif P == N: # scipy is certainly faster than me
-        return linear_sum_assignment(cost)
-
     else:
         transpose = False
         C = cost
@@ -947,6 +1136,7 @@ def unbalanced_assignment(cost, adj=None):
     
     Inc, edges = bipartite_incidence(adj)
     ne = len(edges)
+    aye, jay = np.where(adj)
 
     ## modify for slack variables
     I = sprs.coo_matrix( (-np.ones(P), (np.arange(P), np.arange(P)) ), shape=(P+N,P))
@@ -1028,28 +1218,6 @@ def recursive_topological_sort(graph):
 ############# Binary variables ###############
 ##############################################
 
-# def mutual_information(binary):
-#     """
-#     Input: binary matrix (num_item, num_cluster)
-#     Output: mutual information (num_cluster, num_cluster)
-#     """
-    
-#     a = np.stack([binary.T, 1-binary.T])
-    
-#     # p(a)
-#     p_a = a.sum(-1)/binary.shape[0]
-#     Ha = np.sum(-p_a*np.log2(p_a, where=p_a>0), 0)
-    
-#     # p(a | b=1)
-#     p_ab = a@binary / binary.sum(0)
-#     Hab = np.sum(-p_ab*np.log2(p_ab, where=p_ab>0), 0) # entropy
-    
-#     # p(a | b=0)
-#     p_ab_ = a@(1-binary) / (1-binary).sum(0)
-#     Hab_ = np.sum(-p_ab_*np.log2(p_ab_, where=p_ab_>0), 0) # entropy
-    
-#     return Ha[:,None] - binary.mean(0)[None,:]*Hab - (1-binary).mean(0)[None,:]*Hab_
-
 def mutual_information(nary):
     """
     Input: n-ary matrix (num_item, num_var), with n unique values
@@ -1097,12 +1265,239 @@ def conjunctive_MI(these_vars, those_vars):
 
     return mutual_information(np.stack([c1,c2]).T)
 
-def F2(n):
+def F2(n, sym=False):
     """
     All elements of F2(n), i.e. all n-bit binary vectors
+    if sym is True, removes the 1-x symmetry (i.e. returns 2^(n-1) vectors)
     """
-    return np.mod(np.arange(2**int(n))[:,None]//(2**np.arange(int(n))[None,:]),2)
 
+    N = n-sym
+    F = np.mod(np.arange(2**int(N))[:,None]//(2**np.arange(int(N))[None,:]),2)
+    if sym:
+        F = np.hstack([np.zeros((2**N,1)), F])
+
+    return F
+
+def signdot(A, B=None):
+    """
+    For 0/1 binary matrices A and B, implicitly compute the sign dot product
+    Only useful when A and B are sparse and you want to avoid making them dense
+    """
+    if B is None:
+        B = A
+
+    return 4*A.T@B - 2*A.T.sum(1)[:,None] - 2*B.sum(0)[None,:] + B.shape[0]
+
+def dot2sign(K):
+    K_ = K.sum(0,keepdims=True)
+    return 4*K - 2*K_ - 2*K_.T 
+
+def hamming(A, B=None):
+    """
+    For 0/1 binary matrices A and B, compute the Hamming distance between rows
+    """
+    if B is None:
+        B = A
+
+    return A.sum(0)[:,None] + B.sum(0)[None,:] - 2*A.T@B
+
+def rangediff(N, vals):
+    """
+    range(N) except vals
+    """
+    return list(set(range(N)) - set(vals))
+
+def imf(A, b=None, s0=None, max_iter=20, tol=1e-3):
+    """
+    Iterated Max Flow (Konar and Sidiropoulos 2019) to solve
+
+    min s'As - b's
+    s.t. s in {0,1}^N
+    
+    starting from initial condition s0 (default random)
+    """
+
+    n = len(A)
+
+    if b is None:
+        b = np.zeros(n)
+    if s0 is None:
+        s0 = np.random.choice([0,1], n)
+
+    if np.triu(A,1).max() <= -1e-12: # see if we're lucky
+        return mincut(A, b)
+
+    Am = A*(A<0)  # negative component
+    Ap = -A*(A>0)  # positive component
+
+    it = 0
+    loss = [qform(A, s0) + b@s0]
+    while (it < max_iter):
+        sig = np.random.permutation(np.where(s0)[0])
+        sig = np.concatenate([sig, np.random.permutation(np.where(1-s0)[0])])
+
+        Aps = Ap[sig,:][:,sig]
+
+        v = np.diag(Aps) + 2*np.sum(Aps*np.triu(np.ones((n,n)),1), 0)
+        v = v[np.argsort(sig)]
+
+        s0 = mincut(Am, b-v)
+
+        it += 1
+        loss.append(qform(A, s0) + b@s0)
+
+    return s0, loss
+
+def mincut(A, b):
+    """
+    Minimize x'Ax + b'x for x in {0,1}^N using max-flow/min-cut
+    The off-diagonal elements of A must be non-positive
+    """
+
+    n = len(A)
+
+    bs = (b*(b>0))[:,None]
+    bt = -(b*(b<0))[:,None] - 2*A.sum(1, keepdims=True)
+    o = np.zeros((n,1))
+    W = np.block([[0, bs.T, 0], [o, -2*A, bt], [0, o.T, 0]])
+
+    G = nx.from_numpy_array(W, edge_attr='capacity')
+    _, s = nx.minimum_cut(G, 0, n+1)
+
+    sout = np.zeros(n+2)
+    sout[list(s[0])] = 1
+
+    return sout[1:-1]
+
+def hopcut(A, b, m=1000, max_iter=100, beta=1, alpha=0.88, period=10, sync=False):
+    """
+    Maximize x'Ax - b'x for x in {-1,1}^N using a hopfield network
+    """
+
+    N = len(A)
+    s = np.random.choice([-1,1], size=(N, m))
+    en = []
+    for t in range(max_iter):
+        en.append(((-A@s + 2*b)*s).sum(0)) 
+        temp = beta/(alpha**(t//period))
+        if sync:
+            s = 2*np.random.binomial(1, spc.expit(temp*(A@s - b)))-1
+        else:
+            for i in range(N):
+                c = spc.expit(temp*(A[i]@s - b[i]))
+                s[i] = 2*np.random.binomial(1, c)-1
+
+    ## make unique
+    s = np.unique(s*s[[0]], axis=1)
+    # idx = np.argsort(-qform(A, s.T).squeeze())
+
+    return s, np.array(en)
+
+class BAE:
+
+    def __init__(self, X, eps=1e-5, rmax=None, whiten=True, learn=False):
+        """
+        X has shape (num_data, dim_data)
+        """
+
+        U,s,V = la.svd(X-X.mean(0,keepdims=True), full_matrices=False)
+
+        these = s>eps
+        if rmax is not None:
+            these[rmax:] = False
+
+        self.P = U[:,these] # for random sampling
+        self.Q = 1*self.P   # for energy function
+        if not whiten:
+            self.P = self.P@np.diag(s[these])
+
+        # self.Q = U[:,(~these)]
+
+        self.updateQ = learn
+
+        self.N = len(X)
+        self.r = sum(these)
+
+    def step(self, S, t=1, beta=1):
+        "Apply Hopfield update for t steps"
+
+        for i in range(t):
+            if self.updateQ:
+                c = self.P@(self.P.T@S) + S.mean(0, keepdims=True)
+            else:
+                c = self.Q@(self.Q.T@S) + S.mean(0, keepdims=True)
+            S = 2*np.random.binomial(1, spc.expit(beta*c)) - 1
+
+        return S
+
+    def sample(self, m):
+        "Random normal vector in Im(A)"
+        return self.P@np.random.randn(self.r, m)
+
+    def learn(self, s, eta=0.1):
+        "Avoid sampling w in the future"
+        self.P -= (eta/(s.shape[1]+1e-6))*s@s.T@self.P/self.N
+
+    def energy(self, s):
+        return 1 - (((self.Q.T@s)**2).sum(0) + (s.sum(0)**2)/self.N)/self.N
+
+    def fit(self, samps, max_iter=100, tol=1e-3, lr=0.0, S0=None,
+        alpha=0.88, beta=1, period=10, verbose=False):
+
+
+        if S0 is None:
+            M = self.sample(samps)
+            S = np.sign(M)
+        else:
+            S = 1*S0
+            samps = S0.shape[1]
+
+        t = np.zeros(samps)
+
+        if verbose:
+            pbar = tqdm(range(max_iter))
+
+        basins = np.empty((self.N, 0))
+        energy = np.empty((0, samps))
+        emin = np.inf
+        it = 0
+        while (it<max_iter):
+
+            ens = self.energy(S)
+            energy = np.vstack([energy, ens])
+
+            temp = alpha**(t//period)
+            news = self.step(S, beta=beta/temp)
+
+            stopped = (np.sum(S*news, axis=0) == self.N) 
+            good = energy[it] - emin < tol
+            bad = (np.abs(np.sum(S, axis=0)) == self.N)
+
+            basins = np.hstack([basins, S[:,good&stopped&(~bad)]])
+
+            neww = self.sample(np.sum(stopped))
+            news[:,stopped] = np.sign(neww)
+            energy[it,stopped] = np.nan
+
+            self.learn(S[:,stopped], eta=lr)
+            S = news
+            t[stopped] = 0
+            t[~stopped] += 1
+
+            basins = np.unique(basins*basins[[0]], axis=1)
+
+            if np.sum(~bad)>0:
+                emin = np.min([emin, np.min(ens[~bad])])
+
+            if verbose:
+                pbar.update(1)
+
+            it += 1
+
+        # ben = self.energy(basins)
+        # basins = basins[:, ben-ben.min() < tol]
+
+        return basins, energy, emin
 
 def gf2elim(B):
     """
@@ -1222,6 +1617,21 @@ def get_depths(clus):
 
     return depth
 
+def find_clique(A, first=0):
+    """
+    Find a single maximal clique in A
+    """
+
+    N = len(A)
+
+    clq = [first]
+
+    for i in range(N):
+        if (i not in clq) and np.all(A[clq,i]):
+            clq.append(i)
+
+    return clq
+
 
 #####################################
 ####### Metrics/similarities ########
@@ -1237,6 +1647,14 @@ def cosine_sim(x,y):
 def dot_product(x,y):
     """Assume features are in first axis"""
     return np.einsum('k...i,k...j->...ij', x, y)
+
+def batch_dot(x,y, transpose=False):
+    """Shape is (..., feats, items)"""
+    if transpose:
+        ids = '...ik,...jk->...ij'
+    else:
+        ids = '...ki,...kj->...ij'
+    return np.einsum(ids, x, y)
 
 def discrete_metric(x,y):
     return np.abs(x - y).sum(0)
@@ -1255,6 +1673,96 @@ def dot2dist(K):
 
     return (np.abs(norms[...,None] + norms[...,None,:] - 2*K))
 
+def yuke(X, Y=None):
+    """
+    squared Euclidean distance between X and Y
+
+    X is shape (n,d)
+    Y is shape (m,d)
+
+    returns shape (n,m)
+    """
+
+    if Y is None:
+        Y = X
+
+    Xnrm = (X**2).sum(-1,keepdims=True)
+    Ynrm = (Y**2).sum(-1,keepdims=True).swapaxes(-1,-2)
+    XYdot = np.einsum('...ik,...jk->...ij',X,Y)
+
+    return Xnrm + Ynrm - 2*XYdot
+
+def elliptify(K):
+    """
+    Linearly convert K into a correlation matrix
+    """
+
+    n = len(K)
+    d = dot2dist(K)
+
+    # maximum scale
+    alpha_max = np.max(la.eigvalsh(np.ones((n,n)), d))
+
+    C = 1 - alpha_max*K
+
+    return C
+
+def correlify(K):
+    """
+    Nonlinearly convert K into a correlation matrix, by dividing 
+    the diagonal
+    """
+
+    N = K.shape[-1]
+    diagK = K[...,np.arange(N),np.arange(N)]
+    nrm = np.sqrt(np.einsum('...i,...j->...ij',diagK, diagK))
+
+    C = K/nrm
+
+    return C
+
+
+def ker(K, thrsh=1e-6, return_psd=True):
+    """
+    Return the kernel (in the algebra sense) of matrix K
+    """
+
+    l, v = la.eigh(K)
+    if return_psd:
+        return v[:, l<=thrsh]@v[:, l<=thrsh].T
+    else:
+        return v[:, l<=thrsh]
+
+
+def chapultapec(n, d, steps=200, lr=1e-2):
+    """
+    Place n points on the d-sphere, as far apart from each other as
+    possible, like the lovers in Chapultapec park
+    """
+
+    def expmap(x, v, t):
+        """
+        Exponential map on the sphere; at point x, with velocity v, at time t
+        """
+        vnrm = la.norm(v, axis=0)
+        return np.cos(t*vnrm)*x + np.sin(t*vnrm)*v/vnrm
+
+    x = np.random.randn(d,n)/np.sqrt(d)
+    x = x/la.norm(x,axis=0,keepdims=True)
+
+    for it in range(steps):
+        
+        ## get gradient (i.e. nearest neighbor)
+        idx = np.argmax(x.T@x - 2*np.eye(n), axis=1)
+        dX = -x[:,idx]
+        
+        ## Project onto tangent plane 
+        projX = dX - (dX*x).sum(0)*x
+        
+        ## Exponential map
+        x = expmap(x,projX,lr)
+
+    return x.T
 
 ####################################################
 ######## Vector manipulation #######################
@@ -1265,6 +1773,65 @@ def dot2dist(K):
 #########################################
 ######## Uuuummmmmmmmmmmmmmmmmm #########
 #########################################
+
+class NicePolytope:
+    """
+    Polytope defined by underdetermined linear equalities., i.e.
+    
+    {x | Ax = b, x >= 0}
+    
+    Allows for easily moving between adjacent vertices.
+    
+    """
+    
+    def __init__(self, A_eq, b_eq):
+        
+        self.A = A_eq
+        self.b = b_eq
+        
+        self.n_con, self.n_dim = self.A.shape
+        
+        self.zero_tol = 1e-12
+    
+    def adj(self, x, c=None):
+        """
+        Find a vertex adjacent to x. If a linear objective c is provided, will
+        return a vertex which most increases or least decreases c. Otherwise,
+        picks a random direction.
+        """
+        
+        if c is None:
+            c = np.random.randn(len(x))
+        
+        B_ids = np.where(x > self.zero_tol)[0].tolist() # basic variables
+        N_ids = np.where(x <= self.zero_tol)[0].tolist() # non-basic varaibles
+        
+        B = self.A[:,B_ids] 
+        N = self.A[:,N_ids]
+        
+        exes = np.repeat(x[:,None], len(N_ids), axis=1) 
+        
+        ### Edge difference vectors
+        d = -la.pinv(B)@N 
+        diffs = np.zeros((self.n_dim, self.n_con))
+        print(la.pinv(B).shape)
+        diffs[B_ids,:] = d
+        diffs += np.eye(self.n_dim)[:,N_ids]
+        
+        ### Get step sizes
+        ratios = x[B_ids,None]/np.where(-d >= 1e-6, -d, np.nan)
+        step = np.nanmin(ratios, axis=0)[None,:]
+        
+        ### Check feasibility
+        new_exes = exes + step*diffs
+        feas = (np.abs(self.A@new_exes - self.b[:,None]).max(0) <= self.zero_tol) & (new_exes.min(0) >= -self.zero_tol)
+        
+        ### Pick a feasible solution
+        which_one = np.argmax(c@new_exes)
+        
+        return new_exes[:,which_one]
+        
+       
 
 class Quadric:
     
@@ -1334,15 +1901,34 @@ class Quadric:
         return p
 
 
-def elliptope_sample(dimension, size=1):
+def qform(Q, x, y=None):
+    """
+    Quadratic component of the surface equation
+    assumes features are in last dimension
+    """
+    
+    if y is None:
+        y = x
+
+
+    Qx = np.einsum('ij,...j->...i', Q, x)
+    yQx = (Qx*y).sum(-1, keepdims=True)
+
+    return yQx
+
+
+def elliptope_sample(dimension, size=1, rank=None):
     """
     Onion method from Ghosh and Henderson (2003) 
     https://dl.acm.org/doi/pdf/10.1145/937332.937336
 
-    adapted from a blog post I found
+    code adapted from a blog post I found
     """
 
-    d = dimension + 1
+    if rank is None:
+        rank = dimension
+
+    d = rank + 1
 
     prev_corr = np.ones((size, 1, 1))
     for k in range(2, d):
@@ -1441,13 +2027,16 @@ def sample_aligned(y, c, size=1, scale=1, sym=True, zero=None):
 
 def random_centered_kernel(d, size=1, scale=1):
 
-    vx = la.eigh(np.eye(d) - 1/d)[1][:,1:]@sts.ortho_group.rvs(d-1, size)
+    if d > 2:
+        vx = la.eigh(np.eye(d) - 1/d)[1][:,1:]@sts.ortho_group.rvs(d-1, size)
+    else:
+        vx = la.eigh(np.eye(d) - 1/d)[1][:,1:]
     lx = d*np.random.dirichlet(np.ones(d-1)/scale, size)
     X = (vx*lx[:,None,:])@np.swapaxes(vx, -1, -2)
 
     return X
 
-def random_psd(Y, c=None, size=1, scale=1, sym=True, zero=None):
+def random_psd(Y, c, size=1, scale=1, sym=True, zero=None, max_rank=None):
     """
     Sample a random positive semidefinite matrix X, satisfying
     
@@ -1466,12 +2055,27 @@ def random_psd(Y, c=None, size=1, scale=1, sym=True, zero=None):
     y = Y[aye, jay]
     N = len(y) 
 
+    rankY = nla.matrix_rank(Y)
+
+    if max_rank is None:
+        max_rank = n-1
+    elif c <= 1e-6: 
+        max_rank = int(np.min([n-1, max_rank + rankY]))
+    elif max_rank - rankY < 1:
+        raise ValueError('Maximum rank cannot be less than rank of Y')
+    else:
+        max_rank = int(max_rank)
+
     ## sample source points
-    vx = la.eigh(np.eye(n) - 1/n)[1][:,1:]@sts.ortho_group.rvs(n-1, size)
-    lx = n*np.random.dirichlet(np.ones(n-1)/scale, size)
+    B = la.eigh(np.eye(n) - 1/n)[1][:,1:]@sts.ortho_group.rvs(n-1, size) 
+    vx = B[...,-max_rank:]
+    if max_rank < n-1:
+        kerX = B[...,:-max_rank]@B[...,:-max_rank].swapaxes(-1,-2)
+    else:
+        kerX = np.zeros((size, n, n))
+    lx = n*np.random.dirichlet(np.ones(max_rank)/scale, size)
     X = (vx*lx[:,None,:])@np.swapaxes(vx, -1, -2)
     x = X[..., aye, jay]
-
 
     ## define surface
     # H = np.eye(N) - centering_tensor(n)/n  # row-center X
@@ -1481,28 +2085,21 @@ def random_psd(Y, c=None, size=1, scale=1, sym=True, zero=None):
     S = Quadric(A, np.zeros(N), 0) # it's a quadratic form on the flattened kernel
 
     ## sample perspective points Z s.t. <Z, Y> = 0
-    ly, vy = la.eigh(Y + 1)
-    kerY = vy[:,ly <= 1e-3] # kernel of Y
-    # kerY = kerY[:, kerY.sum(0)**2 <= 1e-6]
-    nullY = kerY.shape[1] # nullity of Y, assume that it's > 0
+    ly, vy = nla.eigh(Y + kerX + 1)
+    nullY = max_rank - rankY
+    assert np.all((ly<=1e-3).sum(-1) == nullY)
+    kerY = vy[...,:nullY] # kernel of Y
 
     if nullY > 0: # always includes the ones vector
         # sample Z orthogonal to Y
-        lz = n*np.random.dirichlet(np.ones(nullY)/scale, size=size) 
-        vz = kerY@sts.ortho_group.rvs(nullY, size)
+        # r = np.min([nullY, max_rank])
+        lz = n*np.random.dirichlet(np.ones(nullY)/scale, size=size)
+        if nullY > 1:
+            vz = kerY@sts.ortho_group.rvs(nullY, size)
+        else:
+            vz = kerY
         Z = (vz*lz[:,None,:])@np.swapaxes(vz, -1, -2)
         z = Z[..., aye, jay]
-
-    # # this part is a little complicated ... the above kernels are not in the elliptope,
-    # # so in order to project them in while preserving the inner product, we need to 
-    # # explore the space of kernels which produce the same distances
-    # d = dot2dist(z) # convert to distances
-    # # this is the maximum alpha s.t. 1 - alpha*d is positive semi-definite
-    # alph_max = np.array([la.eigvals(np.ones((n,n)), d[i]).max() for i in range(size)])
-    # alph_mean = np.sum(d, axis=(-1,-2))/np.sum(d**2, axis=(-1,-2)) # maximum-dimensional
-
-    # alph = np.random.beta(1, 1, size)*alph_max
-    # Z = 1 - alph*d
 
     ## select perspective points
     orig = np.where(S(x)>=0, z, y)
@@ -1515,16 +2112,24 @@ def random_psd(Y, c=None, size=1, scale=1, sym=True, zero=None):
 
     return X_proj
 
-def centering_tensor(N):
+# def centering_tensor(N):
 
-    aye, jay = np.where(np.ones((N,N)))
-    aye = np.repeat(aye, N)
-    jay = np.repeat(jay, N)
+#     inds = LexOrder()
+#     nc2 = int(spc.binom(N,2))
 
-    kay = jay
-    ell = np.tile(np.arange(N), N**2)
+#     ## first enumerate pairs of points
+#     ix = np.arange(nc2)
+#     ell = np.repeat(ix, N)
 
-    return sprs.coo_matrix((np.ones(N**3), (aye + N*jay, kay + N*ell)))
+
+#     ## 
+#     aye, jay = inds.inv(ix)
+#     kay = np.tile(inds(aye,jay), nc2)
+
+#     ## subtract off-diagonals in each row
+#     v = np.where(ell==kay, 1, -1)
+
+#     return sprs.coo_array((v, (ell,kay)))
 
 def average_aligned(y, c, size=1):
     """
@@ -1563,6 +2168,17 @@ def dirichlet_slice(N, k, size=1):
 #########################################
 ######## Miscelaneous (for now) #########
 #########################################
+
+# def bmat(mats):
+
+#     real_mats = []
+#     for mat in mats:
+        
+
+def H(n, m=None):
+    o = np.zeros((1,n))
+    o[:,:m] = 1
+    return np.eye(n) - np.ones((n,1))@o/(np.sum(o)+1e-12)
 
 def pad_to_dense(M):
     """Appends the minimal required amount of zeroes at the end of each 
@@ -1619,12 +2235,16 @@ def group_mean(X, groups, axis=-1, **mean_args):
     returns array of shape (X.shape[:axis:], len(unique(groups)) )
     """
 
+    idx = np.argsort(groups)
     grps, counts = np.unique(groups, return_counts=True)
+    averager = np.repeat(np.eye(len(grps))/counts, counts, axis=1)
 
-    X_summed = group_sum(X, groups, axis, **mean_args)
-    X_avg = X_summes/counts[:,None]
+    X_swapped = X.swapaxes(axis, 0)
+    X_sorted = X_swapped[idx]
 
-    return X_avg
+    X_avg = averager@X_sorted
+
+    return X_avg.swapaxes(axis, 0)
 
 def mask_mean(X, mask, axis=-1, **mean_args):
     """Take the mean of X along axis, but exluding particular elements"""
@@ -1668,4 +2288,6 @@ def unroll_dict(this_dict):
         all_dicts = this_dict
 
     return all_dicts
+
+
 

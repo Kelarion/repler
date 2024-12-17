@@ -153,6 +153,9 @@ class Regression(object):
 ## Generic discrete tasks
 class BinaryLabels(IndependentBinary):
     def __init__(self, labels):
+        """
+        labels is shape (num_var, num_item)
+        """
         super(BinaryLabels, self).__init__()
 
         self.labels = labels

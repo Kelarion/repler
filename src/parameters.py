@@ -1,10 +1,3 @@
-CODE_DIR = '/home/kelarion/github/repler/src/'
-SAVE_DIR = '/mnt/c/Users/mmall/OneDrive/Documents/uni/columbia/main/'
-
-REMOTE_SYNC_SERVER = 'ma3811@motion.rcs.columbia.edu' #must have ssh keys set up
-REMOTE_CODE = '/burg/home/ma3811/repler/'
-REMOTE_RESULTS = '/burg/theory/users/ma3811/results/'
-
 import socket
 import os
 import sys
@@ -39,19 +32,35 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
         self.value = None
         self.root_instance = True
 
-        self.checks = set() # logical functions of the parameter
+        self.checks = [] # logical functions of the parameter
 
-    def generate_values(self):
-        """
-        This function needs to be implemented in descendent classes, 
-        it should return an interable
-        """
+    # def generate_values(self):
+    #     """
+    #     This function needs to be implemented in descendent classes, 
+    #     it should return an interable
+    #     """
 
+    #     raise NotImplementedError
+
+    def new_value(self):
         raise NotImplementedError
 
-    def __iter__(self):
+    def __next__(self):
+        """
+        Advance the value by one element
+        """
 
-        return ParamSet(self).__iter__()
+        while not self: 
+            self.new_value()
+
+        return self.value
+
+    def __iter__(self):
+        """
+        Initialize to the first value
+        """
+
+        return self
 
     def __bool__(self):
 
@@ -105,16 +114,15 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
                     arrgs.append(arg)
             ret = f(*tuple(arrgs), **kwargs)
 
-        return ret
+        return ret 
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """
         Keep track of functions, which will be applied to value
         """
 
-        # logics = ['greater', 'less', 'greater_than', 'less_than', 'equal']
-
         if method == '__call__':
+
 
             clone = copy.deepcopy(self)
 
@@ -146,7 +154,10 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
     def __rshift__(self, other):
 
         if self.root_instance:
-            return ParamSet(self) >> other
+
+            other.ub = self
+            # return ParamSet(self) >> other
+
         elif isinstance(other, Parameter):
             if other.root_instance:
                 return ParamSet(other) << self
@@ -161,6 +172,7 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
 
         if self.root_instance:
             return ParamSet(self) << other
+
         elif isinstance(other, Parameter):
             if other.root_instance:
                 return ParamSet(other) >> self
@@ -198,6 +210,31 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
             return other >> self
         else:
             return ParamSet(self) >> other
+
+    # def __rshift__(self, other):
+    #     # print('rshift')
+    #     if self.root_instance:
+    #         self.lb = other
+
+    #     return self
+
+    # def __lshift__(self, other):
+    #     # print('lshift')
+    #     self.ub = other
+
+    #     return self
+
+    # def __rrshift__(self, other):
+    #     # print('rrshift')
+    #     self.ub = other
+
+    #     return self
+
+    # def __rlshift__(self, other):
+    #     # print('rlshift')
+    #     self.lb = other
+
+    #     return self
 
 
 ## Clothing
@@ -260,6 +297,11 @@ class Real(Parameter):
         self.step = step
 
         self.roots = {self} # base parameter, without any functions applied
+
+    def __next__(self):
+
+        newval = self.value + self.step
+
 
     def generate_values(self, lb, ub):
 
@@ -503,199 +545,3 @@ class ParamIter:
         else:
             raise Exception('Multiplication not defined for %s'%type(other))
 
-
-##############################################################################
-########### Utility functions ################################################
-##############################################################################
-
-def parse_params(dictionary, forbidden_keys=None):
-    """
-    This takes dict with variable values, and outputs each combination
-    """
-
-    if forbidden_keys is None:
-        forbidden_keys = []
-
-    variable_prms = {}
-    matched_prms = {}
-    fixed_prms = {}
-    for k,v in dictionary.items():
-        if k in forbidden_keys:
-            continue
-        if isinstance(v, Parameter):
-            variable_prms[k] = ParamSet(v)
-        elif isinstance(v, ParamSet):
-            variable_prms[k] = v
-        elif type(v) is list:
-            variable_prms[k] = ParamSet(Set(v))
-        elif type(v) is tuple:
-            matched_prms[k] = v 
-        else:
-            fixed_prms[k] = v
-
-    ### Handle variables
-    if len(matched_prms)>0: 
-        if len(np.unique([len(v) for v in matched_prms.values()]))>1:
-            raise ValueError('Tuple arguments must all be the same length you dingus!')
-        tup_keys = tuple(matched_prms.keys())
-        tup_vals = list(zip(*matched_prms.values()))
-    else:
-        tup_keys = ()
-        tup_vals = [()]
-
-    if len(variable_prms)>0:
-        var_k, var_v = zip(*variable_prms.items())
-    else:
-        var_k = ()
-        var_v = ()
-
-    ## Make experiment dictionaries
-    out_dicts = []
-    for var_vals in ParamIter(*var_v):
-        for mch_vals in tup_vals:
-            out_dicts.append( dict(zip(var_k+tup_keys, var_vals+mch_vals), **fixed_prms) )
-
-    return out_dicts
-
-
-def send_to_server(task_args, mod_args, run_remote=True, verbose=False):
-    """ 
-    if run_remote=False, will just run the first experiment locally (for debugging)
-
-    any values which are list-type will be combined together independently, any values which 
-    are tuple-type will be matched together 1-1. 
-
-    """
-
-    ##### Pickle experiment parameters
-    ##########################################
-
-    exp_idx = 0
-    for this_dset in parse_params(task_args, forbidden_keys=['task']):
-
-        dset_info = {'task':task_args['task'], 'args':this_dset}
-        if verbose:
-            print('saving: ' + SAVE_DIR+'server_cache/task_%d.pkl'%exp_idx)
-        pkl.dump(dset_info, open(SAVE_DIR+'server_cache/task_%d.pkl'%exp_idx,'wb'))
-        exp_idx += 1
-
-    ##### Pickle network/optimizer parameters
-    ##########################################
-
-    net_idx = 0
-    for this_mod in parse_params(mod_args, forbidden_keys=['model']):
-
-        dset_info = {'model': mod_args['model'], 'args': this_mod}
-
-        if verbose:
-            print('saving: ' + SAVE_DIR+'server_cache/model_%d.pkl'%net_idx)
-        pkl.dump(dset_info, open(SAVE_DIR+'server_cache/model_%d.pkl'%net_idx,'wb'))
-        net_idx += 1
-
-    if verbose:
-        print('\nSending %d jobs to server ...\n'%(net_idx*exp_idx))
-
-    ###### Send to pickles server
-    ##########################################
-    if run_remote:
-
-        print('[{}] Giving files to {}...'.format(sys.platform, REMOTE_SYNC_SERVER))
-
-        cmd = 'rsync {local}*.pkl {remote} -v'.format(local=SAVE_DIR+'server_cache/',
-            remote=REMOTE_SYNC_SERVER+':'+REMOTE_RESULTS)
-        subprocess.check_call(cmd, shell=True)
-
-        tmplt_file = open(CODE_DIR+'/job_script_template.sh','r')
-        with open(SAVE_DIR+'server_cache/job_script.sh','w') as script_file:
-            sbatch_text = tmplt_file.read().format(n_tot=net_idx*exp_idx - 1, n_task=exp_idx, file_dir=REMOTE_CODE)
-            script_file.write(sbatch_text)
-        tmplt_file.close()
-
-        ####### Run job array
-        ###########################################
-
-        cmd = f"ssh ma3811@ginsburg.rcs.columbia.edu 'sbatch -s' < {SAVE_DIR+'server_cache/job_script.sh'}"
-        subprocess.call(cmd, shell=True)
-
-    else:
-        print('Running job...')
-
-        cmd = f"python {CODE_DIR}/run_experiment.py 0 1"
-        subprocess.call(cmd, shell=True)
-
-
-# for retrieving from the server
-def get_all_experiments(task_args, model_args, bool_friendly=True):
-
-    ##### Loop over experiment parameters
-    #########################################
-
-    exps = []
-
-    all_keys = list(task_args.keys()) + list(model_args.keys())
-    params = {k:[] for k in all_keys if k not in ['task', 'model']}
-    for this_dset in parse_params(task_args, forbidden_keys=['task']):
-
-        exp_info = {'task':task_args['task'], 'args':this_dset}
-
-        net_idx = 0
-        for this_net in parse_params(model_args, forbidden_keys=['model']):
-
-            net_info = {'model':model_args['model'], 'args':this_net}
-
-            exps.append({'task_args':exp_info, 'model_args':net_info})
-
-            for k,v in this_dset.items():
-                params[k].append(v)
-            for k,v in this_net.items():
-                params[k].append(v)
-
-    for k,v in params.items():
-        # if bool_friendly:
-        #     params[k] = np.array([stringify(vv) for vv in v])
-        # else:
-        arr_v = np.array(v)
-        if arr_v.dtype.name == 'object':
-            arr_v = np.array([stringify(vv) for vv in arr_v])
-        
-        params[k] = arr_v
-
-    return exps, params
-
-
-def stringify(thing):
-    """
-    because python is doodoo caca  
-    """
-
-    whatisit = type(thing)
-
-    # if 'builtin' not in whatisit.__module__:
-    #     if '__name__' in dir(thing):
-    #         return thing.__name__
-    #     else:
-    #         return thing.__class__.__name__
-    if callable(thing):
-        return thing.__name__
-    else:
-        return thing
-
-
-def pad_to_dense(M):
-    """Appends the minimal required amount of zeroes at the end of each 
-     array in the jagged array `M`, such that `M` looses its jagedness."""
-
-    shapes = np.array([m.shape for m in M])
-
-    buff = shapes.max(0, keepdims=True) - shapes
-    
-    Z = []
-    for enu, row in enumerate(M):
-        
-        Z.append(
-            np.pad( 
-                row, [(0,s) for s in buff[enu]], mode='constant', constant_values=np.nan 
-                )
-            )
-        
-    return np.array(Z)

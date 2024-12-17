@@ -1,0 +1,19 @@
+name: pete
+channels:
+ - defaults
+ - conda-forge
+dependencies:
+ - numpy
+ - scipy
+ - matplotlib
+ - pytorch
+ - torchvision
+ - scikit-learn
+ - cvxpy
+ - networkx
+ - pandas
+ - numba
+ - einops
+ - tqdm
+ - pip:
+   - jaxtyping

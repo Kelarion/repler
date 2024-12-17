@@ -13,12 +13,15 @@ import matplotlib.gridspec as gsp
 import matplotlib.colors as mpc
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from matplotlib.patches import Polygon
 from matplotlib import animation as anime
 from cycler import cycler
 import scipy
 import scipy.linalg as la
 from scipy.spatial import ConvexHull
+from scipy.spatial import HalfspaceIntersection
 from scipy.spatial.distance import pdist, squareform
+from scipy.optimize import linprog as lp
 from itertools import permutations, combinations
 import itertools as itt
 
@@ -83,6 +86,28 @@ def pca3d(X, special_vec=None, **scat_args):
 
     return scat
 
+def pca(X, special_vec=None, **scat_args):
+    '''
+    Assume that "X" is N_feat x N_samp, "coloring" is a vector of dim N_samp
+    '''
+
+    if special_vec is None:
+        X_ = X
+    else:
+        X_ = X - (special_vec[:,None]@special_vec[None,:]/la.norm(special_vec))@X
+        y_ = (special_vec[None,:]/la.norm(special_vec))@X
+
+    U, S, _ = la.svd(X-X.mean(1)[:,None], full_matrices=False)
+    pcs = X.T@U[:,:2]
+
+    if special_vec is None:
+        scat = plt.scatter(pcs[:,0],pcs[:,1], **scat_args)
+    else:
+        scat = plt.scatter(y_,pcs[:,0], **scat_args)
+
+    # set_axes_equal(ax)
+
+    return scat
 
 #################################################
 ############# Interactive slice plots ###########
@@ -476,22 +501,115 @@ def dichotomy_plot(PS, CCGP, SD, PS_err=None, CCGP_err=None, SD_err=None,
 ################# Polytopes ####################
 ################################################
 
-def polytope(vertices, ax=None, **plot_args):
+def plotcube(E, S, V=None, dim=2, hidden=None, show_hid=False,
+    cmap='Dark2', linewidth=2, headwidth=5, **scat_args):
+    """
+    Plot a partial cube graph with edges E and labels S
+    Plot the embedding with component vectors V. 
+    V should be shape (k,2) or (k,3)
+    """
 
-    vertices = vertices.tolist()
-    vertices.append(vertices[0]) #repeat the first point to create a 'closed loop'
+    if V is not None:
+        dim = V.shape[1] 
+    else:
+        K = (S-S.mean(0))@(S-S.mean(0)).T
+        l,V = la.eigh(K)
+        V = V[:,:dim]
 
-    xs, ys = zip(*vertices) #create lists of x and y values
+    if hidden is None:
+        hidden = (np.zeros(len(S))>0)
 
-    if ax is None:
-        ax = plt.axes()
+    F = S@V
 
-    ax.plot(xs, ys, **plot_args)
+    locs = F[E[0]].T
+    e_lab = np.mod(S[E[0]]+S[E[1]], 2).argmax(1)
+    dirs = V[e_lab].T
+
+    if dim == 2:
+        plt.scatter(F[~hidden,0], F[~hidden,1], 
+                c='k', **scat_args, zorder=10)
+        plt.quiver(locs[0], locs[1], dirs[0], dirs[1],e_lab, 
+                angles='xy', scale_units='xy', scale=1, cmap=cmap,
+                headwidth=headwidth)
+    elif dim == 3:
+        ax = plt.figure().add_subplot(projection='3d')
+
+        ## deal with matplotlib's super jank 3d support
+        cols = getattr(cm, cmap)(e_lab)
+        cols = np.vstack([cols, np.repeat(cols,2, axis=0)])
+
+        scatter3d(F[~hidden], ax=ax, **scat_args, zorder=10)
+        ax.quiver(locs[0], locs[1], locs[2], dirs[0], dirs[1], dirs[2],
+            colors=cols, linewidth=linewidth, zorder=0)
+
+        if show_hid:
+            scatter3d(F[hidden], ax=ax, 
+                c='w', edgecolors='k', s=100, zorder=10)
+
+
+def polygon(vertices, ax=None, facecolor=None, alpha=0.5, **plot_args):
+
+    if vertices.shape[1] == 3:
+        is_3d = True
+    elif vertices.shape[1] == 2:
+        is_3d = False
+
+    n = len(vertices)
+
+    order = [0]
+    remaining = list(range(1,n))
+    dvert = la.norm(vertices[:,None,:] - vertices[None,:,:], axis=-1)
+    while len(order)<n:
+        i = remaining[np.argmin(dvert[order[-1],remaining])]
+        order.append(i)
+        remaining.remove(i)
+
+    vertices = vertices[order]
+
+    verts = vertices.tolist()
+    verts.append(verts[0]) # repeat the first point to create a 'closed loop'
+
+    if is_3d:
+        fill = Poly3DCollection([vertices], color=facecolor, alpha=alpha,
+                                linewidth=0)
+        xs, ys, zs = zip(*verts)
+
+        if ax is None:
+            ax = plt.subplot(111, projection='3d')
+
+        ax.add_collection(fill)
+        ax.plot(xs, ys, zs, **plot_args)
+
+    else:
+        poly = Polygon(vertices, color=facecolor, alpha=alpha)
+        xs, ys = zip(*vertices) #create lists of x and y values
+
+        if ax is None:
+            ax = plt.axes()
+
+        ax.plot(xs, ys, **plot_args)
+        ax.add_patch(poly)
 
     return ax
 
-def polytope3d(vertices=None, halfspace=None, 
-    color=(0.5,0.5,0.5), alpha=0.5, ax=None, plot_verts=True, **vert_args):
+def plane(a, b=0, length=1, width=1, ax=None, alpha=0.5, color=(0.5,0.5,0.5)):
+
+    l,v = la.eigh(a[:,None]*a[None,:])
+    null = v[:,:2]
+
+    x, y = np.meshgrid([-length,length], [-width,width])
+
+    coords = np.stack([x, y], axis=-1)@v[:,:2].T + a*b
+
+    if ax is None:
+        ax = plt.subplot(111, projection='3d')
+
+    ax.plot_surface(coords[...,0], coords[...,1], coords[...,2],
+                    linewidth=0, color=color, alpha=alpha)
+
+def polyhedron(vertices=None, halfspace=None, 
+    color=(0.5,0.5,0.5), edgecolor='k', alpha=0.5, 
+    ax=None, plot_verts=True, **vert_args):
     """
     Plot a convex polytope in 3d
 
@@ -511,21 +629,80 @@ def polytope3d(vertices=None, halfspace=None,
     if ax is None:
         ax = plt.subplot(111, projection='3d')
 
+    # if has_half:
+    #     # to avoid using pypoman, that most people probably won't have,
+    #     # I will use the much inferior scipy class, which requires
+    #     # manually computing an interior point ...
+    #     # (why can't they do that in the function??)
+
+    #     hs = HalfspaceIntersection(halfspace, int_point)
+
     if has_vert:
 
         hull = ConvexHull(vertices)
 
-        for s in hull.simplices:
-            tri = Poly3DCollection([vertices[s]])
-            tri.set_color(color)
-            tri.set_alpha(alpha)
-            ax.add_collection(tri)
+        f = Faces([vertices[s] for s in hull.simplices])
+        g = f.simplify()
+
+        tri = Poly3DCollection(g, facecolor=color, edgecolor=edgecolor, alpha=alpha)
+
+        ax.add_collection(tri)
 
         if plot_verts:
             ax.scatter(vertices[:,0],vertices[:,1], vertices[:,2], **vert_args)
 
     return ax
 
+class Faces():
+    """
+    By stackexchange user ImportanceOfBeingErnest
+    """
+    def __init__(self,tri, sig_dig=12, method="convexhull"):
+        self.method=method
+        self.tri = np.around(np.array(tri), sig_dig)
+        self.grpinx = list(range(len(tri)))
+        norms = np.around([self.norm(s) for s in self.tri], sig_dig)
+        _, self.inv = np.unique(norms,return_inverse=True, axis=0)
+
+    def norm(self,sq):
+        cr = np.cross(sq[2]-sq[0],sq[1]-sq[0])
+        return np.abs(cr/np.linalg.norm(cr))
+
+    def isneighbor(self, tr1,tr2):
+        a = np.concatenate((tr1,tr2), axis=0)
+        return len(a) == len(np.unique(a, axis=0))+2
+
+    def order(self, v):
+        if len(v) <= 3:
+            return v
+        v = np.unique(v, axis=0)
+        n = self.norm(v[:3])
+        y = np.cross(n,v[1]-v[0])
+        y = y/np.linalg.norm(y)
+        c = np.dot(v, np.c_[v[1]-v[0],y])
+        if self.method == "convexhull":
+            h = ConvexHull(c)
+            return v[h.vertices]
+        else:
+            mean = np.mean(c,axis=0)
+            d = c-mean
+            s = np.arctan2(d[:,0], d[:,1])
+            return v[np.argsort(s)]
+
+    def simplify(self):
+        for i, tri1 in enumerate(self.tri):
+            for j,tri2 in enumerate(self.tri):
+                if j > i: 
+                    if self.isneighbor(tri1,tri2) and \
+                       self.inv[i]==self.inv[j]:
+                        self.grpinx[j] = self.grpinx[i]
+        groups = []
+        for i in np.unique(self.grpinx):
+            u = self.tri[self.grpinx == i]
+            u = np.concatenate([d for d in u])
+            u = self.order(u)
+            groups.append(u)
+        return groups
 
 ##############################################
 ########### General utility ##################
@@ -604,6 +781,39 @@ def plot3d(X, ax=None, **line_args):
 
     return ax
 
+def fillrange(x, Y, center='mean', fill='std', **kwargs):
+    """
+    x is shape (n_value)
+    Y is shape (n_sample, n_value)
+    """
+    if center == 'mean':
+        Ey = Y.mean(0)
+    elif center == 'median':
+        Ey = np.median(Y,axis=0)
+    if fill == 'std':
+        yup = Y.std(0)
+        ydown = -yup
+    elif fill == 'err':
+        yup = Y.std(0)/np.sqrt(len(Y))
+        ydown = -yup
+    elif fill == 'range':
+        yup = Y.max(0) - Ey
+        ydown = Y.min(0) - Ey
+
+    plt.fill_between(x, Ey+ydown, Ey+yup, **kwargs)
+
+def medianstd(x, Y, err=False, **kwargs):
+    """
+    x is shape (n_value)
+    Y is shape (n_sample, n_value)
+    """
+    Ey = np.median(Y,axis=0)
+    sigy = Y.std(0)
+    if err:
+        sigy = sigx/np.sqrt(len(Y))
+
+    plt.fill_between(x, Ey-sigy, Ey+sigy, **kwargs)
+
 def pairwise_lines(X, col=(0.5,0.5,0.5), ax=None):
 
     if ax is None:
@@ -612,10 +822,47 @@ def pairwise_lines(X, col=(0.5,0.5,0.5), ax=None):
     for ix in combinations(range(num_dat),2):
         ax.plot(X[ix,0],X[ix,1],X[ix,2],color=col)
 
-
 def color_cycle(cmap, num_col):
     # return getattr(cm,cmap)(np.linspace(0,1,num_col))
     these_cols = ['r','b','g','y','c','m']
     return [mpc.to_rgb(these_cols[i]) for i in range(num_col)]
 
+def plot_matrix(X, **args):
 
+    plt.pcolor(np.flipud(X), **args)
+    square_axis()
+    plt.axis('off')
+
+
+def matshow(X, ax=None, 
+            show_grid=True,
+            color='k', 
+            linewidth=1, 
+            linestyle='-',
+            **im_args):
+
+    extent = (0, X.shape[1], X.shape[0], 0)
+
+    if ax is None:
+        ax = plt.gca()
+
+    im = ax.imshow(X, extent=extent, **im_args)
+    # ax.set_xticks(range(X.shape[1]))
+    # ax.set_xticklabels([])
+    # ax.set_yticks(range(X.shape[0]))
+    # ax.set_yticklabels([])
+    # ax.grid(visible=True, 
+    #         color=color, 
+    #         linewidth=linewidth, 
+    #         axis=axis, 
+    #         linestyle=linestyle)
+    if show_grid:
+        plt.hlines(range(X.shape[0]+1), 0, X.shape[1],
+            color=color, linewidth=linewidth, linestyle=linestyle)
+        plt.vlines(range(X.shape[1]+1), 0, X.shape[0],
+            color=color, linewidth=linewidth, linestyle=linestyle)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis(False)
+
+    return im

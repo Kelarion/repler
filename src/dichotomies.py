@@ -330,8 +330,9 @@ def parallelism_score(z, cond, coloring, eps=1e-12, debug=False, average=True):
         return np.max(ps)
 
 
-def efficient_parallelism(coloring, z=None, K=None, 
-        tol=1e-6, norm=True, aux_func='average'):
+
+def parallelism(coloring, z=None, K=None, 
+        tol=1e-6, norm=True, aux_func='distsum', one_sided=False):
     """
     z is shape (features, items)
     coloring is shape (items,)
@@ -360,9 +361,8 @@ def efficient_parallelism(coloring, z=None, K=None,
         Kz = z[:,ids].T@z[:,ids]
     else:
         Kz = K[ids,:][:,ids]
-    norms = Kz[range(N), range(N)]
-    d = (norms[:,None] + norms[None,:] - 2*Kz)/2
-
+    d = util.dot2dist(Kz)
+    
     ## find approximate optimal pairing
     if aux_func == 'average':
         # Rather than maximize the average pairwise alignment, 
@@ -375,29 +375,48 @@ def efficient_parallelism(coloring, z=None, K=None,
         aye, jay = util.unbalanced_assignment(-C[y_,:][:,~y_])
 
     elif aux_func == 'distsum':
-        aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_])
+        aye, jay = util.unbalanced_assignment(d[y_,:][:,~y_], one_sided=one_sided)
 
     # elif aux_func == 'none':
         # Solve the actual QAP, which takes a long time
 
-
+    # print(aye)
+    # print(jay)
 
     ## account for multiple pairing (imbalance)
     order = np.argsort(aye)
-    _, pos_reps = np.unique(aye, return_counts=True)
-    reps = np.concatenate([pos_reps, np.ones(len(neg), dtype=int)], dtype=int)
-    extra = np.sum(pos_reps - 1)
+    if one_sided:
+        
+        # subset = np.isin(np.arange(N), np.append(pos[aye], neg[jay]))
+        subset = np.concatenate([pos[aye], neg[jay]])
+        k = len(aye)
 
-    i_id = np.arange(np.sum(pos_reps))
-    j_id = jay[order]
+        y_copy = y_[subset]
+        d_copy = d[subset,:][:,subset]
 
-    y_copy = np.repeat(y_, reps)
-    d_copy = np.repeat(np.repeat(d, reps, axis=0), reps, axis=1)
+        mask = np.ones((2*k, 2*k), dtype=bool)
+        mask[range(k), range(k, 2*k)] = 0
+        mask[range(k, 2*k), range(k)] = 0
 
-    ## create matrices 
-    mask = np.ones((N+extra,N+extra), dtype=bool)
-    mask[i_id, neg[j_id]+extra] = 0
-    mask[neg[j_id]+extra, i_id] = 0
+        # print(d_copy)
+        # print(y_copy)
+        # print(mask)
+
+    else:
+        _, pos_reps = np.unique(aye, return_counts=True)
+        reps = np.concatenate([pos_reps, np.ones(len(neg), dtype=int)], dtype=int)
+        extra = np.sum(pos_reps - 1)
+
+        i_id = np.arange(np.sum(pos_reps))
+        j_id = jay[order]
+
+        y_copy = np.repeat(y_, reps)
+        d_copy = np.repeat(np.repeat(d, reps, axis=0), reps, axis=1)
+
+        ## create matrices 
+        mask = np.ones((N+extra,N+extra), dtype=bool)
+        mask[i_id, neg[j_id]+extra] = 0
+        mask[neg[j_id]+extra, i_id] = 0
 
     numer = mask*d_copy*np.outer(-(2*y_copy-1),(2*y_copy-1))
     denom = np.sqrt(np.outer(d_copy[~mask],d_copy[~mask]))

@@ -42,6 +42,37 @@ def sphere_weights(*dims):
 	w = torch.FloatTensor(*dims).normal_()
 	return w / w.norm(dim=0, keepdim=True)
 
+
+#####################################################################
+################ data loading from torchvision ######################
+#####################################################################
+
+def cifar(train=True):
+
+    transform = transforms.Compose(
+                            [transforms.ToTensor(),
+                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+    dset = torchvision.datasets.CIFAR10(root='./data', train=train,
+                                        download=True, transform=transform)
+
+    cond = torch.tensor(dset.targets)
+    inps = torch.tensor(dset.data.transpose(0,3,1,2)).float()
+
+    return inps, cond
+
+def mnist(train=True):
+
+    dset = torchvision.datasets.MNIST(root='./data', train=train,
+                                        download=True)
+
+    cond = dset.targets
+    inps = dset.data 
+
+    return inps, cond
+
+#####################################################################
+
 class BalancedBinary:
 
 	def __init__(self, *Ks, normalize=False):
@@ -140,9 +171,12 @@ class RayLou(nn.ReLU):
             return torch.ones(x.shape)
         else:
             return (x>0).float()
-    
+
     def __repr__(self):
-        return f"RayLou({'linear' if self.linear_grad else ''})"
+        return f"RayLou"
+    
+    # def __repr__(self):
+    #     return f"RayLou({'linear' if self.linear_grad else ''})"
 
 class RayLou6(nn.ReLU6):
     def __init__(self, linear_grad=False):
@@ -179,6 +213,27 @@ class RayLouUB(nn.ReLU6):
         else:
             return ((x<=self.ub)&(x>0)).float()
 
+class RayLouHinge(nn.ReLU):
+    def __init__(self, slope=1, linear_grad=False):
+        super(RayLouUB,self).__init__()
+        self.linear_grad = linear_grad
+        self.slope = slope
+
+        # self.__class__.__name__ = f"RayLou{ub:.1f}"
+        self.__name__ = f"RayLouHinge{slope:.1f}"
+
+    def forward(self, x):
+        return nn.ReLU()(x*6/self.ub)
+
+    def __repr__(self):
+        return f"RayLouHinge({self.ub:.1f})"
+
+    def deriv(self, x):
+        if self.linear_grad:
+            return torch.ones(x.shape)
+        else:
+            return ((x<=self.ub)&(x>0)).float()
+
 class RayLouShift(nn.ReLU):
     def __init__(self, shift=0, linear_grad=False):
         super(RayLouShift,self).__init__()
@@ -193,6 +248,7 @@ class RayLouShift(nn.ReLU):
 
     def __repr__(self):
         return f"RayLouShift({self.shift:.1f})"
+
 
     def deriv(self, x):
         if self.linear_grad:
@@ -247,8 +303,11 @@ class TanAytch(nn.Tanh):
         else:
             return 1-nn.Tanh()(x).pow(2)
 
+    # def __repr__(self):
+    #     return f"TanAytch({'linear' if self.linear_grad else ''})"
     def __repr__(self):
-        return f"TanAytch({'linear' if self.linear_grad else ''})"
+        return f"TanAytch"
+
 
 class NoisyTanAytch(nn.Tanh):
     def __init__(self, noise=1, linear_grad=False, rand_grad=False):

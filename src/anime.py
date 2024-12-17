@@ -12,7 +12,7 @@ from matplotlib import cm
 import matplotlib.gridspec as gsp
 import matplotlib.colors as mpc
 from mpl_toolkits.mplot3d import Axes3D
-from matplotlib import animation as anime
+from matplotlib import animation as ani
 from cycler import cycler
 import scipy
 import scipy.linalg as la
@@ -29,7 +29,7 @@ class AnimeCollection(object):
 
         self.fig = self.animes[0].fig
 
-        self.ani = anime.FuncAnimation(self.fig, self.update, interval=self.animes[0].interval, 
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=self.animes[0].interval, 
             init_func=self.setup_plot, blit=False, frames=self.animes[0].frames)
 
     def setup_plot(self):
@@ -47,7 +47,96 @@ class AnimeCollection(object):
         return self.patches
 
     def save(self,save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        # self.ani.save(save_dir, writer=ani.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
+
+
+class Anime(object):
+
+    def __init__(self, frames, interval, blit=False, ax=None, fig=None):
+
+
+        # Setup the figure and axes...
+        if fig is None and ax is None:
+            self.fig, self.ax = plt.subplots()
+        elif ax is not None:
+            self.ax = ax
+            self.fig = ax.get_figure()
+        elif fig is not None:
+            self.fig = fig
+            self.ax = fig.add_subplot(111)
+        
+        # Then setup FuncAnimation.
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=interval, 
+            init_func=self.setup_plot, blit=blit, frames=frames)
+
+    def save(self,save_dir, fps=30):
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
+
+    def setup_plot(self):
+        raise NotImplementedError
+
+    def update(self):
+        raise NotImplementedError
+
+class MatrixAnime(Anime):
+    """
+    Animate a series of matrices, i.e. frames with either imshow or colormesh
+    """
+
+    def __init__(self, X, 
+        ax=None, 
+        grid=False,
+        color='k', 
+        linewidth=1, 
+        axis='both',
+        linestyle='-',
+        **im_args):
+
+        super().__init__(frames=len(X), interval=10, ax=ax)
+
+        self.X = X
+
+        self.im_args = im_args
+
+        self.grid = grid
+        self.grid_args = {'color':color,
+                            'linewidth':linewidth,
+                            'axis':axis,
+                            'linestyle':linestyle}
+
+    def setup_plot(self):
+
+        self.patches = []
+
+        self.im = self.matshow(self.X[0])
+        self.patches = [self.im,]
+
+        return self.patches
+
+    def update(self, i):
+
+        self.im.set_data(self.X[i])
+
+        return self.patches
+
+    def matshow(self,X):
+
+        extent = (0, X.shape[1], X.shape[0], 0)
+        im = self.ax.imshow(X, extent=extent, **self.im_args)
+
+        if self.grid:
+            self.ax.set_xticks(range(X.shape[1]))
+            self.ax.set_yticks(range(X.shape[0]))
+            self.ax.set_xticklabels([])
+            self.ax.set_yticklabels([])
+            self.ax.grid(**self.grid_args)
+        else:
+            self.ax.set_xticks([])
+            self.ax.set_yticks([])
+
+        return im
+
 
 
 class ScatterAnime(object):
@@ -81,11 +170,11 @@ class ScatterAnime(object):
             self.fig = fig
             self.ax = fig.add_subplot(111)
         # Then setup FuncAnimation.
-        self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=interval, 
             init_func=self.setup_plot, blit=False, frames=x.shape[-1])
 
     def save(self,save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
 
     def setup_plot(self):
         """Initial drawing of the scatter plot."""
@@ -150,7 +239,7 @@ class RotationAnime(object):
             frames = rotation_period*2
         
         # Then setup FuncAnimation.
-        self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=interval, 
             init_func=self.setup_plot, blit=blit, frames=frames)
 
     def setup_plot(self):
@@ -159,7 +248,7 @@ class RotationAnime(object):
         self.ax.view_init(self.init_elev, self.init_azim)
 
     def save(self,save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
 
     def update(self, i):
         """Update the scatter plot."""
@@ -224,7 +313,7 @@ class LineAnime(object):
         return self.patches
 
     def save(self,save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
 
     def update(self, i):
         """Update the scatter plot."""
@@ -305,11 +394,11 @@ class LineAnime3D(object):
             self.ax = fig.add_subplot(111, projection='3d')
             
         # Then setup FuncAnimation.
-        self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=interval, 
             init_func=self.setup_plot, blit=blit, frames=frames)
 
     def save(self,save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=aani.FFMpegWriter(fps=fps))
 
     def setup_plot(self):
         """Initial drawing of the scatter plot."""
@@ -379,7 +468,6 @@ class LineAnime3D(object):
 
         return self.patches
 
-
 class ScatterAnime3D(object):
     """ 
     Makes a (multiple) line plot(s), and animates 
@@ -424,11 +512,11 @@ class ScatterAnime3D(object):
             self.ax = fig.add_subplot(111, projection='3d')
             
         # Then setup FuncAnimation.
-        self.ani = anime.FuncAnimation(self.fig, self.update, interval=interval, 
+        self.ani = ani.FuncAnimation(self.fig, self.update, interval=interval, 
             init_func=self.setup_plot, blit=blit, frames=self.tot_frames)
 
     def save(self, save_dir, fps=30):
-        self.ani.save(save_dir, writer=anime.writers['ffmpeg'](fps=fps))
+        self.ani.save(save_dir, writer=ani.FFMpegWriter(fps=fps))
 
     def setup_plot(self):
         """Initial drawing of the scatter plot."""

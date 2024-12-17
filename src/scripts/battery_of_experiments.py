@@ -1,6 +1,6 @@
 
 CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
-SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/'
  
 import os, sys, re
 import pickle
@@ -30,17 +30,9 @@ from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
 from sklearn.manifold import MDS
 
-import networkx as nx
-import pydot
-from networkx.drawing.nx_pydot import graphviz_layout
-
 # import umap
 from cycler import cycler
 
-from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
-import cvxpy as cvx
-import polytope as pc
-from hsnf import column_style_hermite_normal_form
 
 # my code
 import students as stud
@@ -110,19 +102,19 @@ import dichotomies as dics
 #  		   }
 
 
-d = su.Set([3,5])
-k = su.Set([1, d])
-c = su.Real(num=12)
+# d = su.Set([3,5])
+# k = su.Set([1, d])
+# c = su.Real(num=12)
 
-exp_prm = {'experiment': exp.RandomOrthogonal,
-		   'num_bits': d,
-		   'num_targets': k,
-		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-		   'seed': 0,
-		   'scale': 0.0,
-		   'dim_inp': 100,
-		   'input_noise': 1,
-		   }
+# exp_prm = {'experiment': exp.RandomOrthogonal,
+#  		   'num_bits': d,
+#  		   'num_targets': k,
+#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
+#  		   'seed': 0,
+#  		   'scale': 0.0,
+#  		   'dim_inp': 100,
+#  		   'input_noise': 1,
+#  		   }
 
 # d = su.Set([2,3,5])
 # k = su.Set([1, d])
@@ -139,20 +131,20 @@ exp_prm = {'experiment': exp.RandomOrthogonal,
 #  		   }
 
 
-# d = su.Integer(step=1) 
-# d = su.Set([3,5])
-# k = su.Set([1, d])
-# c = su.Real(num=6)
+d = su.Integer(step=1) 
+d = su.Set([3,5])
+k = su.Set([1, d])
+c = su.Real(num=6)
 
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-#  		   'seed': list(range(12)),
-#  		   'scale': 0.5,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
+exp_prm = {'experiment': exp.RandomOrthogonal,
+ 		   'num_bits': d,
+ 		   'num_targets': k,
+ 		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
+ 		   'seed': list(range(12)),
+ 		   'scale': 0.5,
+ 		   'dim_inp': 100,
+ 		   'input_noise': 1,
+ 		   }
 
 # exp_prm = {'experiment': exp.RandomOrthogonal,
 #  		   'num_bits': d,
@@ -215,20 +207,31 @@ exp_prm = {'experiment': exp.RandomOrthogonal,
 # 		   'input_noise': [0, 0.1, 1],
 # 		   }
 
-# net_args = {'model': stud.ShallowNetwork,
-# 			'num_init': 10,
-# 			'width': 128,
-# 			'p_targ': stud.Bernoulli,
-# 			'inp_bias_shift': 0,
-# 			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
-# 			}
-
 net_args = {'model': stud.ShallowNetwork,
  			'num_init': 10,
  			'width': 128,
  			'p_targ': stud.Bernoulli,
- 			'activation': [pt_util.TanAytch(), pt_util.RayLou(), pt_util.RayLouUB(1), pt_util.RayLouUB(1.5), pt_util.RayLouUB(2)]
+ 			'inp_bias_shift': 0,
+ 			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
  			}
+
+# net_args = {'model': stud.ShallowNetwork,
+#  			'num_init': 10,
+#  			'width': 128,
+#  			'p_targ': stud.Bernoulli,
+#  			'activation': [pt_util.TanAytch(), pt_util.RayLou(), pt_util.RayLouUB(1), pt_util.RayLouUB(1.5), pt_util.RayLouUB(2)]
+#  			}
+
+# net_args = {'model': stud.ShallowNetwork,
+#  			'num_init': 10,
+#  			'width': 128,
+#  			'p_targ': stud.Bernoulli,
+#  			'activation': [pt_util.RayLouShift(1), 
+#  						   pt_util.RayLouShift(0.5), 
+#  						   pt_util.RayLouShift(-0.5),
+#  						   pt_util.RayLouShift(-1),
+#                             pt_util.TanAytch()]
+#  			}
 
 # net_args = {'model': stud.ShallowNetwork,
 #  			'num_init': 10,
@@ -437,47 +440,50 @@ for i,d in enumerate(np.unique(prm['num_bits'])):
     for j,k in enumerate(np.unique(prm['num_targets'][prm['num_bits'] == d])):
         
         plt.subplot(3, 5, 5*(i) + (j) +1)
-        # plt.ylim([0.25, 1.05])
+        plt.ylim([0.3, 1.05])
         
         filt = all_filt&(prm['activation']=='TanAytch')&(prm['num_targets'] == k)&(prm['num_bits'] == d)
         
         # plt.scatter(skew[filt], out_align[filt], c='r')
-        plt.plot(skew[filt], out_align[filt], 'r')
+        # plt.plot(skew[filt], out_align[filt], 'r')
         # plt.scatter(skew[filt], prlsm[filt], c='r')
         # plt.plot(skew[filt], prlsm[filt], c='r')
-        # plt.scatter(skew[filt], CCGP[filt].mean(1), c='r')
+        plt.scatter(skew[filt], CCGP[filt].mean(1), c='r')
         # plt.scatter(skew[filt], lindim[filt].mean(1), c='r')
         
         # plt.scatter(skew[filt], t_perf[filt].mean(1), c='r')
     
         filt = all_filt&(prm['activation']=='RayLou')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
         # # plt.scatter(skew[filt], out_align[filt], c='b')
-        plt.plot(skew[filt], out_align[filt], 'b')
+        # plt.plot(skew[filt], out_align[filt], 'b')
         # # plt.scatter(skew[filt], prlsm[filt], c='b')
         # # plt.plot(skew[filt], prlsm[filt], c='b')
-        # # plt.scatter(skew[filt], CCGP[filt].mean(1), c='b')
+        plt.scatter(skew[filt], CCGP[filt].mean(1), c='b')
         # # plt.scatter(skew[filt], lindim[filt].mean(1), c='b')
         # # plt.scatter(skew[filt], t_perf[filt].mean(1), c='b')
          
         
-        filt = all_filt&(prm['activation']=='RayLou1.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        plt.plot(skew[filt], out_align[filt], color=(0.75,0,0.5), linestyle='--')
+        # # filt = all_filt&(prm['activation']=='RayLou1.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # # plt.plot(skew[filt], out_align[filt], color=(0.75,0,0.5), linestyle='--')
 
-        filt = all_filt&(prm['activation']=='RayLou1.5')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        plt.plot(skew[filt], out_align[filt], color=(0.5,0,0.5), linestyle='--')
+        # # filt = all_filt&(prm['activation']=='RayLou1.5')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # # plt.plot(skew[filt], out_align[filt], color=(0.5,0,0.5), linestyle='--')
 
-        filt = all_filt&(prm['activation']=='RayLou2.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        plt.plot(skew[filt], out_align[filt], color=(0.25,0,0.75), linestyle='--')
+        # # filt = all_filt&(prm['activation']=='RayLou2.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # # plt.plot(skew[filt], out_align[filt], color=(0.25,0,0.75), linestyle='--')
 
         
         # plt.plot(skew[filt&(prm['inp_bias_shift'] == 1)], out_align[filt&(prm['inp_bias_shift'] == 1)], 
         #           color=(0.5,0,0.5), linestyle='--')
         
-        # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0.5)], out_align[filt&(prm['inp_bias_shift'] == 0.5)], 
-        #           color=(0.25,0,0.75), linestyle='--')
+        # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0)], out_align[filt&(prm['inp_bias_shift'] == 0)], 
+        #           color='b', linestyle='-')
         
-        # plt.plot(skew[filt&(prm['inp_bias_shift'] == -0.5)], out_align[filt&(prm['inp_bias_shift'] == -0.5)], 
-        #           color=(0,0.25,0.75), linestyle='--')
+        # # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0.5)], out_align[filt&(prm['inp_bias_shift'] == 0.5)], 
+        # #           color=(0.25,0,0.75), linestyle='--')
+        
+        # # plt.plot(skew[filt&(prm['inp_bias_shift'] == -0.5)], out_align[filt&(prm['inp_bias_shift'] == -0.5)], 
+        # #           color=(0,0.25,0.75), linestyle='--')
         
         # plt.plot(skew[filt&(prm['inp_bias_shift'] == -1)], out_align[filt&(prm['inp_bias_shift'] == -1)], 
         #           color=(0,0.5,0.5), linestyle='--')

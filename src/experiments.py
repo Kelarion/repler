@@ -2,17 +2,26 @@ import os
 import pickle
 import warnings
 import re
+from time import time
+from dataclasses import dataclass
 
 import torch
 import torchvision
 import torchvision.transforms as transforms
 import torch.optim as optim
 import numpy as np
+import numpy.linalg as nla
 import scipy.special as spc
 import scipy.linalg as la
 import scipy.special as spc
+import scipy.stats as sts
 from itertools import permutations
 from sklearn import svm, linear_model
+
+import einops
+from jaxtyping import Float, Int
+from typing import Optional, Callable, Union, List, Tuple
+from functools import partial
 
 # this is my code base, this assumes that you can access it
 import util
@@ -20,9 +29,593 @@ import pt_util
 import tasks
 import recurrent_tasks as rectasks
 import assistants
+import students
 import dichotomies as dic
 import super_experiments as exp
 import grammars as gram
+import distance_factorization as df
+import df_util
+import sparse_autoencoder as spae
+import bae
+
+#############################################################################
+################## Models for server interface ##############################
+#############################################################################
+
+@dataclass
+class SBMF(exp.Model):
+
+    beta: float 
+    eps: float
+    br: int
+    tol: float
+    pimin: float
+    reg: str = 'sparse'
+    order: str = 'ball'
+
+    def fit(self, K, Strue):
+
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'weighted_hamming':[],
+                        'time':[]}
+
+        for it in range(len(K)):
+
+            t0 = time()
+            S, pi = df.cuts(K[it], 
+                            branches=self.br, eps=self.eps, beta=self.beta, 
+                            order=self.order, tol=self.tol, pimin=self.pimin,
+                            reg = self.reg, rmax=2*len(K[it]))
+            self.metrics['time'].append(time()-t0)
+
+            S = S.toarray()
+            bestS, bestpi = df_util.mindist(K[it], S, beta=1e-5)
+
+            nrm = np.sum(util.center(K[it])**2)
+            ls = util.centered_kernel_alignment(K[it], bestS@np.diag(bestpi)@bestS.T)
+            ham = len(bestS) - (np.abs((2*S-1).T@Strue[it]).max(0))
+            w = np.min([(Strue[it]>0).sum(0), (Strue[it]<0).sum(0)], axis=0)
+
+            self.metrics['loss'].append(ls)
+            self.metrics['mean_hamming'].append(np.mean(ham))
+            self.metrics['median_hamming'].append(np.median(ham))
+            self.metrics['weighted_hamming'].append(ham@w/np.sum(w))
+
+@dataclass
+class BAE(exp.Model):
+
+    dim_hid: int
+    max_iter: int = 100
+    eps: float = 1e-5
+    tol: float = 1e-2
+    lr: float = 0.0
+    beta: float = 5 
+    alpha: float = 0.88
+    whiten: bool = True
+
+    def fit(self, X, Strue):
+
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'time':[]}
+
+        for it in range(len(X)):
+
+            K = X[it]@X[it].T
+
+            mod = util.BAE(K, self.eps, rmax=len(Strue[it].T), whiten=self.whiten)
+
+            t0 = time()
+            S, _ = mod.fit(self.dim_hid, max_iter=self.max_iter, 
+                tol=self.tol, lr=self.lr, alpha=self.alpha, beta=self.beta)
+            self.metrics['time'].append(time()-t0)
+
+            bestS, bestpi = df_util.mindist(K, S)
+
+            nrm = np.sum(util.center(K)**2)
+            # ls = util.centered_distance(K, bestS@np.diag(bestpi)@bestS.T)/nrm
+            ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
+            ham = len(bestS) - (np.abs(S.T@Strue[it]).max(0))
+
+            self.metrics['loss'].append(ls)
+            self.metrics['mean_hamming'].append(np.mean(ham))
+            self.metrics['median_hamming'].append(np.median(ham))
+
+@dataclass
+class BAER(exp.Model):
+
+    dim_hid: int = None
+    steps: int = 1
+    max_iter: int = 100
+    decay_rate: float = 0.8
+    T0: float = 5
+    period: int = 2
+    rank: int = None
+    penalty: float = 1e-2
+
+    def fit(self, X, Strue):
+
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'mean_mat_ham':[],
+                        'median_mat_ham':[],
+                        'mean_norm_ham': [],
+                        'time':[]}
+
+        for it in range(len(X)):
+
+            K = X[it]@X[it].T
+
+            if self.rank is None:
+                r = len(Strue[it].T)
+            else:
+                r = self.rank
+            if self.dim_hid is None:
+                h = r
+            else:
+                h = self.dim_hid
+
+            mod = bae.KernelBAE(X[it], h, rank=r, 
+                steps=self.steps, penalty=self.penalty)
+
+            mod.init_optimizer(decay_rate=self.decay_rate,
+                period=self.period,
+                initial=self.T0)
+
+            t0 = time()
+            for i in range(self.max_iter):
+                mod.proj()
+                mod.grad_step()
+
+            self.metrics['time'].append(time()-t0)
+
+            S = mod.S.todense()
+
+            # bestS, bestpi = df_util.mindistX(X[it], S)
+
+            nrm = np.sum(util.center(K)**2)
+            # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
+            ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
+            cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
+            mat_ham = df_util.permham(Strue[it], 2*S-1)
+            norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
+            nbs = util.nbs(X[it], mod.S)
+
+            self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
+            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
+            self.metrics['median_mat_ham'].append(np.median(mat_ham))
+            self.metrics['loss'].append(cka)
+            self.metrics['nbs'].append(nbs)
+            self.metrics['mean_hamming'].append(np.mean(ham))
+            self.metrics['median_hamming'].append(np.median(ham))
+
+@dataclass
+class FFBAE(exp.Model):
+
+    dim_hid: int = None
+    max_iter: int = 100
+    decay_rate: float = 0.8
+    T0: float = 5
+    period: int = 2
+    rank: int = None
+    penalty: float = 1
+
+    def fit(self, X, Strue):
+
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'mean_mat_ham':[],
+                        'median_mat_ham':[],
+                        'mean_norm_ham': [],
+                        'nbs': [],
+                        'time':[]}
+
+        for it in range(len(X)):
+
+            K = X[it]@X[it].T
+
+            if self.rank is None:
+                r = len(Strue[it].T)
+            else:
+                r = self.rank
+            if self.dim_hid is None:
+                h = r
+            else:
+                h = self.dim_hid
+
+            mod = bae.BAE(X[it], h, rank=r, penalty=self.penalty)
+
+            mod.init_optimizer(decay_rate=self.decay_rate,
+                period=self.period,
+                initial=self.T0)
+
+            t0 = time()
+            for i in range(self.max_iter):
+                mod.grad_step()
+
+            self.metrics['time'].append(time()-t0)
+
+            S = mod.S.todense()
+
+            # bestS, bestpi = df_util.mindistX(X[it], S)
+
+            nrm = np.sum(util.center(K)**2)
+            # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
+            ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
+            cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
+            nbs = util.nbs(mod.energy())
+            mat_ham = df_util.permham(Strue[it], 2*S-1)
+            norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
+
+            self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
+            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
+            self.metrics['median_mat_ham'].append(np.median(mat_ham))
+            self.metrics['loss'].append(cka)
+            self.metrics['nbs'].append(nbs)
+            self.metrics['mean_hamming'].append(np.mean(ham))
+            self.metrics['median_hamming'].append(np.median(ham))
+
+
+@dataclass
+class SAE(exp.Model):
+    
+    n_hidden_ae: int
+    l1_coeff: float = 0.5
+    tied_weights: bool = False
+    neuron_resample_window: Optional[int] = None
+    neuron_resample_scale: float = 0.2
+
+    batch_size: int = 1024
+    steps: int = 10_000
+    log_freq: int = 100
+    lr: float = 1e-3
+    lr_scale: Callable[[int, int], float] = spae.constant_lr
+
+    def fit(self, X, Strue, Wtrue=None, verbose=False):
+        """
+        X is shape (n_instance, n_item, dim_x)
+        S is shape (n_instance, n_item, dim_latent)
+        W is shape (n_instance, dim_latent, dim_x)
+        """
+
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'cosine':[],
+                        'time':[],
+                        'frac':[]}
+
+        cfg = spae.AutoEncoderConfig(n_instances=len(X), 
+                                n_input_ae=len(X[0].T), 
+                                n_hidden_ae=self.n_hidden_ae,
+                                l1_coeff=self.l1_coeff,
+                                tied_weights=self.tied_weights,
+                                neuron_resample_window=self.neuron_resample_window,
+                                neuron_resample_scale=self.neuron_resample_scale,
+                                )
+
+        sae = spae.SparseAutoencoder(cfg)
+        sae.init_optimizer(lr=self.lr)
+        
+        ptX = torch.FloatTensor(X)
+        dl = pt_util.batch_data(ptX.transpose(0,1), 
+                                batch_size=self.batch_size)
+        
+        t0 = time()
+        for step in range(self.steps):            
+
+            # Update learning rate
+            step_lr = self.lr * self.lr_scale(step, self.steps)
+            for group in sae.optimizer.param_groups:
+                group['lr'] = step_lr
+            
+            ## Optimize
+            self.metrics['loss'].append(sae.grad_step(dl))
+
+            ## Active fraction
+            Z = sae.hidden(ptX).detach().numpy()
+            self.metrics['frac'].append((Z>1e-6).mean(-2))
+
+        self.metrics['time'].append(time()-t0)
+
+        ## Feature recovery
+        if Wtrue is not None:
+            West = sae.W_dec.detach().numpy()
+            Wtrue = np.array(Wtrue)
+            nrmtrue = Wtrue/la.norm(Wtrue, axis=-1, keepdims=True)
+            nrmest = West/la.norm(West, axis=-1, keepdims=True)
+            dot = np.einsum('ijl,ikl->ijk',nrmtrue,nrmest)
+            self.metrics['cosine'].append(dot.max(-1).mean(-1))
+            
+        ## Binarize the latents
+        Z = sae.hidden(torch.FloatTensor(X))
+        S = 2*(Z.detach().numpy() > 1e-8) - 1  # binarize into 'active' and not
+        
+        ## Assess ground truth recovery
+        ham = len(X[0]) - (np.abs(S.transpose((0,2,1))@Strue).max(1))
+
+        self.metrics['mean_hamming'].append(np.mean(ham, axis=-1))
+        self.metrics['median_hamming'].append(np.median(ham, axis=-1))
+
+@dataclass
+class BernVAE(exp.Model):
+    
+    dim_hid: int = None
+    steps: int = 500
+    temp: float = 2/3
+    alpha: float = 1
+    beta: float = 1 
+    period: float = 10
+    scale: float = 0.5
+    
+    def fit(self, X, Strue):
+        
+        self.metrics = {'loss':[],
+                        'mean_hamming':[],
+                        'median_hamming':[],
+                        'mean_mat_ham':[],
+                        'median_mat_ham':[],
+                        'mean_norm_ham': [],
+                        'time':[]}
+        
+        for it in range(len(X)):
+
+            if self.dim_hid is None:
+                dh = len(Strue[it].T)
+            else:
+                dh = self.dim_hid
+            
+            mod = students.BVAE(len(X[it].T), 
+                                dh, 
+                                temp=self.temp,
+                                beta=self.beta,
+                                scale=self.scale)
+            
+            ptX = torch.FloatTensor(X[it] - X[it].mean(0))
+            
+            dl = pt_util.batch_data(ptX)
+            
+            ## Fit 
+            t0 = time()
+            for step in range(self.steps):
+                ## Exponential annealing schedule
+                T = self.temp*(self.alpha**(step//self.period))
+                mod.temp = T
+                
+                ls = mod.grad_step(dl)
+                
+            self.metrics['time'].append(time()-t0)
+            # self.metrics['loss'].append(ls)
+            
+            S = np.sign(mod.q(ptX).detach().numpy())
+            
+            ## Assess ground truth recovery
+            ham = len(X[it]) - (np.abs(S.T@Strue[it]).max(0))
+            cka = util.centered_kernel_alignment(X[it]@X[it].T, S@S.T)
+            mat_ham = df_util.permham(Strue[it], S)
+            norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0), (Strue[it]<=0).sum(0)],0)
+
+            self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
+            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
+            self.metrics['median_mat_ham'].append(np.median(mat_ham))
+            self.metrics['mean_hamming'].append(np.mean(ham))
+            self.metrics['median_hamming'].append(np.median(ham))
+            self.metrics['loss'].append(cka)
+            
+
+#############################################################################
+################## Tasks for server interface ###############################
+#############################################################################
+
+@dataclass
+class SparseFeatures(exp.Task):
+
+    samps: int
+    num_points: int 
+    num_feats: int
+    dim_feats: int 
+    sparsity: float = 0.1
+    spaced: bool = True
+    enforce_nz: bool = False
+    seed: int = 0
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        Xs = []
+        Strues = []
+        Wtrues = []
+        for j in range(self.samps):
+
+            ## Draw random features, sparse mask, but at least one is active
+            S = np.random.rand(self.num_points, self.num_feats)
+            M = np.random.choice([0,1], 
+                size=(self.num_points, self.num_feats),
+                p=[1-self.sparsity, self.sparsity])
+            if self.enforce_nz:
+                foo = np.eye(self.num_feats)[np.random.choice(np.arange(self.num_feats), self.num_points)]
+                M[M.sum(1)==0] = foo[M.sum(1)==0]
+            S = S*M
+
+            if self.spaced:
+                W = util.chapultapec(self.num_feats, self.dim_feats)
+            else:
+                W = np.random.randn(self.num_feats, self.dim_feats)/np.sqrt(self.dim_feats)
+            X = S@W
+
+            Xs.append(X)
+            Strues.append(S)
+            Wtrues.append(W)
+
+        return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
+
+@dataclass
+class SchurCategories(exp.Task):
+
+    samps: int
+    N: int
+    snr: float
+    dim: int = 1000
+    p: float = 0.5
+    scl: float = 0.1
+    orth: bool = True
+    r: int = None
+    seed: int=0
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        if self.r is None:
+            r = int(np.sqrt(2*self.N))
+        else:
+            r = self.r 
+
+        Xs = []
+        Strues = []
+        for j in range(self.samps):
+
+            S = df_util.schurcats(self.N, self.p, r)
+            it = 0
+            while len(S.T) < r:
+                S = df_util.schurcats(self.N, self.p, r)
+                it += 1
+                if it > 100:
+                    break
+            
+            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, self.scl)
+
+            Xs.append(X)
+            Strues.append(S)
+
+        return {'X': Xs, 'Strue': Strues}
+
+
+@dataclass
+class HierarchicalCategories(exp.Task):
+
+    samps: int
+    N: int
+    bmin: int 
+    bmax: int 
+    snr: float
+    dim: int = 1000
+    orth: bool = True
+    seed: int=0
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        Xs = []
+        Strues = []
+        for it in range(self.samps):
+            S = df_util.randtree_feats(self.N, self.bmin, self.bmax)
+            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-4)
+            # r = len(S.T)
+            # W = np.random.randn(self.dim,r)/np.sqrt(self.dim)
+            # if self.orth:
+            #     W = la.qr(W, mode='economic')[0]
+
+            # noise = np.random.randn(self.dim, self.N)/np.sqrt(self.dim)
+            # a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
+
+            # X = S@W.T + a*noise.T
+            Xs.append(X)
+            Strues.append(2*S-1) # sign version
+
+        return {'X': np.array(Xs), 'Strue': Strues}
+
+@dataclass
+class SchurTreeCategories(exp.Task):
+
+    samps: int
+    N: int
+    snr: float
+    bmin: int 
+    bmax: int 
+    dim: int = 1000
+    p: float = 0.5
+    scl: float = 1e-3
+    orth: bool = True
+    r: int = None
+    seed: int=0
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        if self.r is None:
+            r = int(np.sqrt(2*self.N))
+        else:
+            r = self.r 
+
+        Xs = []
+        Strues = []
+        for it in range(self.samps):
+
+            Sschur = df_util.schurcats(self.N, self.p, r)
+            it = 0
+            best = len(Sschur.T)
+            while best < r:
+                newS = df_util.schurcats(self.N, self.p, r)
+                if len(newS.T) > best:
+                    Sschur = newS*1
+                it += 1
+                if it > 100:
+                    break
+
+            # for k in range(len(Sschur.T)):
+            Stree = 2*df_util.randtree_feats(self.N, self.bmin, self.bmax)-1
+            
+            S = np.hstack([Sschur, Stree])
+
+            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, self.scl)
+
+            Xs.append(X)
+            Strues.append(S)
+
+        return {'X': np.array(Xs), 'Strue': Strues}
+
+@dataclass
+class CubeCategories(exp.Task):
+
+    samps: int
+    bits: int 
+    snr: float
+    dim: int = 100
+    orth: bool = True
+
+    def sample(self):
+
+        np.random.seed(0)
+
+        N = 2**self.bits
+
+        S = 2*util.F2(self.bits)-1
+
+        Ks = []
+        Strue = []
+        for it in range(self.samps):
+            if self.orth:
+                W = sts.ortho_group.rvs(self.dim)[:,:self.bits]
+            else:
+                W = np.random.randn(self.dim, self.bits)/np.sqrt(self.dim)
+
+            noise = np.random.randn(self.dim, N)/np.sqrt(self.dim)
+            a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
+
+            X = S@W.T + a*noise.T
+            Ks.append(X@X.T)
+            Strue.append(S)
+
+        return {'K': Ks, 'Strue': Strue}
 
 
 ######################################################################
@@ -109,26 +702,35 @@ class OODFF(exp.FeedforwardExperiment):
 #             noise_var=noise,
 #             dim_pattern=dim_inp)
 #         outs = tasks.RandomDichotomies(d=out_dics)
-
+    
 #         super(LogicTask, self).__init__(inps, outs)
     
 
 class Cifar10(exp.NetworkExperiment):
 
-    def __init__(self):
+    def __init__(self, labels=None):
+        """
+        labels is a (10, num_label) tensor
+        """
 
         self.transform = transforms.Compose(
                             [transforms.ToTensor(),
                              transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
-        self.dim_inp = 3
-        self.dim_out = 10
+        if labels is None:
+            self.dim_out = 10
+            self.targ = torch.eye(10)
+        else:
+            self.dim_out = labels.shape[1]
+            self.targ = labels
+
+        self.dim_inp = 3    # RGB channels
 
         self.test_data_args = {'train': False}
 
     def init_metrics(self):
 
-        self.metrics = {'train_loss':[]} 
+        self.metrics = {'train_loss':[] }
 
     def draw_data(self, train=True):
 
@@ -139,8 +741,45 @@ class Cifar10(exp.NetworkExperiment):
 
         inps = torch.tensor(dset.data.transpose(0,3,1,2)).float()
 
-        return cond, (inps, cond)
+        return cond, (inps, self.targ[cond])
 
+
+class MNIST(exp.NetworkExperiment):
+
+    def __init__(self, labels=None):
+        """
+        labels is a (10, num_label) tensor
+        """
+
+        self.transform = transforms.Compose(
+                            [transforms.ToTensor(),
+                             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+
+        if labels is None:
+            self.dim_out = 10
+            self.targ = torch.eye(10)
+        else:
+            self.dim_out = labels.shape[1]
+            self.targ = labels
+
+        self.dim_inp = 1    # RGB channels
+
+        self.test_data_args = {'train': False}
+
+    def init_metrics(self):
+
+        self.metrics = {'train_loss':[] }
+
+    def draw_data(self, train=True):
+
+        dset = torchvision.datasets.MNIST(root='./data', train=train,
+                            download=True, transform=self.transform)
+
+        cond = torch.tensor(dset.targets)
+
+        inps = torch.tensor(dset.data[:,None,...]).float()
+
+        return cond, (inps, self.targ[cond])
 
 class RandomOrthogonal(exp.FeedforwardExperiment):
 
@@ -213,7 +852,7 @@ class RandomOrthogonal(exp.FeedforwardExperiment):
 class RandomKernelClassification(exp.FeedforwardExperiment):
 
     def __init__(self, num_points, num_targets, dim_inp, signal=None, alignment=None, 
-        input_noise=0.1, seed=None, scale=1):
+        input_noise=0.1, seed=None, scale=1, max_rank=None):
 
         self.exp_prm = {k:v for k,v in locals().items() if k not in ['self', '__class__']}
 
@@ -231,6 +870,13 @@ class RandomKernelClassification(exp.FeedforwardExperiment):
         else:
             raise ValueError('Must provide either signal or alignment')
         
+        if max_rank is None:
+            self.max_rank = num_points - 1
+        elif self.alignment < 1e-6:
+            self.max_rank = max_rank 
+        else:
+            self.max_rank = max_rank + num_targets
+
         if seed is not None:
             np.random.seed(seed)
             self.seed = seed
@@ -251,7 +897,8 @@ class RandomKernelClassification(exp.FeedforwardExperiment):
         ## Draw inputs 
         Ky = (2*Y-1)@(2*Y-1).T
         Kx = util.random_psd(Ky, self.alignment,
-                            size=1, scale=np.max([scale, 1e-12]))
+                            size=1, scale=np.max([scale, 1e-12]),
+                            max_rank=self.max_rank)
         lx, vx = la.eigh(np.squeeze(Kx))
 
         ## Define tasks
@@ -259,11 +906,15 @@ class RandomKernelClassification(exp.FeedforwardExperiment):
         inps = tasks.LinearExpansion(mns, dim_inp, noise_var=input_noise)
         outs = tasks.BinaryLabels(H[:,these_targs].T)
 
+        ## Save information
+        self.info = {'input_kernel': Kx, 'target_kernel': Ky}
+
         super(RandomKernelClassification, self).__init__(inps, outs)
 
     def exp_folder_hierarchy(self):
 
         FOLDERS = (f"/{self.signal}_signal/"
+                   f"/rank_{self.max_rank}/"
                    f"/seed_{'None' if self.seed is None else self.seed}/"
                    f"/scale_{self.scale}/")
 

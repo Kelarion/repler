@@ -18,6 +18,7 @@ import numpy as np
 import scipy
 import scipy.linalg as la
 import scipy.special as spc
+import scipy.stats as sts
 
 import pt_util
 
@@ -66,6 +67,74 @@ class Feedforward(nn.Module):
         h = self.network(x)
         return h
 
+class NewFeedforward(nn.Module):
+    """
+    Generic feedforward module, can be, e.g., the encoder or decoder of VAE
+    """
+    def __init__(self, *dim_layers, nonlinearity='ReLU', encoder=None, bias=True, 
+        layer_type=None):
+        super(NewFeedforward, self).__init__()
+        
+        onion = OrderedDict()
+        self.ndim = dim_layers
+        self.activation = nonlinearity
+        
+        if type(nonlinearity) is str:
+            nonlinearity = [nonlinearity for _ in dim_layers[1:]]
+
+        if layer_type is None:
+            self.layer_type = nn.Linear
+        else:
+            self.layer_type = layer_type
+        
+        if encoder is not None:
+            # optionally include a pre-network encoder, e.g. if inputs are indices
+            onion['embedding'] = encoder
+        
+        for l in range(len(dim_layers)-1):
+            # onions have layers
+            onion['layer%d'%l] = self.layer_type(dim_layers[l], dim_layers[l+1], bias=bias)
+            if nonlinearity[l] is not None:
+                if 'softmax' in nonlinearity[l].lower():
+                    onion['link%d'%l] = getattr(nn, nonlinearity[l])(dim=-1)
+                else:
+                    onion['link%d'%l] = getattr(nn, nonlinearity[l])()
+        
+        self.network = nn.Sequential(onion)
+        
+    def forward(self, x):
+        h = self.network(x)
+        return h
+
+
+class Mattention(nn.Module):
+    
+    def __init__(self, dim_inp, width):
+        """
+        Bilinear layer. 
+        
+        Given two dim_inp-dimensional patterns x, y, computes 
+        
+        z_k = x.T@R_k@y
+        
+        for k = 1,...,width
+        """
+        
+        super().__init__()
+        
+        std = 1/np.sqrt(dim_inp)
+    
+        self.R = nn.Parameter(torch.randn(width,dim_inp,dim_inp)*std)
+    
+    def forward(self, X, Y):
+        """
+        X and Y are shape (...,dim_inp)
+        """
+        outers = torch.einsum('...i,...j->...ij', X, Y)
+        xRy = torch.einsum('kij,...ij->...k', self.R, outers)
+        return xRy
+
+
 class ConvLayers(nn.Module):
 
     def __init__(self, dim_layers, kern, nonlinearity='ReLU'):
@@ -73,11 +142,12 @@ class ConvLayers(nn.Module):
 
         onion = OrderedDict()
 
+        pool = nn.MaxPool2d(2, 2)
         for l in range(len(dim_layers)-1):
-            onion['conv%d'%l] = nn.Conv2d(dim_layers[l], dim_layers[l+1], kern)
+            onion['conv%d'%l] = nn.Conv2d(dim_layers[l], dim_layers[l+1], kern, padding=(kern-1)//2)
             if nonlinearity is not None:
                 onion['link%d'%l] = getattr(nn, nonlinearity)()
-            onion['pool%d'%l] = nn.MaxPool2d(2, 2)
+            onion['pool%d'%l] = pool
 
         self.network = nn.Sequential(onion)
 
@@ -691,21 +761,53 @@ class Categorical(DeepDistribution):
 class NeuralNet(nn.Module):
     """Abstract class for all pytorch models, to enforce some regularity"""
     def __init__(self):
-        super(NeuralNet,self).__init__()
+        super().__init__()
+        self.initialized = False
+        self.__name__ = self.__class__.__name__
 
     def forward(self):
         raise NotImplementedError
-        
-    def grad_step(self):
-        """ Needs init_optimizer """
+
+    def loss(self, batch):
+        """
+        Should include whatever operations are necessary to compute loss
+        on the datapoints contained in batch, and return said loss
+        """
         raise NotImplementedError
+
+    def grad_step(self, dl, **opt_args):
+        """ Needs init_optimizer """
+
+        if not self.initialized:
+            self.init_optimizer(**opt_args)
+
+        running_loss = 0
+        
+        for i, batch in enumerate(dl):
+            self.optimizer.zero_grad()
+            
+            # nums, labels = batch
+            # nums = nums.squeeze(1).reshape((-1, 784))
+            
+            # # forward
+            # y_hat = self(batch[0])
+            # loss = self.loss(batch[1], y_hat, *self.loss_args(batch))
+            loss = self.loss(batch)
+
+            # optimise
+            loss.backward()
+            self.optimizer.step()
+            
+            running_loss += loss.item()
+            
+        return running_loss/(i+1)
 
     def init_weights(self, scale=None):
         """ Initialize weights of model, with optional scaling """
         if scale is None:
             scale = 1
         for p in self.parameters():
-            p.data.normal_(0, scale/np.sqrt(p.shape[1]))
+            p.data.normal_(0, scale/np.sqrt(p.shape[-1]))
 
     def init_optimizer(self, opt_alg=optim.Adam, **opt_alg_args):
         self.optimizer = opt_alg(self.parameters(), **opt_alg_args)
@@ -725,15 +827,24 @@ class NeuralNet(nn.Module):
 class ConvNet(NeuralNet):
     ## TODO: support different loss functions
 
-    def __init__(self, dim_inp, dim_out, conv_width, ff_width, kern, activation, 
-        depth=1, fixed_readout=True):
+    def __init__(self, dim_inp, dim_out, conv_width, ff_width, kern, inp_res, 
+                activation='ReLU', depth=2, conv_depth=2, fixed_readout=True):
+        """
+        conv_width: number of convolution kernels
+        ff_width: width of feedforward layers
+        kern: size of convolutional kernel
+        """
 
         super().__init__()
 
-        self.conv = ConvLayers([dim_inp] + [conv_width]*depth, 
+        self.conv = ConvLayers([dim_inp] + [conv_width]*conv_depth, 
             kern=kern, nonlinearity=activation)
 
-        ff_layers = [conv_width*(kern**2)] + [ff_width]*depth
+        out_res = inp_res//(2**conv_depth)
+        if out_res < 1:
+            raise ValueError('Too much downsampling in convolutional layers!')
+
+        ff_layers = [conv_width*(out_res**2)] + [ff_width]*depth
         self.ff = Feedforward(ff_layers, nonlinearity=activation)
 
         self.out = nn.Linear(ff_width, dim_out)
@@ -759,7 +870,7 @@ class ConvNet(NeuralNet):
             self.optimizer.zero_grad()
 
             output = self.forward(nums)
-            loss = F.cross_entropy(output, labels)
+            loss = nn.BCEWithLogitsLoss()(output, labels.float())
             loss.backward()
             self.optimizer.step()
 
@@ -845,6 +956,52 @@ class VAE(NeuralNet):
         
         return xent-dkl
 
+
+class BVAE(NeuralNet):
+    """
+    Bernoulli Variational AutoEncoder
+    """
+    
+    def __init__(self, dim_inp, dim_hid, temp=2/3, scale=0.5, beta=1):
+        
+        super().__init__()
+
+        self.h = dim_hid
+        self.r = dim_inp
+
+        self.q = nn.Linear(dim_inp, dim_hid) # x -> s
+        self.p = nn.Linear(dim_hid, dim_inp) # s -> x
+        
+        self.temp = temp
+        self.scl = scale
+        self.beta = beta
+        
+        p0 = np.random.rand(self.h)*0.4 + 1e-3 # uniformly distributed coding level
+        self.x0 = torch.FloatTensor(np.log(p0/(1-p0)))
+        
+    def forward(self, X):
+        eps = torch.FloatTensor(sts.logistic(scale=self.scl).rvs(size=(len(X), self.h)))
+        return self.p(torch.sigmoid((self.q(X) + eps)/self.temp))
+    
+    def hidden(self, X):
+        eps = torch.FloatTensor(sts.logistic(scale=self.scl).rvs(size=(len(X), self.h)))
+        return torch.sigmoid((self.q(X) + eps)/self.temp)
+    
+    def loss(self, batch):
+        
+        ptX = batch[0]
+        
+        eps = torch.FloatTensor(sts.logistic(scale=self.scl).rvs(size=(len(ptX), self.h)))
+        Z = self.q(ptX) + eps
+        S = torch.sigmoid(Z/self.temp)
+        Xhat = self(ptX)
+
+        recon = nn.MSELoss()(Xhat, ptX)
+        Dkl = nn.BCEWithLogitsLoss()(S, S) - torch.mean(S*self.x0[None,:])
+        
+        return recon + self.beta*Dkl
+
+
 class MultiGLM(NeuralNet):
     """A deep GLM model with multiple outputs"""
     def __init__(self, encoder, decoder, p_targ, p_latent=None):
@@ -883,6 +1040,29 @@ class MultiGLM(NeuralNet):
         if p_latent is not None:
             self.__name__ += self.latent.name()
         
+    # def forward(self, x):
+    #     """
+    #     Outputs the parameters of p_x, so that the likelihood can be evaluated
+    #     """
+    #     qz_params = self.enc(x) # encoding
+    #     if self.latent is None:
+    #         z = qz_params
+    #     else:
+    #         z = self.latent.sample(qz_params) # stochastic part
+        
+    #     py_params = self.dec(z) # decoding
+    #     # recon_x = self.p_x(px_params) # draw outputs
+        
+    #     return py_params, z, qz_params
+    def hidden(self, x):
+        qz_params = self.enc(x) # encoding
+        if self.latent is None:
+            z = qz_params
+        else:
+            z = self.latent.sample(qz_params) # stochastic part
+
+        return z
+
     def forward(self, x):
         """
         Outputs the parameters of p_x, so that the likelihood can be evaluated
@@ -896,7 +1076,7 @@ class MultiGLM(NeuralNet):
         py_params = self.dec(z) # decoding
         # recon_x = self.p_x(px_params) # draw outputs
         
-        return py_params, z, qz_params
+        return py_params
     
     def grad_step(self, data, **opt_args):
         """ Single step of maximum likelihood over the data """
@@ -912,7 +1092,7 @@ class MultiGLM(NeuralNet):
             # nums = nums.squeeze(1).reshape((-1, 784))
             
             # # forward
-            px_params, z, qz_params = self(nums)
+            px_params = self(nums)
 
             msk = ~torch.isnan(labels)
             loss = -self.obs.distr(px_params[msk]).log_prob(labels[msk]).mean()
@@ -931,22 +1111,45 @@ class MultiGLM(NeuralNet):
             
         return running_loss/(i+1)
 
-class SimpleMLP(MultiGLM):
+class SimpleMLP(NeuralNet):
 
     def __init__(self, dim_inp, width, dim_out, p_targ, activation='ReLU', 
-                    depth=1, p_latent=None, init_scale=None, **ff_args):
+                    depth=1, p_latent=None, init_scale=None, train_dec=True,
+                    **ff_args):
 
-        enc = Feedforward([dim_inp] + [width]*depth, nonlinearity=activation, **ff_args)
+        super().__init__()
 
-        dec = nn.Linear(width, dim_out)
+        self.enc = Feedforward([dim_inp] + [width]*depth, nonlinearity=activation, **ff_args)
+        self.dec = nn.Linear(width, dim_out)
 
-        super(SimpleMLP, self).__init__(enc, dec, p_targ(dim_out), p_latent)
+        self.dec.weight.requires_grad = train_dec
+        self.dec.bias.requires_grad = train_dec
+
+        # super(SimpleMLP, self).__init__(enc, dec, p_targ(dim_out), p_latent)
+
+        self.obs = p_targ(dim_out)
 
         if init_scale is not None:
             self.init_weights(init_scale)
 
         self.__name__ = f'MLP_{depth}_{width}_{activation}'
 
+        self.depth = depth
+
+    def hidden(self, x):
+        zs = []
+        for l in range(self.depth):
+            zs.append(self.enc.network[:2*(l+1)](x))
+            
+        return torch.stack(zs)
+
+    def forward(self, x):
+        return self.dec(self.enc(x))
+
+    def loss(self, batch):
+        y_hat = self(batch[0])
+        y = batch[1]
+        return -self.obs.distr(y_hat).log_prob(y).mean()
 
 class ShallowNetwork(NeuralNet):
     """ Manually-trained network with one hidden layer """
@@ -996,29 +1199,53 @@ class ShallowNetwork(NeuralNet):
         """ x is shape (dim_x, ...) """
 
         z = self.activation(torch.matmul(self.W, x.T) + self.b1)
-        return (torch.matmul(self.J, z) + self.b2).T, z.T
+        return (torch.matmul(self.J, z) + self.b2).T
+
+    def hidden(self, x):
+        return self.activation(torch.matmul(self.W, x.T) + self.b1)
 
     def init_optimizer(self, lr=1e-3, do_rms=False, rms_beta=0.99,
+                        W_lr=1e-3, J_lr=1e-3, b1_lr=1e-3, b2_lr=1e-3,
                         train_outputs=True, train_inputs=True, 
-                        train_inp_bias=True, train_out_bias=True):
+                        train_inp_bias=True, train_out_bias=True,
+                        normalize_J=False):
 
-        self.train_W = train_inputs
-        self.train_J = train_outputs
-        self.train_b1 = train_inp_bias
-        self.train_b2 = train_out_bias
+        # self.train_W = train_inputs
+        # self.train_J = train_outputs
+        # self.train_b1 = train_inp_bias
+        # self.train_b2 = train_out_bias
 
-        self.lr = lr
+        self.W_lr = W_lr 
+        self.J_lr = J_lr 
+        self.b1_lr = b1_lr
+        self.b2_lr = b2_lr
+
+        if not train_outputs:
+            self.J_lr = 0
+        if not train_inputs:
+            self.W_lr = 0
+        if not train_inp_bias:
+            self.b1_lr = 0 
+        if not train_out_bias:
+            self.b2_lr = 0 
+
+        self.normalize_J = normalize_J
+
+        # self.lr = lr
         self.do_rms = do_rms
         self.beta = rms_beta
 
         self.initialized = True
 
-    def grad_step(self, data, **opt_args):
+    def grad_step(self, data, full_loss=False, **opt_args):
 
         if not self.initialized:
             self.init_optimizer(**opt_args)
 
-        running_loss = 0
+        if full_loss:
+            running_loss = []
+        else:
+            running_loss = 0
         
         with torch.no_grad():
             for i, batch in enumerate(data):
@@ -1036,45 +1263,40 @@ class ShallowNetwork(NeuralNet):
                 err = (outs.T - self.p_targ.distr(pred.T).mean.T).numpy()
                 err = torch.tensor(np.where(np.isnan(err), 0.0, err)).float()
 
-                if self.train_J:
-                    dJ = -(err@z.T)/inps.shape[0]
-                if self.train_b2:
-                    db2 = -err.mean(1, keepdims=True)
+                dJ = -(err@z.T)/inps.shape[0]
+                db2 = -err.mean(1, keepdims=True)
 
                 d2 = (self.J.T@err)*self.activation.deriv(curr)
-                if self.train_W:
-                    dW = -(d2@inps)/inps.shape[0]
-                if self.train_b1:
-                    db1 = -d2.mean(1, keepdim=True)
+                dW = -(d2@inps)/inps.shape[0]
+                db1 = -d2.mean(1, keepdim=True)
+
+                if self.normalize_J:
+                    J_norm = torch.norm(self.J, dim=1, keepdim=True)
 
                 if self.do_rms:
-                    if self.train_W:
-                        if 'w_rms' not in dir(self):
-                            self.w_rms = 0.1*dW.pow(2)
-                        else:
-                            self.w_rms = self.beta*self.w_rms + (1-self.beta)*dW.pow(2)
-                        w_alr = 1/np.sqrt((self.w_rms/(1-self.beta))+1e-8)
+                    if 'w_rms' not in dir(self):
+                        self.w_rms = 0.1*dW.pow(2)
+                    else:
+                        self.w_rms = self.beta*self.w_rms + (1-self.beta)*dW.pow(2)
+                    w_alr = 1/np.sqrt((self.w_rms/(1-self.beta))+1e-8)
 
-                    if self.train_b1:
-                        if 'b1_rms' not in dir(self):
-                            self.b1_rms = 0.1*db1.pow(2)
-                        else:
-                            self.b1_rms = self.beta*self.b1_rms + (1-self.beta)*db1.pow(2)
-                        b1_alr = 1/np.sqrt((self.b1_rms/(1-self.beta))+1e-8)
+                    if 'b1_rms' not in dir(self):
+                        self.b1_rms = 0.1*db1.pow(2)
+                    else:
+                        self.b1_rms = self.beta*self.b1_rms + (1-self.beta)*db1.pow(2)
+                    b1_alr = 1/np.sqrt((self.b1_rms/(1-self.beta))+1e-8)
 
-                    if self.train_J:
-                        if 'j_rms' not in dir(self):
-                            self.j_rms = 0.1*dJ.pow(2)
-                        else:
-                            self.j_rms = self.beta*self.j_rms + (1-self.beta)*dJ.pow(2)
-                        j_alr = 1/np.sqrt((self.j_rms/(1-self.beta))+1e-8)
+                    if 'j_rms' not in dir(self):
+                        self.j_rms = 0.1*dJ.pow(2)
+                    else:
+                        self.j_rms = self.beta*self.j_rms + (1-self.beta)*dJ.pow(2)
+                    j_alr = 1/np.sqrt((self.j_rms/(1-self.beta))+1e-8)
 
-                    if self.train_b2:
-                        if 'b2_rms' not in dir(self):
-                            self.b2_rms = 0.1*db2.pow(2)
-                        else:
-                            self.b2_rms = self.beta*self.b2_rms + (1-self.beta)*db2.pow(2)
-                        b2_alr = 1/np.sqrt((self.b2_rms/(1-self.beta))+1e-8)
+                    if 'b2_rms' not in dir(self):
+                        self.b2_rms = 0.1*db2.pow(2)
+                    else:
+                        self.b2_rms = self.beta*self.b2_rms + (1-self.beta)*db2.pow(2)
+                    b2_alr = 1/np.sqrt((self.b2_rms/(1-self.beta))+1e-8)
 
                 else:
                     w_alr = 1
@@ -1082,18 +1304,23 @@ class ShallowNetwork(NeuralNet):
                     j_alr = 1
                     b2_alr = 1
 
-                if self.train_W:
-                    self.W -= self.lr*w_alr*dW
-                if self.train_b1:
-                    self.b1 -= self.lr*b1_alr*db1
-                if self.train_J:
-                    self.J -= self.lr*j_alr*dJ
-                if self.train_b2:
-                    self.b2 -= self.lr*b2_alr*db2
+                self.W -= self.W_lr*w_alr*dW
+                self.b1 -= self.b1_lr*b1_alr*db1
+                self.J -= self.J_lr*j_alr*dJ
+                self.b2 -= self.b2_lr*b2_alr*db2
 
-                running_loss += loss.item()
-            
-        return running_loss/(i+1)
+                if self.normalize_J:
+                    self.J = J_norm/torch.norm(self.J, dim=1, keepdim=True)
+
+                if full_loss:
+                    running_loss.append(loss.item())
+                else:
+                    running_loss += loss.item()
+        
+        if full_loss:
+            return running_loss
+        else:
+            return running_loss/(i+1)
 
 
 class GenericRNN(NeuralNet):
@@ -1164,7 +1391,7 @@ class GenericRNN(NeuralNet):
         else:
             return decoded, output
 
-    def transparent_forward(self, inp, hidden=None, give_gates=False, debug=False):
+    def hidden(self, inp, hidden=None, give_gates=False, debug=False):
         """
         Run the RNNs forward function, but returning hidden activity throughout the sequence
 

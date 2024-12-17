@@ -21,6 +21,24 @@ import util
 import grammars as gram
 
 
+class ContextDependent(object):
+    def __init__(self, *Ys, min_length=None, max_length=None, ctx_per_trial=1):
+        """
+        Each label vector Y should be (num_stim, dim_label)
+        """
+
+        if len(Ys) > 0:
+            self.num_ctx = len(Ys)
+        else:
+            raise ValueError('Must have at least one context')
+
+        if np.any([y.shape != Ys[0].shape for y in Ys]):
+            raise ValueError('All labels must have the same dimension')
+
+        self.num_stim = len(Ys[0])
+        self.dim_out = len(Ys[0].T)
+
+
 class TwoColorSelection(object):
     
     def __init__(self, num_cols, T_inp1, T_inp2, T_resp, T_tot, go_cue=True,

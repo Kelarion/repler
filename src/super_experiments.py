@@ -8,9 +8,10 @@ import os
 import pickle
 import warnings
 import re
+from dataclasses import dataclass, fields
 
 import torch
-import torchvision
+# import torchvision
 import torch.optim as optim
 import numpy as np
 import scipy.special as spc
@@ -24,13 +25,165 @@ import util
 import pt_util
 import assistants as ta
 import dichotomies as dic
+import server_utils as su
 
 from sklearn.exceptions import ConvergenceWarning
 import warnings # I hate convergence warnings so much never show them to me
 warnings.simplefilter("ignore", category=ConvergenceWarning)
 
+
+#%%%%%%%%%%%%
+
+@dataclass
+class Task:
+
+    def __post_init__(self):
+        """
+        Store the arguments that were used to create object
+        """
+
+        fs = fields(self)
+        # for base in type(self).__bases__:
+        #     basefs = set(fields(base))
+        #     fs = [f for f in fs if f not in basefs]
+        self.args = {f.name: getattr(self, f.name) for f in fs}
+
+    def sample(self):
+        """
+        Should return a single data point, which a Model can accept,
+        and be indexed bt `i' in some way
+        """
+        return NotImplementedError
+
+@dataclass
+class Model:
+
+    # if there's multiple model instances, need to handle case-by-case
+
+    def __post_init__(self):
+        """
+        Store the arguments that were used to create object
+        """
+
+        fs = fields(self)
+        # for base in type(self).__bases__:
+        #     basefs = set(fields(base))
+        #     fs = [f for f in fs if f not in basefs]
+        self.args = {f.name: getattr(self, f.name) for f in fs}
+
+    def fit(self):
+        """
+        A function which takes in data and changes parameters
+        Should also populate the metrics dictionary
+        """
+        return NotImplementedError
+
+    def score(self):
+        """
+        A function which takes in data and returns a score
+        """
+        return NotImplementedError
+
+    def save(self, fname):
+        """
+        To save the model parameters -- NOT the metrics
+        """
+        pass
+
+    def load(self, fname):
+        """
+        To load the model parameters -- NOT the metrics
+        """
+        pass
+
+
+#%% Base experiment
+@dataclass
+class Experiment:
+
+    task: Task
+    model: Model
+
+    def run(self):
+        """
+        Should take in args
+        """
+
+        data = self.task.sample()
+        self.model.fit(**data)
+
+    def save_experiment(self, SAVE_DIR):
+        """
+        Save the experimental information: model parameters, learning metrics,
+        and hyperparameters. 
+        """
+        
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        if not os.path.isdir(SAVE_DIR+FOLDERS):
+            os.makedirs(SAVE_DIR+FOLDERS)
+        
+        # save all hyperparameters, for posterity
+        # all_args = {'task': self.task, 'model': self.model}
+        
+        params_fname = 'parameters_'+expinf  # extension may vary 
+        metrics_fname = 'metrics_'+expinf+'.pkl'
+        # args_fname = 'arguments_'+expinf+'.pkl'
+        
+        self.model.save(f'{SAVE_DIR}{FOLDERS}{params_fname}')
+
+        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+            pickle.dump(self.model.metrics, f, -1)
+
+        # with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
+        #     pickle.dump(all_args, f, -1)
+
+    def load_experiment(self, SAVE_DIR):
+        """
+        Requires that the model is specified
+        """
+
+        FOLDERS = self.folder_hierarchy()
+        expinf = self.file_suffix()
+        
+        params_fname = 'parameters_'+expinf
+        metrics_fname = 'metrics_'+expinf+'.pkl'
+        
+        self.model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}')
+
+        path2file = os.path.normpath(SAVE_DIR+FOLDERS+metrics_fname)
+        with open(path2file , 'rb') as f:
+            self.model.metrics = pickle.load(f)
+
+    ####### file I/O functions for this experiment
+    # I do this in order to standardise everything within this experiment
+    # def retrive(self, DIR):
+    #     """
+    #     Get a list of all experiments stored in DIR
+    #     """
+
+    def folder_hierarchy(self):
+        """
+        This should return a string FOLDERS which child classes append to
+        """
+
+        FOLDERS = '/%s/'%self.task.__class__.__name__
+        for key, val in self.task.args.items():
+            FOLDERS += '/%s_%s/'%(key, su.stringify(val))
+
+        FOLDERS += '/%s/'%self.model.__class__.__name__
+        for key, val in self.model.args.items():
+            FOLDERS += '/%s_%s/'%(key, su.stringify(val))
+
+        return FOLDERS
+
+    def file_suffix(self):
+        return ''
+
+
 #%% Base class
-class NetworkExperiment():
+class NetworkExperiment:
 
     def __init__(self):
         """
@@ -39,10 +192,35 @@ class NetworkExperiment():
         return NotImplementedError
 
 
+    def run(self, args):
+
+        model = self.initialize_network(args['model'], **args['model_args'])
+        self.train_network(model, **args['opt_args'])
+
+    def folder_hierarchy(self):
+
+        FOLDERS = super().folder_hierarchy()
+
+        FOLDERS += self.inputs.__name__ + '/'
+        FOLDERS += self.outputs.__name__ + '/'
+        FOLDERS += self.exp_folder_hierarchy()
+
+        return FOLDERS
+
+    def exp_folder_hierarchy(self):
+        return ''
+
+    def file_suffix(self):
+        return self.models[0].__name__
+
     def init_metrics(self):
 
-        self.metrics = {'train_loss': []}
+        super().init_metrics()
 
+        self.metrics = self.metrics | {'train_loss': []}
+
+    def compute_metrics(self):
+        pass
 
     def draw_data(self):
         """
@@ -119,7 +297,6 @@ class NetworkExperiment():
                 with torch.no_grad():
                     for model in self.models:
                         self.model = model
-                        self.compute_representation_metrics(skip_rep_metrics)
 
                         if not skip_metrics:
                             self.compute_metrics()
@@ -137,101 +314,6 @@ class NetworkExperiment():
         #### package computed metrics
         for k,v in self.metrics.items():
             self.metrics[k] = np.array(v)
-
-    def compute_metrics(self):
-        """ Here goes anything specific to an experiment """
-        pass
-
-    def compute_representation_metrics(self, skip_rep_metrics=True):
-        pass
-
-    def save_experiment(self, SAVE_DIR):
-        """
-        Save the experimental information: model parameters, learning metrics,
-        and hyperparameters. 
-        """
-        
-        if 'models' not in dir(self):
-            raise Exception('Can only save after training a network!'
-                            'Use "train_network" method')
-
-        FOLDERS = self.folder_hierarchy()
-        expinf = self.file_suffix()
-        
-        if not os.path.isdir(SAVE_DIR+FOLDERS):
-            os.makedirs(SAVE_DIR+FOLDERS)
-        
-        # save all hyperparameters, for posterity
-        all_args = {'net_args': self.net_args,
-                    'opt_args': self.opt_args,
-                    'exp_prm': self.exp_prm}
-        
-        params_fname = 'parameters_'+expinf
-        metrics_fname = 'metrics_'+expinf+'.pkl'
-        args_fname = 'arguments_'+expinf+'.pkl'
-        
-        for i,model in enumerate(self.models):
-            model.save(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
-        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
-            pickle.dump(self.metrics, f, -1)
-        with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
-            pickle.dump(all_args, f, -1)
-
-    def load_experiment(self, SAVE_DIR, opt_args=None):
-        """
-        Requires that the model is specified
-        """
-
-        if 'models' not in dir(self):
-            raise Exception('Can only save after training a network!'
-                            'Use "train_network" method')
-
-        if opt_args is not None:
-            self.opt_args = opt_args
-        elif 'opt_args' not in dir(self):
-            raise Exception('Optimization arguments "opt_args" must be supplied!')
-
-        FOLDERS = self.folder_hierarchy()
-        expinf = self.file_suffix()
-        
-        if not os.path.isdir(SAVE_DIR+FOLDERS):
-            os.makedirs(SAVE_DIR+FOLDERS)
-        
-        params_fname = 'parameters_'+expinf
-        metrics_fname = 'metrics_'+expinf+'.pkl'
-        args_fname = 'arguments_'+expinf+'.npy'
-        
-        for i,model in enumerate(self.models):
-            model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
-        # self.model.load(SAVE_DIR+FOLDERS+params_fname)
-        with open(SAVE_DIR+FOLDERS+metrics_fname, 'rb') as f:
-            self.metrics = pickle.load(f)
-        # args = np.load(SAVE_DIR+FOLDERS+args_fname, allow_pickle=True).item()
-
-        # return self.model, args,
-
-
-    ####### file I/O functions for this experiment
-    # I do this in order to standardise everything within this experiment
-    def folder_hierarchy(self):
-
-        FOLDERS = '/%s/'%self.__name__
-
-        FOLDERS += self.inputs.__name__ + '/'
-        FOLDERS += self.outputs.__name__ + '/'
-        FOLDERS += self.exp_folder_hierarchy()
-
-        return FOLDERS
-        
-    def exp_folder_hierarchy(self):
-        return ''
-
-    def file_suffix(self):
-        # if self.opt_args['init_index'] is None:
-        #     return self.model.__name__
-        # else:
-        #     return self.model.__name__ + '_%d'%self.opt_args['init_index']
-        return self.models[0].__name__
 
 #%% Multi-classification tasks
 
@@ -272,17 +354,18 @@ class FeedforwardExperiment(NetworkExperiment):
     def init_metrics(self):
         self.metrics = {'train_loss': [],
                        'test_perf': [],
-                       'input_alignment': [],
-                       'target_alignment': [],
                        'hidden_kernel': [],
                        'linear_dim': [],
                        'sparsity': []} # put all training metrics here
 
-    def compute_representation_metrics(self, skip_metrics):
+    def compute_metrics(self):
 
-        pred, z_test = self.model(self.test_data[0])[:2]
-        _, z_train = self.model(self.train_data[0])[:2]
-        N = z_test.shape[1]
+        # pred, z_test = self.model(self.test_data[0])[:2]
+        # _, z_train = self.model(self.train_data[0])[:2]
+        pred = self.model(self.test_data[0])
+        z_test = self.model.hidden(self.test_data[0])
+        z_train = self.model.hidden(self.train_data[0])
+        N = z_test.shape[-1]
 
         # print(pred.shape)
         # print(z_test.shape)
@@ -302,21 +385,11 @@ class FeedforwardExperiment(NetworkExperiment):
         pr = util.participation_ratio(z_test)
         self.metrics['linear_dim'][-1].append( pr)
 
-        # Input and output alignment ###########################
-        Kx = util.dot_product(self.test_data[0].T, self.test_data[0].T)
-        Ky = util.dot_product(self.test_data[1].T, self.test_data[1].T)
+        # # Input and output alignment ###########################
 
-        Kz = util.dot_product(z_test, z_test)
-
-        inp_align = util.centered_kernel_alignment(Kx, Kz)
-        self.metrics['input_alignment'][-1].append(inp_align)
-        out_align = util.centered_kernel_alignment(Ky, Kz)
-        self.metrics['target_alignment'][-1].append(out_align)
-
-        _, z_test = self.model(self.inputs(range(self.inputs.num_cond), noise=0))[:2]
-        Kz_mean = util.dot_product(z_test.detach().T, z_test.detach().T)
+        z_test = self.model.hidden(self.inputs(range(self.inputs.num_cond), noise=0))
+        Kz_mean = util.batch_dot(z_test.detach(), z_test.detach(), transpose=True)
         self.metrics['hidden_kernel'][-1].append(Kz_mean)
-
 
     def folder_hierarchy(self):
 
@@ -351,60 +424,6 @@ class RNNExperiment(NetworkExperiment):
         """
 
         raise NotImplementedError
-
-    # def initialize_network(self, model, **model_args):
-
-    #     self.net_args = model_args
-
-    #     net = model(dim_inp=self.task.dim_in, dim_out=self.task.dim_out, **self.net_args)
-
-    #     return net
-
-    # def train_network(self, model, verbose=False, skip_metrics=True,
-    #         bsz=64, nepoch=1000, lr=1e-3, opt_alg=optim.Adam, weight_decay=0,
-    #         n_train_dat=5000):
-
-    #     ### book-keeping
-    #     self.opt_args = {k:v for k,v in locals().items() \
-    #         if k not in ['model', 'verbose', 'skip_metrics', 'self']}
-    #     self.model = model
-    #     self.init = init_index
-
-    #     expinf = self.file_suffix()
-    #     print('Running %s ...'%expinf)
-
-    #     ### generate data
-    #     self.train_conditions, self.train_data = self.draw_data(n_train_dat)
-    #     self.test_conditions, self.test_data = self.draw_data(**self.test_data_args)
-
-    #     dset = torch.utils.data.TensorDataset(self.train_data[0], self.train_data[1])
-    #     dl = torch.utils.data.DataLoader(dset, batch_size=self.opt_args['bsz'], shuffle=True) 
-        
-    #     ### train network
-    #     self.optimizer = opt_alg(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    #     self.init_metrics()
-    #     for epoch in range(nepoch):
-             
-    #         # Actually update model #######################################
-    #         loss = self.model.grad_step(dl, self.optimizer) # this does a pass through the data
-
-    #         self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss)
-
-    #         with torch.no_grad():
-    #             self.compute_representation_metrics(skip_metrics)
-
-    #                 # if not np.mod(epoch, 10):
-    #                 #     self.compute_gradient_metrics()
-            
-    #         # print updates ############################################
-    #         if verbose:
-    #             print('Epoch %d: Loss=%.3f'%(epoch, -loss))
-            
-    #     #### package computed metrics
-    #     for k,v in self.metrics.items():
-    #         self.metrics[k] = np.array(v)
-
 
     def init_metrics(self):
         self.metrics = {'train_loss': [],
@@ -446,69 +465,6 @@ class RNNExperiment(NetworkExperiment):
 
         #     dec = dclf.test(z[nseq//2:,...],  self.decoded_vars[nseq//2:,...])
         #     self.metrics['decoding'].append(dec)
-
-
-    # def save_experiment(self, SAVE_DIR):
-    #     """
-    #     Save the experimental information: model parameters, learning metrics,
-    #     and hyperparameters. 
-    #     """
-        
-    #     if 'model' not in dir(self):
-    #         raise Exception('Can only save after training a network!'
-    #                         'Use "train_network" method')
-
-    #     FOLDERS = self.folder_hierarchy(self.opt_args)
-    #     expinf = self.file_suffix()
-        
-    #     if not os.path.isdir(SAVE_DIR+FOLDERS):
-    #         os.makedirs(SAVE_DIR+FOLDERS)
-        
-    #     # save all hyperparameters, for posterity
-    #     all_args = {'net_args': self.net_args,
-    #                 'opt_args': self.opt_args,
-    #                 'exp_prm': self.exp_prm}
-        
-    #     params_fname = 'parameters_'+expinf+'.pt'
-    #     metrics_fname = 'metrics_'+expinf+'.pkl'
-    #     args_fname = 'arguments_'+expinf+'.npy'
-        
-    #     self.model.save(SAVE_DIR+FOLDERS+params_fname)
-    #     with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
-    #         pickle.dump(self.metrics, f, -1)
-    #     with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
-    #         np.save(f, all_args)
-
-
-    # def load_experiment(self, SAVE_DIR, opt_args=None):
-    #     """
-    #     Requires that the model is specified
-    #     """
-
-    #     if 'models' not in dir(self):
-    #         raise Exception('Can only save after training a network!'
-    #                         'Use "train_network" method')
-
-    #     if opt_args is not None:
-    #         self.opt_args = opt_args
-    #     elif 'opt_args' not in dir(self):
-    #         raise Exception('Optimization arguments "opt_args" must be supplied!')
-
-    #     FOLDERS = self.folder_hierarchy()
-    #     expinf = self.file_suffix()
-        
-    #     if not os.path.isdir(SAVE_DIR+FOLDERS):
-    #         os.makedirs(SAVE_DIR+FOLDERS)
-        
-    #     params_fname = 'parameters_'+expinf
-    #     metrics_fname = 'metrics_'+expinf+'.pkl'
-    #     args_fname = 'arguments_'+expinf+'.npy'
-        
-    #     for i,model in enumerate(self.models):
-    #         model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}_{i}.pt')
-    #     # self.model.load(SAVE_DIR+FOLDERS+params_fname)
-    #     with open(SAVE_DIR+FOLDERS+metrics_fname, 'rb') as f:
-    #         self.metrics = pickle.load(f)
 
     def folder_hierarchy(self):
 

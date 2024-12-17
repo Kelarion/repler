@@ -383,22 +383,6 @@ class HierarchicalData(object):
     def labels(self):
         raise NotImplementedError
 
-    # def represent_labels(self, these_leaves, rep=None):
-    #     """ 
-    #     'rep' is any function which maps an integer index to some representation, 
-    #     as long as the representation is the same dimension for each index.
-
-    #     'these_leaves' is a lists of leaves to be represented
-    #     """
-
-    #     labs = self.labels(these_leaves)
-
-    #     fix_nan = lambda x, l : np.where(np.isnan(l), 0 ,x)
-    #     if rep is None:
-    #         rep = lambda l : np.eye(self.fan_out)[:,l]
-
-    #     reps = np.concatenate([fix_nan(rep(fix_nan(l,l).astype(int)), l) for l in labs])
-    #     return reps
     def represent_labels(self, these_leaves):
         """ finds the label of each of 'these_leaves' """
 
@@ -535,7 +519,7 @@ class HierarchicalData(object):
         G = nx.DiGraph()
         G.add_nodes_from(self.items)
         nx.set_node_attributes(G, 
-            values={i:self.cats[i-1] for i in self.items}, 
+            values={i:self.cats[i] for i in self.items}, 
             name='category')
 
         G.add_node(0, category=set())
@@ -565,7 +549,6 @@ class HierarchicalData(object):
                         # print(f"{(i,j)}, {G.nodes('category')[i]}V{G.nodes('category')[j]}={L_ij}")
 
                         matching_nodes = np.isin(G.nodes('category'), L_ij)
-
                         if np.any(matching_nodes):
                             new_source = np.where(matching_nodes)[0].item()
                         else:
@@ -658,6 +641,15 @@ class HierarchicalData(object):
 
             if new_step != target:
                 self.path_to_node(G, new_step, target, rule=rule)
+
+class BinaryCategories(HierarchicalData):
+
+    def __init__(self, S):
+
+        self.cats = [set(np.nonzero(s)[0]) for s in S]
+        self.items = np.arange(len(S)) 
+
+        self.similarity_graph = self.fill_similarity_graph()
 
 class RegularTree(HierarchicalData):
 
@@ -906,7 +898,7 @@ class LabelledItems(HierarchicalData):
             self.depth = max([len(l) for l in labels])
 
             # assumes that each item has the same number of labels!!!
-            self.fan_out = int(len(labels)**(1/len(labels[0])))
+            # self.fan_out = int(len(labels)**(1/len(labels[0])))
 
         elif num_item is not None:
             # not implemented yet, need to think a lil bit
