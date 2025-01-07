@@ -246,16 +246,16 @@ class FFBAE(exp.Model):
 
             nrm = np.sum(util.center(K)**2)
             # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
+            ham = len(K) - (np.abs((2*S-1).T@(2*Strue[it]-1)).max(0))
             cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
-            nbs = util.nbs(mod.energy())
-            mat_ham = df_util.permham(Strue[it], 2*S-1)
+            nbs = util.nbs(S, Strue[it])
+            mat_ham = df_util.permham(2*Strue[it]-1, 2*S-1)
             norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
 
             self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
-            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
+            self.metrics['mean_mat_ham'].append(mat_ham)
             self.metrics['median_mat_ham'].append(np.median(mat_ham))
-            self.metrics['loss'].append(cka)
+            self.metrics['loss'].append(mod.energy())
             self.metrics['nbs'].append(nbs)
             self.metrics['mean_hamming'].append(np.mean(ham))
             self.metrics['median_hamming'].append(np.median(ham))
@@ -598,9 +598,9 @@ class CubeCategories(exp.Task):
 
         N = 2**self.bits
 
-        S = 2*util.F2(self.bits)-1
+        S = np.hstack([util.F2(self.bits), np.eye(2**self.bits)])
 
-        Ks = []
+        Xs = []
         Strue = []
         for it in range(self.samps):
             if self.orth:
@@ -608,14 +608,15 @@ class CubeCategories(exp.Task):
             else:
                 W = np.random.randn(self.dim, self.bits)/np.sqrt(self.dim)
 
-            noise = np.random.randn(self.dim, N)/np.sqrt(self.dim)
-            a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
+            # noise = np.random.randn(self.dim, N)/np.sqrt(self.dim)
+            # a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
 
-            X = S@W.T + a*noise.T
-            Ks.append(X@X.T)
+            # X = S@W.T + a*noise.T
+            # Ks.append(X@X.T)
+            Xs.append(df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-3))
             Strue.append(S)
 
-        return {'K': Ks, 'Strue': Strue}
+        return {'X': Xs, 'Strue': Strue}
 
 
 ######################################################################

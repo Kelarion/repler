@@ -904,23 +904,24 @@ def embed(K):
 ######### Gaussian process ##########
 #####################################
 
-def rbf_kernel(X, sigma=1, p=2):
-    """X is (n_sample, n_dim)"""
-    # pairwise_dists = squareform(pdist(X, 'minkowski', p))
-    K = np.exp((np.abs(X[...,None] - X[...,None,:])**p)/(2*sigma**p))
+@dataclass
+class RBF:
+    sigma: float = 1
+    def __call__(self, X):
+        return np.exp(-yuke(X)/(2*self.sigma))
 
-# def rbf_kernel(x1, x2, variance = 1):
-#     return np.exp(-1 * ((x1-x2) ** 2) / (2*variance))
+@dataclass
+class LinearKernel:
+    def __call__(self, X):
+        return X@X.T
 
-# def gram_matrix(xs, var=1):
-    # return [[rbf_kernel(x1,x2,var) for x2 in xs] for x1 in xs]
-def gauss_process(xs, var=1):
-    mean = [0 for x in xs]
-    gram = rbf_kernel(xs, sigma=var)
+def gaussian_process(X, d, kernel=RBF(1)):
+    """
+    Sample from a d-dimensional gaussian process
+    """
 
-    ys = np.array([np.random.multivariate_normal(mean, gram) for _ in xs])
-    return ys
-
+    K = kernel(X)
+    return np.random.multivariate_normal(np.zeros(len(X)), K, size=d)
 
 ###################################
 ######### Mobius strips ###########
@@ -1677,10 +1678,10 @@ def yuke(X, Y=None):
     """
     squared Euclidean distance between X and Y
 
-    X is shape (n,d)
-    Y is shape (m,d)
+    X is shape (...,n,d)
+    Y is shape (...,m,d)
 
-    returns shape (n,m)
+    returns shape (...,n,m)
     """
 
     if Y is None:
@@ -2290,4 +2291,11 @@ def unroll_dict(this_dict):
     return all_dicts
 
 
+def grid_vecs(N,d,minx=-1,maxx=1):
+    """
+    Vectors of points on an N-grid in d dimensions
+    i.e. there will be N^d points
+    """
 
+    X = np.meshgrid(*((np.linspace(minx,maxx,N),)*d))
+    return np.array(X).reshape((d,-1))

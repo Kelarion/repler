@@ -858,25 +858,14 @@ class ConvNet(NeuralNet):
 
         return self.out(self.ff(torch.flatten(self.conv(x), 1)))
 
-    def grad_step(self, data, **opt_args):
+    def hidden(self, x):
 
-        if not self.initialized:
-            self.init_optimizer(**opt_args)
+        return torch.flatten(self.conv(x), 1)
 
-        running_loss = 0
+    def loss(self, batch):
 
-        for i, batch in enumerate(data):
-            nums, labels = batch
-            self.optimizer.zero_grad()
-
-            output = self.forward(nums)
-            loss = nn.BCEWithLogitsLoss()(output, labels.float())
-            loss.backward()
-            self.optimizer.step()
-
-            running_loss += loss.item()
-
-        return running_loss / (i+1)
+        output = self(batch[0])
+        return nn.BCEWithLogitsLoss()(output.squeeze(), batch[1].float())
 
 
 class VAE(NeuralNet):

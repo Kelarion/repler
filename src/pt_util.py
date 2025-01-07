@@ -4,6 +4,7 @@ import pickle
 import torch
 import torch.nn as nn
 import torchvision
+from torchvision import transforms
 import torch.optim as optim
 import numpy as np
 import scipy

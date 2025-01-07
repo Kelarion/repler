@@ -8,6 +8,7 @@ dependencies:
  - matplotlib
  - pytorch
  - torchvision
+ - torchaudio
  - scikit-learn
  - cvxpy
  - networkx

@@ -1,4 +1,3 @@
-
 import os, sys, re
 import pickle
 from time import time
@@ -12,6 +11,7 @@ import torch.optim as optim
 import numpy as np
 from itertools import permutations, combinations
 # from tqdm import tqdm
+# import geoopt as geo
 
 import scipy.stats as sts
 import scipy.linalg as la
@@ -52,7 +52,7 @@ class KernelBAE:
         
         self.frac_var = np.cumsum(s**2)/np.sum(s**2)
         if rank is None:
-            r = np.sum(self.frac_var <= pvar + 1e-6)
+            r = np.min([len(s), np.sum(self.frac_var <= pvar)+1])
         else:
             r = rank
 
@@ -298,10 +298,10 @@ class KernelBAE:
 class BAE:
 
     def __init__(self, X, dim_hid, rank=None, pvar=1,
-        weight_class='ortho', weight_alg='svd', lr=1e-2,
+        weight_class='ortho', weight_alg='exact', lr=1e-2,
         penalty=0, alpha=2, beta=5, fix_scale=False):
 
-        self.n, _ = X.shape
+        self.n, self.d = X.shape
         self.r = dim_hid
         self.initialized = False
         self.beta = penalty
@@ -315,13 +315,14 @@ class BAE:
         
         self.frac_var = np.cumsum(sx**2)/np.sum(sx**2)
         if rank is None:
-            r = np.sum(self.frac_var <= pvar)+1 
+            r = np.min([len(sx), np.sum(self.frac_var <= pvar)+1])
+            # r = np.max([dim_hid, np.sum(self.frac_var <= pvar)+1])
         else:
             r = rank
-        self.d = r
+        # self.d = r
 
-        # self.X = X - X.mean(0, keepdims=True)
-        self.X = Ux[:,:r]@np.diag(sx[:r])
+        self.X = X - X.mean(0, keepdims=True)
+        # self.X = Ux[:,:r]@np.diag(sx[:r])
         self.U = Ux[:,sx>1e-6]
         self.U = self.U[:,:r]
         self.trXX = np.sum(sx[:r]**2)
@@ -330,7 +331,7 @@ class BAE:
         coding_level = np.random.beta(alpha, beta, dim_hid)/2
         num_active = np.floor(coding_level*len(X)).astype(int)
         
-        Mx = (self.X)@np.random.randn(self.d,self.r)
+        Mx = self.X@np.random.randn(self.d,self.r)
         thr = -np.sort(-Mx, axis=0)[num_active, np.arange(dim_hid)]
         self.S = sprs.csr_array(1*(Mx >= thr))
         self.trSS = (self.S.T@self.S).trace()
@@ -347,7 +348,8 @@ class BAE:
             else:
                 self.scl = 1
         elif self.weight_class == 'real':
-            self.W = (la.pinv(self.S)@self.X).T
+            self.W = (la.pinv(self.S.todense())@self.X).T
+            self.scl = 1
 
         ## Regularization
         self.StS = self.S.T@self.S
@@ -363,7 +365,7 @@ class BAE:
 
         # self.updateS(T)
         ES = self.updateS_reg(T) ## E step
-        self.updateWb(ES)    ## M step
+        self.updateWb(ES)        ## M step
         # self.updateWb(self.S)
 
     def updateS(self, temp):
@@ -376,26 +378,37 @@ class BAE:
 
     def updateWb(self, ES):
 
-        # eps = np.random.randn(self.n, self.d)*temp/10
         ## update weights
         if self.weight_class == 'ortho':
 
-            if self.weight_alg == 'svd':
-                # U,s,V = la.svd((self.X-self.b).T@self.S, full_matrices=False)
+            if self.weight_alg == 'exact':
                 U,s,V = la.svd((self.X-self.b).T@ES, full_matrices=False)
                 self.W = U@V
                 if not self.fix_scl:
-                    # self.scl = np.sum(s)/self.trSS
                     self.scl = np.sum(s)/ES.sum()
             else:
-                dW = (self.X-self.b).T@self.S
-                self.W += self.lr*dW
+                ## Riemannian SGD over the weights
+                ## Using Cayley algorithm of Li, Li, Todorovic (ICLR 2020)
+
+                dW = -2*self.scl*(self.X-self.b).T@self.S
+                Z = dW@W.T
+                Z = dW@W.T - 0.5*(W@())
+
+                self.W += self.lr*dW 
 
         elif self.weight_class == 'real':
-            self.W = (la.pinv(self.S)@(self.X - self.b)).T
+            if self.weight_alg == 'exact':
+                self.W = (la.pinv(self.S.todense())@(self.X - self.b)).T
+            else:
+                dW = (self.X-self.b).T@self.S
+                self.W -= self.lr*dW
 
         ## update biases
-        self.b = (self.X - self.scl*ES@self.W.T).mean(0)
+        if self.weight_alg == 'exact':
+            self.b = (self.X - self.scl*ES@self.W.T).mean(0)
+        else:
+            db = self.b + (self.X - self.scl*ES@self.W.T).mean(0)
+            self.b -= lr*db
 
     def updateS_reg(self, temp):
         """
@@ -528,7 +541,7 @@ def hopfield_loop(n, x, indptr, indices, k0, Sk, temp, scl=1, steps=1, beta=0):
     
     ## It seems that the @njit decorator lets you use for
     ## loops in python, but you can only use numpy and 
-    ## for some reason it is much faster when written flat
+    ## for some reason it only works when written flat
     
     m = len(indptr)-1     # number of columns  (categories)
     # n = np.max(indices)     # number of rows  (inputs)
