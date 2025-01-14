@@ -1,5 +1,5 @@
-CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
-SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
+# SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
  
 import os, sys, re
 import pickle
@@ -29,7 +29,7 @@ from scipy.optimize import linprog as lp
 from sklearn.manifold import MDS
 
 import networkx as nx
-import pydot
+# import pydot
 from networkx.drawing.nx_pydot import graphviz_layout
 
 # import umap
@@ -37,8 +37,8 @@ from cycler import cycler
 
 from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
 import cvxpy as cvx
-import polytope as pc
-from hsnf import column_style_hermite_normal_form
+# import polytope as pc
+# from hsnf import column_style_hermite_normal_form
 
 # my code
 import students
@@ -52,7 +52,6 @@ import grammars as gram
 import dichotomies as dics
 
 #%%
-
 
 # def make_integer_system(A, new_dist):
 #     """
@@ -496,7 +495,7 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     ## "Project" into cut polytope, if it isn't already there
     if not in_cut:
         if num_samp is None:
-            C_ = gauss_projection(K)
+            C_ = gauss_projection(util.correlify(K))
         else:
             samps = np.sign(np.random.multivariate_normal(np.zeros(N), K, size=num_samp))
             C_ = samps.T@samps/num_samp
@@ -515,16 +514,14 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     
     C = 1 - alpha*d
     
-    # orig = np.argmax(sgn*np.sum(d, axis=0))
-    orig = np.argmin(sgn*np.sum(d, axis=0))
+    orig = np.argmax(sgn*np.sum(d, axis=0))
     
     ### center around arbitrary (?) point
     K_o = (C[orig,orig] - C[[orig],:] - C[:,[orig]] + C)/4
     
     idx = np.arange(N)
-    # first = np.setdiff1d(idx, [orig])[np.argmax(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
-    first = np.setdiff1d(idx, [orig])[np.argmin(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
-    
+    first = np.setdiff1d(idx, [orig])[np.argmax(sgn*d[orig,:][np.setdiff1d(idx, [orig])])]
+
     B = np.ones((1,1), dtype=int)
     pi = np.array([K_o[first,first]])
     
@@ -535,9 +532,8 @@ def BDF(K, sparse=True, in_cut=False, num_samp=None, zero_tol=1e-6):
     # for n in tqdm(range())
 
         ## Most "explainable" item <=> closest/furthest item
-        # this_i = remaining[np.argmax(sgn*np.sum(d[included,:][:,remaining], axis=0))]
-        this_i = remaining[np.argmin(sgn*np.sum(d[included,:][:,remaining], axis=0))]
-        
+        this_i = remaining[np.argmax(sgn*np.sum(d[included,:][:,remaining], axis=0))]
+
         ### new features
         prog = lp(sgn*np.ones(len(pi)),
                   A_ub=np.ones((1,len(pi))), b_ub=K_o[this_i,this_i],
@@ -726,7 +722,7 @@ def SDF(K, zero_tol=1e-10, sparse=True, in_cut=False, thresh=1e-5, num_samp=5000
     if not in_cut:
         # samps = np.sign(np.random.multivariate_normal(np.zeros(P), K, size=num_samp))
         # C_ = samps.T@samps/num_samp
-        C_ = gauss_projection(K)
+        C_ = gauss_projection(util.correlify(K))
     else:
         C_ = K
     
@@ -792,9 +788,9 @@ def SDF(K, zero_tol=1e-10, sparse=True, in_cut=False, thresh=1e-5, num_samp=5000
         pi = np.array(new_pi)
         
         ## Remove likely noise clusters (find a good way to do this)
-        chaf = pi <= thresh
-        S = S[:,~chaf]
-        pi = pi[~chaf]/np.sum(pi[~chaf])
+        # chaf = pi <= thresh
+        # S = S[:,~chaf]
+        # pi = pi[~chaf]/np.sum(pi[~chaf])
         
         included.append(new)
         remaining.remove(new)
@@ -842,7 +838,27 @@ def find_edges(V):
                 edges.append((i,j))
     
     return edges
+
+
+def canon2half(A, b):
+    """
+    Convert LP constraints from canonical to halfspace 
     
+    i.e. if 
+    P = {x | Ax = b, x >= 0}
+    
+    returns C, d s.t. 
+    
+    P = {x | Cx <= d}
+    """
+    
+    n = A.shape[1]
+    
+    C = np.vstack([A, -A, -np.eye(n)])
+    d = np.concatenate([b, -b, np.zeros(n)])
+
+    return C, d
+
 
 def center(K):
     return K - K.mean(-2,keepdims=True) - K.mean(-1,keepdims=True) + K.mean((-1,-2),keepdims=True)

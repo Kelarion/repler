@@ -1,7 +1,7 @@
 
-CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
-SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/'
- 
+CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
+SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/results/'
+
 import os, sys, re
 import pickle
 sys.path.append(CODE_DIR)
@@ -33,6 +33,10 @@ from sklearn.manifold import MDS
 # import umap
 from cycler import cycler
 
+# from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
+# import cvxpy as cvx
+# import polytope as pc
+# from hsnf import column_style_hermite_normal_form
 
 # my code
 import students as stud
@@ -49,226 +53,39 @@ import dichotomies as dics
 
 #%%
 
-# d = su.Set([8, 16, 32])
-# k = su.Set([1, np.log2(d)])
-# c = su.Real(num=12)
+d = su.Set([32]) 				# number of clusters
+k = su.Set([1, np.log2(d)]) 	# rank of targets
+c = su.Real(num=3) 				# input-target alignment
+r = su.Set([np.log2(d) + k*(c>1e-6), d - 1 - k*(c<1e-6)]) # input rank
+seed = su.Integer(step=1)		# random seed
+scale = su.Set([0*(seed==0) + 0.5*(seed>0)]) # kernel distribution scale
 
-# exp_prm = {'experiment': exp.RandomKernelClassification,
-#  		   'num_points': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(d - 1)),
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-# d = su.Set([8, 16, 32])
-# k = su.Set([1, np.log2(d)])
-# c = su.Real(num=6)
-
-# exp_prm = {'experiment': exp.RandomKernelClassification,
-#  		   'num_points': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(d - 1)),
-#  		   'seed': list(range(12)),
-#  		   'scale': 0.5,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-# d = su.Set([3,5])
-# k = su.Set([2**d - 1])
-# c = su.Real(num=12)
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': (np.sqrt(d*(2**d - 1))/(2**d - 1)) << c  << 1,
-#  		   'seed': list(range(12)),
-#  		   'scale': 0.5,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': (np.sqrt(d*(2**d - 1))/(2**d - 1)) << c  << 1,
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
+exp_prm = {'experiment': exp.RandomKernelClassification,
+			'num_points': d,
+			'num_targets': k,
+			'alignment': 0 << c  << np.sqrt(k/(d - 1)),
+			'seed': 0 << seed << 12,
+			'scale': scale,
+			'dim_inp': 100,
+			'input_noise': 1,
+			'max_rank': r
+			}
 
 
-# d = su.Set([3,5])
-# k = su.Set([1, d])
-# c = su.Real(num=12)
+net_args = {'model': stud.SimpleMLP,
+			'num_init': 10,
+			'width': 128,
+			'depth': [1,5,10],
+			'p_targ': stud.Bernoulli,
+			'activation': ['ReLU', 'Tanh']
+			}
 
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-# d = su.Set([2,3,5])
-# k = su.Set([1, d])
-# c = su.Real(num=12)
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 101,
-#  		   'input_noise': 1,
-#  		   }
-
-
-d = su.Integer(step=1) 
-d = su.Set([3,5])
-k = su.Set([1, d])
-c = su.Real(num=6)
-
-exp_prm = {'experiment': exp.RandomOrthogonal,
- 		   'num_bits': d,
- 		   'num_targets': k,
- 		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
- 		   'seed': list(range(12)),
- 		   'scale': 0.5,
- 		   'dim_inp': 100,
- 		   'input_noise': 1,
- 		   }
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-
-# d = su.Set([2,3,5])
-# k = su.Set([1, d])
-# c = su.Real(num=12)
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': d,
-#  		   'num_targets': k,
-#  		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-#  		   'seed': 0,
-#  		   'scale': 0.0,
-#  		   'dim_inp': 101,
-#  		   'input_noise': 1,
-#  		   }
-
-# c = su.Real(num=12)
-
-# # exp_prm = {'experiment': exp.RandomOrthogonal,
-# #  		   'num_bits': 2,
-# #  		   'num_targets': 1,
-# #  		   'alignment': 0 << c << np.sqrt(1/3),
-# #  		   'seed': (0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11),
-# #  		   'scale': (0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5),
-# #  		   'dim_inp': 100,
-# #  		   'input_noise': 1,
-# #  		   }
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-#  		   'num_bits': 2,
-#  		   'num_targets': 1,
-#  		   'alignment': 0 << c << np.sqrt(1/3),
-#  		   'seed': 0,
-#  		   'scale': 0,
-#  		   'dim_inp': 100,
-#  		   'input_noise': 1,
-#  		   }
-
-# d = su.Set([3,5])
-# k = su.Set([1, d])
-# c = su.Real(num=12)
-
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-# 		   'num_bits': d,
-# 		   'num_targets': k,
-# 		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-# 		   'seed': 0,
-# 		   'scale': 0.0,
-# 		   'dim_inp': 100,
-# 		   'input_noise': [0, 0.1, 1],
-# 		   }
-
-net_args = {'model': stud.ShallowNetwork,
- 			'num_init': 10,
- 			'width': 128,
- 			'p_targ': stud.Bernoulli,
- 			'inp_bias_shift': 0,
- 			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
- 			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'activation': [pt_util.TanAytch(), pt_util.RayLou(), pt_util.RayLouUB(1), pt_util.RayLouUB(1.5), pt_util.RayLouUB(2)]
-#  			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'activation': [pt_util.RayLouShift(1), 
-#  						   pt_util.RayLouShift(0.5), 
-#  						   pt_util.RayLouShift(-0.5),
-#  						   pt_util.RayLouShift(-1),
-#                             pt_util.TanAytch()]
-#  			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'inp_bias_shift': [-1, -0.5, 0, 0.5, 1],
-#  			'activation': pt_util.RayLou()
-#  			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'activation': pt_util.TanAytch()
-#  			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'activation':[pt_util.RayLou6(), pt_util.TanAytch(), pt_util.RayLou()]
-#  			}
-
-# net_args = {'model': stud.ShallowNetwork,
-#  			'num_init': 10,
-#  			'width': 128,
-#  			'p_targ': stud.Bernoulli,
-#  			'inp_bias_shift': 1,
-#  			'activation': [pt_util.TanAytch(), pt_util.RayLou()]
-#  			}
 
 opt_args = {'skip_metrics': True,
 			'nepoch': 1000,
 			'verbose': False,
-			'train_outputs': False
+			'lr': 1e-2
 			}
-
 
 #%% Compute input alignment 
 
@@ -276,20 +93,10 @@ opt_args = {'skip_metrics': True,
 test_noise = 0.5
 
 all_exp_args, prm = su.get_all_experiments(exp_prm, net_args, opt_args)
-# all_exp_args = server_utils.get_all_experiments(exp_prm, net_args, opt_args)
+
 
 all_metrics = {}
-# # for exp_args in tqdm(all_exp_args):
 
-#     this_exp = exp_args['exp_prm']['experiment'](**exp_args['exp_prm']['exp_args'])
-#     this_exp.models = this_exp.initialize_network(exp_args['net_args']['model'], **exp_args['net_args']['model_args'])
-#     # this_exp.initialize_experiment( **exp_args['opt_args'])
-#     this_exp.load_experiment(SAVE_DIR+'results/', exp_args['opt_args'])
-    
-#     if len(all_metrics) == 0:
-#         all_metrics = {k:[] for k,v in this_exp.metrics.items()}
-#     for k in all_metrics.keys():
-#         all_metrics[k].append(this_exp.metrics[k])
 
 clf = svm.LinearSVC()
 
@@ -300,12 +107,13 @@ out_align = []
 # dec = []
 skew = []
 PR = []
+train_loss = []
 for exp_args in tqdm(all_exp_args):
 
     this_exp = exp_args['exp_prm']['experiment'](**exp_args['exp_prm']['exp_args'])
     this_exp.models = this_exp.initialize_network(exp_args['net_args']['model'], **exp_args['net_args']['model_args'])
     # this_exp.initialize_experiment( **exp_args['opt_args'])
-    this_exp.load_experiment(SAVE_DIR+'results/', exp_args['opt_args'])
+    this_exp.load_experiment(SAVE_DIR, exp_args['opt_args'])
     
     n_cond = this_exp.inputs.num_cond
     
@@ -319,10 +127,7 @@ for exp_args in tqdm(all_exp_args):
     
     Kx = util.dot_product(x_-x_.mean(1,keepdims=True), x_-x_.mean(1,keepdims=True))
     Ky = util.dot_product(y_-y_.mean(1,keepdims=True), y_-y_.mean(1,keepdims=True))
-    
-    # Kx = util.dot_product(x_noise-x_noise.mean(1,keepdims=True), x_noise-x_noise.mean(1,keepdims=True))
-    # Ky = util.dot_product(y_noise-y_noise.mean(1,keepdims=True), y_noise-y_noise.mean(1,keepdims=True))
-    
+
     skew.append( np.sum(Ky*Kx)/np.sqrt(np.sum(Kx*Kx)*np.sum(Ky*Ky)) )
     
     if len(all_metrics) == 0:
@@ -339,67 +144,24 @@ for exp_args in tqdm(all_exp_args):
     PR.append((np.trace(Kz)**2)/np.trace(Kz@Kz))
     
     PS.append(np.array([dics.efficient_parallelism(yy.numpy(), K=Kz, aux_func='distsum') for yy in y_]))
-    
-    # lz, vz = la.eigh(Kz)
-    # z = vz[cond,:]@np.diag(np.sqrt(lz)) + np.random.randn(len(cond), n_cond)*
-    # clf = svm.SVC(kernel='precomputed')
-    # ccg = []
-    # for yy in y_:
-            
-    #     ccg.append(np.mean(dics.efficient_ccgp(yy, clf, K=Kz, num_pairs=1)))
-    
-    # CCGP.append(np.mean(ccg))
-    
-    inp = []
-    out = []
-    ccgp = []
-    ps = []
-    pr = []
-    # cv = []
-    for i,model in enumerate(this_exp.models):
-        
-        # z_ = model(x_.T)[1].detach().numpy().T
-        z_noise = model(x_noise.T)[1].detach().numpy().T     
-        
-        # Kz = util.center_kernel(this_exp.metrics['hidden_kernel'][-1,i])
-        # Kz = util.dot_product(z_-z_.mean(1,keepdims=True), z_-z_.mean(1,keepdims=True))
-        # Kz = util.dot_product(z_noise-z_noise.mean(1,keepdims=True), z_noise-z_noise.mean(1,keepdims=True))
-        
-        # inp.append(np.sum(Kz*Kx)/np.sqrt(np.sum(Kx*Kx)*np.sum(Kz*Kz)))
-        # out.append(np.sum(Kz*Ky)/np.sqrt(np.sum(Ky*Ky)*np.sum(Kz*Kz)))
 
-        # # ps.append(dics.parallelism_score(z_, np.arange(n_cond), y_.T))
-        # # ps.append(dics.parallelism_score(z_noise, cond, y_noise.T))
+    # individual models
+    # ccgp = []
+    # # loss = []
+    # for i,model in enumerate(this_exp.models):
         
-        # ps.append(np.array([dics.efficient_parallelism(yy.numpy(), z=z_) for yy in y_]))
-        # this_ccg = [np.mean(dics.efficient_ccgp(z_noise, cond, yy, svm.LinearSVC(), num_pairs=n_cond//4, max_ctx=100)) for yy in y_noise]
-        # this_ccg = [np.mean(dics.efficient_ccgp(z_noise, cond, yy, svm.LinearSVC(), num_pairs=n_cond//4, parallel=True, max_ctx=50)) for yy in y_noise]
-        this_ccg = [np.mean(dics.efficient_ccgp(yy, svm.LinearSVC(), cond=cond, z=z_noise, num_pairs=1, max_ctx=100)) for yy in y_noise]
+    #     # loss.append(this_exp.metrics['train_loss'][-1])
+        
+    #     # z_ = model(x_.T)[1].detach().numpy().T
+    #     # z_noise = model(x_noise.T)[1].detach().numpy().T     
+        
+    #     # this_ccg = [np.mean(dics.efficient_ccgp(yy, svm.LinearSVC(), cond=cond, z=z_noise, num_pairs=1, max_ctx=100)) for yy in y_noise]
 
-        # if len(y_) > 1:
-        #     this_ccg = [np.mean(dics.compute_ccgp(z_noise.T, 
-        #                                           cond, 
-        #                                           np.squeeze(y_noise[i]), 
-        #                                           svm.LinearSVC(), 
-        #                                           twosided=True,
-        #                                           these_vars=[np.where(y_[j])[0] for j in range(len(y_)) if j != i])) for i in range(len(y_))]
-        # else:
-        #     this_ccg = [np.mean(dics.compute_ccgp(z_noise.T, 
-        #                                   cond, 
-        #                                   np.squeeze(y_noise[i]), 
-        #                                   svm.LinearSVC(), 
-        #                                   twosided=True,
-        #                                   num_max=100)) for i in range(len(y_))]
-        ccgp.append(np.mean(this_ccg))
-        # pr.append(util.participation_ratio(x_))
-        
-        # clf.fit(z_noise.T, )
-        
-    # PS.append(np.array(ps))
-    # PR.append(pr)
-    CCGP.append(ccgp)
-    # inp_align.append(inp)
-    # out_align.append(out)
+    #     # ccgp.append(np.mean(this_ccg))
+
+    # CCGP.append(ccgp)
+    
+    train_loss.append(this_exp.metrics['train_loss'][-1])
 
 inp_align = np.array(inp_align)
 out_align = np.array(out_align)
@@ -417,73 +179,53 @@ prlsm = np.array([np.mean(pp) for pp in PS])
 
 #%%
 
-cos_foo = np.linspace(0,1,1000)
-
-ub = np.sqrt(1-cos_foo**2)
-
-phi = (np.pi/2 -np.arccos(skew))/2  # re-align it with the orthogonal case
-basis = np.array([[np.cos(phi),np.cos(np.pi/2-phi)],[np.sin(phi),np.sin(np.pi/2-phi)]])
-# rot = np.array([[np.cos(phi),np.sin(phi)],[-np.sin(phi),np.cos(phi)]]).transpose((2,0,1))
-# correction = np.einsum('...ik,...kj->...ij', rot, np.linalg.inv(basis.transpose((2,0,1))))
-correction = np.linalg.inv(basis.transpose((2,0,1)))
-
-# correct_align = (correction)@np.stack([inp_align,out_align])
-correct_align = np.einsum('lik,klj->ilj', correction, np.stack([inp_align,out_align]))
-# correct_align = np.stack([inp_align,out_align])
-correct_bound = np.stack([cos_foo, ub])
-
-#%%
-
 all_filt = prm['input_noise'] == 1
 
 for i,d in enumerate(np.unique(prm['num_bits'])):
     for j,k in enumerate(np.unique(prm['num_targets'][prm['num_bits'] == d])):
         
         plt.subplot(3, 5, 5*(i) + (j) +1)
-        plt.ylim([0.3, 1.05])
+        # plt.ylim([0.25, 1.05])
         
         filt = all_filt&(prm['activation']=='TanAytch')&(prm['num_targets'] == k)&(prm['num_bits'] == d)
         
         # plt.scatter(skew[filt], out_align[filt], c='r')
-        # plt.plot(skew[filt], out_align[filt], 'r')
+        plt.plot(skew[filt], out_align[filt], 'r')
         # plt.scatter(skew[filt], prlsm[filt], c='r')
         # plt.plot(skew[filt], prlsm[filt], c='r')
-        plt.scatter(skew[filt], CCGP[filt].mean(1), c='r')
+        # plt.plot(skew[filt], CCGP[filt].mean(1), c='r')
         # plt.scatter(skew[filt], lindim[filt].mean(1), c='r')
         
         # plt.scatter(skew[filt], t_perf[filt].mean(1), c='r')
     
         filt = all_filt&(prm['activation']=='RayLou')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        # # plt.scatter(skew[filt], out_align[filt], c='b')
-        # plt.plot(skew[filt], out_align[filt], 'b')
+        # plt.scatter(skew[filt], out_align[filt], c='b')
+        plt.plot(skew[filt], out_align[filt], 'b')
         # # plt.scatter(skew[filt], prlsm[filt], c='b')
         # # plt.plot(skew[filt], prlsm[filt], c='b')
-        plt.scatter(skew[filt], CCGP[filt].mean(1), c='b')
+        # plt.plot(skew[filt], CCGP[filt].mean(1), c='b')
         # # plt.scatter(skew[filt], lindim[filt].mean(1), c='b')
         # # plt.scatter(skew[filt], t_perf[filt].mean(1), c='b')
          
         
-        # # filt = all_filt&(prm['activation']=='RayLou1.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        # # plt.plot(skew[filt], out_align[filt], color=(0.75,0,0.5), linestyle='--')
+        # filt = all_filt&(prm['activation']=='RayLou1.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # plt.plot(skew[filt], out_align[filt], color=(0.75,0,0.5), linestyle='--')
 
-        # # filt = all_filt&(prm['activation']=='RayLou1.5')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        # # plt.plot(skew[filt], out_align[filt], color=(0.5,0,0.5), linestyle='--')
+        # filt = all_filt&(prm['activation']=='RayLou1.5')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # plt.plot(skew[filt], out_align[filt], color=(0.5,0,0.5), linestyle='--')
 
-        # # filt = all_filt&(prm['activation']=='RayLou2.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
-        # # plt.plot(skew[filt], out_align[filt], color=(0.25,0,0.75), linestyle='--')
+        # filt = all_filt&(prm['activation']=='RayLou2.0')&(prm['num_targets'] == k)&(prm['num_bits'] == d) 
+        # plt.plot(skew[filt], out_align[filt], color=(0.25,0,0.75), linestyle='--')
 
         
         # plt.plot(skew[filt&(prm['inp_bias_shift'] == 1)], out_align[filt&(prm['inp_bias_shift'] == 1)], 
         #           color=(0.5,0,0.5), linestyle='--')
         
-        # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0)], out_align[filt&(prm['inp_bias_shift'] == 0)], 
-        #           color='b', linestyle='-')
+        # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0.5)], out_align[filt&(prm['inp_bias_shift'] == 0.5)], 
+        #           color=(0.25,0,0.75), linestyle='--')
         
-        # # plt.plot(skew[filt&(prm['inp_bias_shift'] == 0.5)], out_align[filt&(prm['inp_bias_shift'] == 0.5)], 
-        # #           color=(0.25,0,0.75), linestyle='--')
-        
-        # # plt.plot(skew[filt&(prm['inp_bias_shift'] == -0.5)], out_align[filt&(prm['inp_bias_shift'] == -0.5)], 
-        # #           color=(0,0.25,0.75), linestyle='--')
+        # plt.plot(skew[filt&(prm['inp_bias_shift'] == -0.5)], out_align[filt&(prm['inp_bias_shift'] == -0.5)], 
+        #           color=(0,0.25,0.75), linestyle='--')
         
         # plt.plot(skew[filt&(prm['inp_bias_shift'] == -1)], out_align[filt&(prm['inp_bias_shift'] == -1)], 
         #           color=(0,0.5,0.5), linestyle='--')
@@ -491,9 +233,26 @@ for i,d in enumerate(np.unique(prm['num_bits'])):
 
 #%% input vs target alignment plots
 
-# cols = cm.viridis(PR.mean(1)/ np.max(PR))
+
+cos_foo = np.linspace(0,1,1000)
+
+phi = (np.pi/2 -np.arccos(skew))/2  # re-align it with the orthogonal case
+basis = np.array([[np.cos(phi),np.cos(np.pi/2-phi)],[np.sin(phi),np.sin(np.pi/2-phi)]])
+
+ub = basis@np.stack([cos_foo, np.sqrt(1-cos_foo**2)])
+
+# ub = np.sqrt(1-cos_foo**2)
+# correction = np.linalg.inv(basis.transpose((2,0,1)))
+# correct_align = np.einsum('lik,klj->ilj', correction, np.stack([inp_align,out_align]))
+# correct_bound = np.stack([cos_foo, ub])
+
+plot_params = ['num_targets', 'alignment']
+color_params = ['max_rank']
 
 markers = ['o', 'v', 's', '+']
+
+
+
 
 axs = tplt.hierarchical_labels([[0, 0.5, 1]], [[1,2,3,4,5]],    
                                  row_names=['s'], col_names=['k'],

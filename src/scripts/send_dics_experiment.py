@@ -1,5 +1,5 @@
 CODE_DIR = '/home/kelarion/github/repler/src/'
-SAVE_DIR = '/mnt/c/Users/mmall/OneDrive/Documents/uni/columbia/multiclassification/'
+SAVE_DIR = '/mnt/c/Users/mmall/Documents/uni/columbia/multiclassification/'
 
 import socket
 import os
@@ -44,19 +44,19 @@ send_remotely = True
 		   # }
 
 
-d = su.Set([32])
-k = su.Set([1, np.log2(d)])
-c = su.Real(num=12)
+# d = su.Set([8, 16, 32])
+# k = su.Set([1, np.log2(d)])
+# c = su.Real(num=12)
 
-exp_prm = {'experiment': exp.RandomKernelClassification,
-		   'num_points': d,
-		   'num_targets': k,
-		   'alignment': 0 << c  << np.sqrt(k/(d - 1)),
-		   'seed': 0,
-		   'scale': 0.0,
-		   'dim_inp': 100,
-		   'input_noise': 1,
-		   }
+# exp_prm = {'experiment': exp.RandomKernelClassification,
+# 		   'num_points': d,
+# 		   'num_targets': k,
+# 		   'alignment': 0 << c  << np.sqrt(k/(d - 1)),
+# 		   'seed': 0,
+# 		   'scale': 0.0,
+# 		   'dim_inp': 100,
+# 		   'input_noise': 1,
+# 		   }
 
 # d = su.Set([8, 16, 32])
 # k = su.Set([1, np.log2(d)])
@@ -99,19 +99,19 @@ exp_prm = {'experiment': exp.RandomKernelClassification,
 # 		   'input_noise': 1,
 # 		   }
 
-# d = su.Set([3,4,5])
-# k = su.Set([1, d])
-# c = su.Real(num=12)
+d = su.Set([3,4,5])
+k = su.Set([1, d])
+c = su.Real(num=12)
 
-# exp_prm = {'experiment': exp.RandomOrthogonal,
-# 		   'num_bits': d,
-# 		   'num_targets': k,
-# 		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
-# 		   'seed': 0,
-# 		   'scale': 0.0,
-# 		   'dim_inp': 100,
-# 		   'input_noise': 1,
-# 		   }
+exp_prm = {'experiment': exp.RandomOrthogonal,
+		   'num_bits': d,
+		   'num_targets': k,
+		   'alignment': 0 << c  << np.sqrt(k/(2**d - 1)),
+		   'seed': 0,
+		   'scale': 0.0,
+		   'dim_inp': 100,
+		   'input_noise': 1,
+		   }
 
 # d = su.Integer(step=1) 
 # d = su.Set([3,5])

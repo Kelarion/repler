@@ -38,7 +38,7 @@ class NicePolytope:
         exes = np.repeat(x[:,None], len(N_ids), axis=1) 
         
         ### Edge difference vectors
-        d = -la.pinv(B)@N 
+        d = -la.pinv(B)@N
         diffs = np.zeros((self.n_dim, self.n_con))
         diffs[B_ids,:] = d
         diffs += np.eye(self.n_dim)[:,N_ids]

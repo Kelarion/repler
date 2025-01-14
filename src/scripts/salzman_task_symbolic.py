@@ -1,5 +1,5 @@
-CODE_DIR = 'C:/Users/mmall/Documents/github/repler/src/'
-SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
+CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
+# SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
  
 import os, sys, re
 import pickle
@@ -28,7 +28,7 @@ from scipy.optimize import linprog as lp
 from sklearn.manifold import MDS
 
 import networkx as nx
-import pydot
+# import pydot 
 from networkx.drawing.nx_pydot import graphviz_layout
 
 # import umap
@@ -36,7 +36,7 @@ from cycler import cycler
 
 from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
 import cvxpy as cvx
-import polytope as pc
+# import polytope as pc
 
 # my code
 import students
@@ -50,6 +50,9 @@ import plotting as dicplt
 import grammars as gram
 import dichotomies as dics
 
+import distance_factorization as df
+import df_util
+import bae
 
 #%% Make data
 
@@ -57,13 +60,35 @@ I = np.eye(4, dtype=int)
 O = np.zeros((4,4))
 
 ## response array
-##                H R + -
-resp = np.array([[1,0,1,0], # A
-                 [0,1,1,0], # B
-                 [1,0,0,1], # C
-                 [0,1,0,1]],# D
-                dtype=int)  # context 1
+# ##                H R + -
+# resp = np.array([[1,0,1,0], # A 
+#                  [0,1,1,0], # B
+#                  [1,0,0,1], # C
+#                  [0,1,0,1]],# D
+#                 dtype=int)  # context 1
+
+# resp2 = np.roll(resp, 1, axis=0) # context 2
+
+## Action
+A = np.array([[1,0],  # A
+              [0,1],  # B
+              [1,0],  # C
+              [0,1]]) # D
+
+## Value
+V = np.array([[1,0,0],# value
+              [1,0,0],
+              [0,1,0],
+              [0,1,0]])
+
+## Incorrect
+X = np.ones((4,3))@np.diag([0,0,1])
+
+resp = np.block([A, V])
+respx = np.block([1-A, X])
+
 resp2 = np.roll(resp, 1, axis=0) # context 2
+respx2 = np.roll(respx, 1, axis=0) # context 2
 
 s1, s2 = np.where(np.ones((4,4))) # previous stim and current stim identity
 
@@ -76,8 +101,18 @@ SRR = np.block([[I[s1], resp[s1], resp[s2]], # prev_stim, prev_resp, resp
 SRS_ = np.block([[I[s1], resp[s1], I[s2]], # prev_stim, prev_resp, stim
                 [I[s1], resp2[s1], I[s2]]])
 
+SRxS_ = np.block([[I[s1], resp[s1], I[s2]], # prev_stim, prev_resp, stim
+                  [I[s1], respx[s1], I[s2]],
+                  [I[s1], resp2[s1], I[s2]],
+                  [I[s1], respx2[s1], I[s2]]])
+
 R_ = np.block([[resp[s2]], # resp
                [resp2[s2]]])
+
+Rx_ = np.block([[resp[s2]], # resp
+                [resp[s2]],
+                [resp2[s2]],
+                [resp2[s2]]])
 
 SRSR = np.block([[I[s1], resp[s1], I[s2], resp[s2]], # prev_stim, prev_resp, stim, resp
                 [I[s1], resp2[s1], I[s2], resp2[s2]]])
@@ -85,15 +120,15 @@ SRSR = np.block([[I[s1], resp[s1], I[s2], resp[s2]], # prev_stim, prev_resp, sti
 
 #### To do: include pre-stimulus inputs 
 
-SRS_null = np.block([[I[s1], resp[s1], I[s2]], # prev_stim, prev_resp, stim
-                     [I,     resp,     O   ],       # pre-stimulus trials
-                     [I[s1], resp2[s1], I[s2]],
-                     [I,     resp2,    O   ]])
+# SRS_null = np.block([[I[s1], resp[s1], I[s2]], # prev_stim, prev_resp, stim
+#                      [I,     resp,     O   ],       # pre-stimulus trials
+#                      [I[s1], resp2[s1], I[s2]],
+#                      [I,     resp2,    O   ]])
 
-R_null = np.block([[resp[s2], O[s2][:,[0]]], # resp, null
-                   [O,        O[:,[0]]+1],
-                   [resp2[s2], O[s2][:,[0]]],
-                   [O,          O[:,[0]]+1]])
+# R_null = np.block([[resp[s2], O[s2][:,[0]]], # resp, null
+#                    [O,        O[:,[0]]+1],
+#                    [resp2[s2], O[s2][:,[0]]],
+#                    [O,          O[:,[0]]+1]])
 
 #### To do: transfer task
 #### To do: try subsets of prev/current pairs, and subsets of stimuli
@@ -102,63 +137,124 @@ R_null = np.block([[resp[s2], O[s2][:,[0]]], # resp, null
 
 #%%
 
-num_trial = 5000
+nepoch = 200
 N = 100
-depth = 2
+depth = 1
 # nonlin = 'ReLU'
 nonlin = 'Tanh'
 # noise = 0.1
 
-inps = tasks.BinaryLabels(SRS_null.T)
-outs = tasks.BinaryLabels(R_null.T)
+# inps = tasks.BinaryLabels(SRS_null.T)
+# outs = tasks.BinaryLabels(R_null.T)
+
+inps = tasks.BinaryLabels(SRS_.T)
+outs = tasks.BinaryLabels(R_.T[[0]])
+
+# inps = tasks.BinaryLabels(SRxS_.T)
+# outs = tasks.BinaryLabels(Rx_.T)
 
 this_exp = sxp.FeedforwardExperiment(inps, outs)
 
-nets = this_exp.initialize_network(students.SimpleMLP, 
+nets = this_exp.initialize_network(students.SimpleMLP,
                                   width=N, 
-                                  p_targ=students.Bernoulli, 
+                                  p_targ=students.Bernoulli,
                                   depth=depth,
-                                  activation=nonlin)
+                                  activation=nonlin,
+                                  num_init=10)
 
-this_exp.train_network(nets, skip_rep_metrics=True, verbose=True)
-
+this_exp.train_network(nets, skip_rep_metrics=True, verbose=True, nepoch=nepoch)
 
 #%% reps
 
-Z1 = nets[0].enc.network[:2](torch.tensor(SRS_null).float()).detach().numpy()
-Z = nets[0].enc.network(torch.tensor(SRS_null).float()).detach().numpy()
+# Z1 = nets[0].enc.network[:2](torch.tensor(SRS_).float()).detach().numpy()
+Z = nets[0].enc.network(torch.tensor(SRS_).float()).detach().numpy()
 
+X = inps.labels.T
 
-#%% abstraction metrics
+#%% Factorize
 
-layer = 1 # 1-indexed
+baer = bae.BAE(Z, 40, pvar=0.95)
+baer.init_optimizer(decay_rate=0.95, period=2, initial=10)
 
-which_stim = np.concatenate([s2, s2+4])
-
-# cntx = np.arange(32) >= 16
-
-test_conds = this_exp.train_conditions
-test_inps = inps(test_conds)
-test_reps = nets[0].enc.network[:2*layer](test_inps).detach().numpy().T
-
-
-clf = svm.LinearSVC()
-
-ps = []
-ccgp = []
-dec = []
-all_dics = dics.Dichotomies(8, [(0,1,2,3),(0,2,5,7),(0,1,5,6)], 100)
-for d in tqdm(all_dics):
-    cols = all_dics.coloring(which_stim[test_conds])
+en = []
+for t in tqdm(range(400)):
+    #r = np.sum(pvar< (0.8 + 0.2*(t//10)/10))
+    baer.proj(pvar=0.95)
+    #baer.scl = baer.scaleS()
+    baer.grad_step()
+    en.append(baer.energy())
     
-    ps.append(dics.parallelism_score(test_reps, which_stim[test_conds], cols))
-    ccgp.append(np.mean(dics.compute_ccgp(test_reps.T, which_stim[test_conds], cols, clf)))
+S = baer.S.todense()
+
+Sunq = np.unique(np.mod(S+S[[0]],2), axis=1)
+
+is_dec = util.qform(util.center(SRS_@SRS_.T), Sunq.T).squeeze() > 1e-7
+
+S,pi = df_util.mindistX(Z, Sunq[:,is_dec], beta=1e-5)
+S = S[:,np.argsort(-pi)]
+pi = pi[np.argsort(-pi)]
     
-    clf.fit(test_reps.T + np.random.randn(*test_reps.T.shape)*0.2, cols)
-    dec.append(clf.score(test_reps.T + np.random.randn(*test_reps.T.shape)*0.2, cols))
+#%% Circuit
 
+XZ = (2*inps.labels-1)@(2*S-1)
+ZY = outs.labels@(2*S-1)
 
-dicplt.dichotomy_plot(ps, ccgp, dec, output_dics=[1,2], other_dics=[0])
+#%% Input Interventions
 
+ortho = True
+# ortho = False
+
+if ortho:
+    W = df_util.krusty(np.diag(np.sqrt(pi))@S.T, (Z-Z[[0]]).T)
+    W = np.diag(np.sqrt(pi))@W
+else:
+    W = la.pinv(S)@(Z-Z[[0]])
+
+dL = []
+for j in range(X.shape[1]):
+    row = []
+    
+    for i in range(len(Z)):
+        
+        sgn = 2*X[i,j]-1
+        # ystar = 2*R_[i,0]-1
+        
+        newX = 1*X
+        newX[i,j] = 1-newX[i,j]
+        
+        before = W@nets[0].enc(torch.FloatTensor(X[i])).detach().numpy()
+        after = W@nets[0].enc(torch.FloatTensor(newX[i])).detach().numpy()
+        
+        row.append((sgn*(after-before)))
+    dL.append(row)
+
+dL = np.squeeze(dL)
+
+#%% Hidden Interventions
+
+ortho = True
+# ortho = False
+
+if ortho:
+    W = df_util.krusty(np.diag(np.sqrt(pi))@S.T, (Z-Z[[0]]).T)
+    W = np.diag(np.sqrt(pi))@W
+else:
+    W = la.pinv(S)@(Z-Z[[0]])
+
+dL = []
+for j in range(len(W)):
+    row = []
+    for i in range(len(Z)):
+        
+        sgn = 2*S[i,j]-1
+        # ystar = 2*R_[i,0]-1
+        
+        before = nets[0].dec(torch.FloatTensor(Z[i])).detach().numpy()
+        after = nets[0].dec(torch.FloatTensor(Z[i] - sgn*W[j])).detach().numpy()
+        
+        row.append((sgn*(after-before)))
+    dL.append(row)
+
+dL = np.squeeze(dL)
 
 
