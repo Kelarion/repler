@@ -5,6 +5,7 @@ Rough organisation:
 - `util.py` contains generally useful functions
 - `server_utils.py` contains functions and classes for interfacing with the cluster
 - `pt_utils.pt` contains utilities for pytorch
+- `bae.py` contains the Binary Autoencoders
 - `students.py` contains classes for various PyTorch modules
 - `super_experiments.py` and `experiments.py` contain classes for organizing my experiments
 - `plotting.py` contains functions for plotting
