@@ -67,6 +67,50 @@ class Neal:
         return en
 
 #############################################################
+###### Model comparison #####################################
+#############################################################
+
+
+def impcv(model, mask='random', folds=10, iters=100, draws=10):
+    """
+    Imputation-based cross validation 
+
+    the `fold` of the CV is the fraction of the data masked
+
+    optimizer should already be initialized
+    """
+
+    ens = []
+    for fold in range(draws):
+        ## Mask
+        M = np.random.rand(*model.X.shape) < (1/folds)
+
+        ## Initialize masked values at random
+        X_orig = model.X*1
+        model.X[M] = np.random.randn(M.sum())
+
+        for it in range(iters):
+            model.grad_step()
+            model.X[M] = model.predict()[M]
+
+        model.X = X_orig
+        ens.append(model.energy())
+
+    return ens
+
+# def bcv(model, fold=1, iters=10):
+
+
+
+# def pdmask(n,d,folds):
+#     """
+#     pseudo-diagonal mask for cross-validation (Wold 1978 Technometrics)
+#     """
+
+
+
+
+#############################################################
 ###### Gradient descent #####################################
 #############################################################
 

@@ -3,7 +3,7 @@ CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
 SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/'
  
 import os, sys, re
-import pickle
+import pickle as pkl
 from time import time
 import math
 sys.path.append(CODE_DIR)
@@ -45,11 +45,15 @@ import anime
 
 #%%
 
+X = pkl.load(open('C:/Users/mmall/Downloads/X_forMatteo.pck','rb'))
+trl = pkl.load(open('C:/Users/mmall/Downloads/trials_forMatteo.pck','rb'))
 
+neurs = np.hstack([x for x in X.values()])
+area = np.concatenate([i*np.ones(len(x.T)) for i,x in enumerate(X.values())])
 
+neurz = (neurs-neurs.mean(0,keepdims=True))/(neurs.std(0,keepdims=True)+1e-12)
 
-
-
+#%%
 
 
 

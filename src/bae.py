@@ -10,7 +10,7 @@ import torchvision
 import torch.optim as optim
 import numpy as np
 from itertools import permutations, combinations
-# from tqdm import tqdm
+from tqdm import tqdm
 # import geoopt as geo
 
 import scipy.stats as sts
@@ -47,6 +47,7 @@ class KernelBAE:
         self.steps = steps
         self.beta = penalty
         self.max_ctx = max_ctx
+        self.fix_scale = fix_scale
 
         U,s,V = la.svd(X-X.mean(0), full_matrices=False)        
         
@@ -60,7 +61,11 @@ class KernelBAE:
         self.X = U[:,:r]@np.diag(s[:r])@V[:r]
         self.U = U[:,s>1e-6]
         self.U = self.U[:,:r]
-        self.K = X@X.T
+        
+        # Center the kernel of each item excluding that item
+        K = self.X@self.X.T
+        notI = (1 - np.eye(self.n))/(self.n-1) 
+        self.K = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
         
         ## Initialize S
         coding_level = np.random.beta(alpha, beta, dim_hid)/2
@@ -68,19 +73,24 @@ class KernelBAE:
         
         Mx = self.X@np.random.randn(len(X.T),self.r)
         thr = -np.sort(-Mx, axis=0)[num_active, np.arange(dim_hid)]
-        self.S = sprs.csc_array(1*(Mx >= thr))
-        self.notS = sprs.csc_array(1*(Mx < thr))
+        # self.S = sprs.csc_array(1*(Mx >= thr))
+        self.S = np.array((Mx >= thr)*1)
+        # self.notS = sprs.csc_array(1*(Mx < thr))
 
-        self.sum_s = self.S.sum(0)
+        # self.sum_s = self.S.sum(0)
 
         ## Penalty matrix
-        self.StS = self.S.T@self.S
+        # self.StS = self.S.T@self.S
         # St1 = self.sum_s[None,:]
 
         # self.I1 = 2*StS - St1 
         # self.I2 = 2*Sts - St1.T 
         # self.I3 = St1 - St1.T 
         # self.I4 = St1 + St1.T - self.n 
+
+    def predict(self, I=None):
+
+        return self.S[I]@self.S[I].T
 
     def grad_step(self, pause_schedule=False, **opt_args):
         
@@ -90,30 +100,36 @@ class KernelBAE:
         
         T = self.schedule(freeze=pause_schedule)
         
-        for i in np.random.permutation(np.arange(self.n)):
+        # for i in np.random.permutation(np.arange(self.n)):
+        # for i in range(self.n):
             
-            idx = np.mod(np.arange(self.n)+i, self.n) ## item i goes first
+        #     idx = np.mod(np.arange(self.n)+i, self.n) ## item i goes first
             
-            olds = self.S[[i]].todense().squeeze()
-            # news = self.recur(i, T, I=idx[1:self.max_ctx])
-            news = self.slow_recur(i, T, I=idx[1:self.max_ctx])
+        #     olds = self.S[[i]].todense().squeeze()
+        #     # news = self.recur(i, T, I=idx[1:self.max_ctx])
+        #     news = self.slow_recur(i, T, I=idx[1:self.max_ctx])
 
-            ## Update 
-            self.sum_s += (news - olds)
+        #     ## Update 
+        #     self.sum_s += (news - olds)
             
-            self.S[[i]] = news
+        #     self.S[[i]] = news
 
-            self.StS += np.outer(news,news) - np.outer(olds,olds)
+        #     self.StS += np.outer(news,news) - np.outer(olds,olds)
 
             ## Keep in sparsest form
-            flip = (self.sum_s > (self.n//2))
+            # flip = (self.sum_s > (self.n//2))
 
-            oldS = self.S[:,flip]*1
-            self.S[:,flip] = self.notS[:,flip]*1 
-            self.notS[:,flip] = oldS
+            # oldS = self.S[:,flip]*1
+            # self.S[:,flip] = self.notS[:,flip]*1 
+            # self.notS[:,flip] = oldS
 
-            self.sum_s[flip] = self.n - self.sum_s[flip]
+            # self.sum_s[flip] = self.n - self.sum_s[flip]
+        newS = update_concepts_kernel(self.K, self.S.astype(float), 
+            scl=self.scl, beta=self.beta, temp=T)
+        self.S = newS
 
+        if not self.fix_scale:
+            self.scl = self.scaleS()
         
     def init_optimizer(self, **opt_args):
         self.schedule = Neal(**opt_args)
@@ -150,7 +166,7 @@ class KernelBAE:
         S = self.S[I]
         K = X@X.T
         dot = self.scl*np.sum(util.center(K)*(S@S.T))
-        Qnrm = (self.scl**2)*np.sum(util.center((S@S.T).todense())**2)
+        Qnrm = (self.scl**2)*np.sum(util.center((S@S.T))**2)
         Knrm = np.sum(util.center(K)**2)
         
         return Qnrm + Knrm - 2*dot
@@ -174,7 +190,7 @@ class KernelBAE:
         """
         
         X = self.X
-        S = self.S.tocsr()
+        S = self.S
         S_ = S - S.mean(0)
         
         dot = np.sum((X@X.T)*(S_@S_.T))
@@ -197,13 +213,13 @@ class KernelBAE:
         x = self.X[i]
         x_ = X.mean(0)
         
-        # k = (X-x_)@(x-x_)
-        # k0 = (x-x_)@(x-x_)
-        K_ = self.K[I][:,I].mean(0)
-        K__ = K_.mean()
-        k_ = self.K[I,i].mean()
-        k = self.K[I,i] - K_ - k_ + K__
-        k0 = self.K[i,i] - 2*k_ + K__
+        k = (X-x_)@(x-x_)
+        k0 = (x-x_)@(x-x_)
+        # K_ = self.K[I][:,I].mean(0)
+        # K__ = K_.mean()
+        # k_ = self.K[I,i].mean()
+        # k = self.K[I,i] - K_ - k_ + K__
+        # k0 = self.K[i,i] - 2*k_ + K__
         
         ## Organize states
         S = self.S[I].tocsc()         # i.e. S(X)
@@ -228,29 +244,31 @@ class KernelBAE:
             I = np.mod(np.arange(self.n)+i, self.n)[1:]
 
         n = len(I)
-            
+        
         ## Organize data
         # X = self.X[I]
         # x = self.X[i]
         # x_ = X.mean(0)
         
+        k = self.K[i,I]
+        k0 = self.K[i,i]
         # k = (X-x_)@(x-x_)
         # k0 = (x-x_)@(x-x_)
-        K_ = self.K[I][:,I].mean(0)
-        K__ = K_.mean()
-        k_ = self.K[I,i].mean()
-        k = self.K[I,i] - K_ - k_ + K__
-        k0 = self.K[i,i] - 2*k_ + K__
+        # K_ = self.K[I][:,I].mean(0)
+        # K__ = K_.mean()
+        # k_ = self.K[I,i].mean()
+        # k = self.K[I,i] - K_ - k_ + K__
+        # k0 = self.K[i,i] - 2*k_ + K__
         
         ## Organize states
         S = self.S[I].tocsc()         # i.e. S(X)
         s = self.S[[i]].todense().squeeze()
 
         ## Energy
-        # StS = self.StS - np.outer(s,s)
-        # S1 = (self.sum_s - s)[None,:]
-        StS = S.T@S
-        S1 = S.sum(0)[None,:]
+        StS = self.StS - np.outer(s,s)
+        S1 = (self.sum_s - s)[None,:]
+        # StS = S.T@S
+        # S1 = S.sum(0)[None,:]
         scl = self.scl
 
         s_ = S1.squeeze()/n
@@ -273,7 +291,7 @@ class KernelBAE:
         A = J + self.beta*(scl**2)*Q
         b = h - 0.5*Ji - self.beta*(scl**2)*p
 
-        ## Dynamics
+        # ## Dynamics
         # Qs = Q@s
         # Js = J@s
         for i in range(self.r):
@@ -292,6 +310,9 @@ class KernelBAE:
             # s[i] += ds
             # Qs += Q[:,i]*ds
             # Js += J[:,i]*ds
+
+        # s = regularized_hopfield(n, s, S.indptr, S.indices, k0, S.T@k, temp, 
+        #     Q, p, self.scl, self.steps, beta=self.beta)
 
         return s
 
@@ -354,6 +375,12 @@ class BAE:
         ## Regularization
         self.StS = self.S.T@self.S
         self.Ssum = self.S.sum(0)
+
+    def predict(self):
+        """
+        Make predictions for items I
+        """
+        return self.S@self.W.T
 
     def grad_step(self, pause_schedule=False, **opt_args):
 
@@ -488,6 +515,112 @@ class BAE:
         self.initialized = True
 
 
+class RejectionBAE:
+
+    def __init__(self, X, eps=1e-5, rmax=None, whiten=True, learn=False):
+        """
+        X has shape (num_data, dim_data)
+        """
+
+        U,s,V = la.svd(X-X.mean(0,keepdims=True), full_matrices=False)
+
+        these = s>eps
+        if rmax is not None:
+            these[rmax:] = False
+
+        self.P = U[:,these] # for random sampling
+        self.Q = 1*self.P   # for energy function
+        if not whiten:
+            self.P = self.P@np.diag(s[these])
+
+        # self.Q = U[:,(~these)]
+
+        self.updateQ = learn
+
+        self.N = len(X)
+        self.r = sum(these)
+
+    def step(self, S, t=1, beta=1):
+        "Apply Hopfield update for t steps"
+
+        for i in range(t):
+            if self.updateQ:
+                c = self.P@(self.P.T@S) + S.mean(0, keepdims=True)
+            else:
+                c = self.Q@(self.Q.T@S) + S.mean(0, keepdims=True)
+            S = 2*np.random.binomial(1, spc.expit(beta*c)) - 1
+
+        return S
+
+    def sample(self, m):
+        "Random normal vector in Im(A)"
+        return self.P@np.random.randn(self.r, m)
+
+    def learn(self, s, eta=0.1):
+        "Avoid sampling w in the future"
+        self.P -= (eta/(s.shape[1]+1e-6))*s@s.T@self.P/self.N
+
+    def energy(self, s):
+        return 1 - (((self.Q.T@s)**2).sum(0) + (s.sum(0)**2)/self.N)/self.N
+
+    def fit(self, samps, max_iter=100, tol=1e-3, lr=0.0, S0=None,
+        alpha=0.88, beta=1, period=10, verbose=False):
+
+        if S0 is None:
+            M = self.sample(samps)
+            S = np.sign(M)
+        else:
+            S = 1*S0
+            samps = S0.shape[1]
+
+        t = np.zeros(samps)
+
+        if verbose:
+            pbar = tqdm(range(max_iter))
+
+        basins = np.empty((self.N, 0))
+        energy = np.empty((0, samps))
+        emin = np.inf
+        it = 0
+        while (it<max_iter):
+
+            ens = self.energy(S)
+            energy = np.vstack([energy, ens])
+
+            temp = alpha**(t//period)
+            news = self.step(S, beta=beta/temp)
+
+            stopped = (np.sum(S*news, axis=0) == self.N) 
+            good = energy[it] - emin < tol
+            bad = (np.abs(np.sum(S, axis=0)) == self.N)
+
+            basins = np.hstack([basins, S[:,good&stopped&(~bad)]])
+
+            neww = self.sample(np.sum(stopped))
+            news[:,stopped] = np.sign(neww)
+            energy[it,stopped] = np.nan
+
+            self.learn(S[:,stopped], eta=lr)
+            S = 1*news
+            t[stopped] = 0
+            t[~stopped] += 1
+
+            basins = np.unique(basins*basins[[0]], axis=1)
+
+            if np.sum(~bad)>0:
+                emin = np.min([emin, np.min(ens[~bad])])
+
+            if verbose:
+                pbar.update(1)
+
+            it += 1
+
+        # ben = self.energy(basins)
+        # basins = basins[:, ben-ben.min() < tol]
+
+        return basins, energy, emin
+
+
 @dataclass
 class Neal:
     """
@@ -613,3 +746,207 @@ def hopfield_loop(n, x, indptr, indices, k0, Sk, temp, scl=1, steps=1, beta=0):
 
 
     
+@njit
+def regularized_hopfield(n, x, indptr, indices, k0, Sk, temp, R, r, scl=1, steps=1, beta=0):
+    """
+    
+    """
+
+    ## TODO: keep track of energy to avoid re-computing
+    
+    ## It seems that the @njit decorator lets you use for
+    ## loops in python, but you can only use numpy and 
+    ## for some reason it only works when written flat
+    
+    m = len(indptr)-1     # number of columns  (categories)
+    # n = np.max(indices)     # number of rows  (inputs)
+    
+    assert m == len(x)
+    
+    # Compute the first dot product
+    Sx = np.zeros(n, dtype=float)
+    s = np.zeros(m, dtype=float)
+    for i in range(m):
+        rows = indices[indptr[i]:indptr[i+1]]
+        s[i] = len(rows)
+        for j in rows:
+            Sx[j] += (x[i] - s[i]/n)
+    t = n/(n+1)
+    
+    # Compute the rank-one terms
+    s_ = s/n
+    u = 2*s_ - 1
+    
+    s_sc_ = s_*(1-s_)
+    
+    sx = Sx.sum()
+    ux = 2*sx/n - x.sum() + s_.sum()
+    
+    # Form the threshold 
+    h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk - beta*(scl**2)*r
+    
+    # Need to subtract the diagonal and add it back in
+    Jii = 2*n*s_sc_ + t*u**2
+    # Jii = 2*s*(1-s_) + t*u**2
+    
+    xout = 1*x
+    for step in range(steps):
+        for i in range(m):
+            rows = indices[indptr[i]:indptr[i+1]]
+            
+            ## Compute sparse dot product
+            dot = 0
+            for j in rows:
+                dot += 2*Sx[j]
+            dot -= 2*s_[i]*sx
+            dot += t*u[i]*ux
+            dot -= Jii[i]*xout[i]
+            dot -= beta*R[i][xout>0].sum()
+
+            ## Compute currents
+            curr = (h[i] - (scl**2)*Jii[i]/2 - (scl**2)*dot)/temp
+        
+            ## Apply sigmoid (overflow robust)
+            if curr < -100:
+                prob = 0.0
+            elif curr > 100:
+                prob = 1.0
+            else:
+                prob = 1.0 / (1.0 + math.exp(-curr))
+            
+            ## Update outputs
+            xi = 1*(np.random.rand() < prob)
+            dx = xi - xout[i]
+            xout[i] = xi
+            
+            ## Update dot products
+            if np.abs(dx) > 0:
+                sx += dx*s[i]
+                ux += dx*u[i]
+                Sx[rows] += dx    # O(nnz)
+        
+    return xout
+
+
+@njit
+def update_concepts_kernel(K, S, scl, beta, temp, steps=1):
+    """
+    One gradient step on S
+
+    TODO: figure out a good sparse implementation!
+    """
+
+    n, m = S.shape
+
+    StS = np.dot(S.T, S)
+    St1 = S.sum(0)
+
+    ## Sparse (CSC) representation of S
+    # aye, ridx = np.nonzero(S.T)     # get row indices (compress columns)
+    # rptr = np.unique(aye, return_index=True)[1]
+    # rptr = np.append(rptr, len(ridx))
+
+    # c2r = np.argsort(rindices) # conversion to CSR (which is better for row slicing)
+    # cindptr = np.unique(rindices[c2r], return_index=True)[1]
+    # cindptr = np.append(cindptr, len(rindices))
+    # cindices = aye[c2r]
+
+    for i in np.random.permutation(np.arange(n)):
+
+        idx = np.mod(np.arange(n)+i, n) ## item i goes first
+        I = idx[1:]
+
+        ## Organize data
+        k = K[i,I]
+        k0 = K[i,i]
+
+        ## Organize states
+        Sk = np.dot(S[I].T, k)
+        s = S[i]
+        # St1[s>0] -= 1
+        # StS[s>0][:,s>0] -= 1
+        St1 -= s
+        StS -= np.outer(s,s)
+
+        ## Regularization
+        I1 = np.sign(2*StS - St1[None,:])
+        I2 = np.sign(2*StS - St1[:,None])
+        I3 = np.sign(St1[None,:] - St1[:,None])
+        I4 = np.sign(St1[None,:] + St1[:,None] - (n-1))
+
+        R = ((1*(I1<0)*(I2<0) - 1*(I1>0)*(I3<0) - 1*(I2>0)*(I3>0))*(I4<0))*1.0
+        r = ((I2>0)*(I3>0)*(I4<0)).sum(1)*1.0
+
+        ## Recurrence
+        t = (n-1)/n
+        
+        # Compute the rank-one terms
+        s_ = St1/(n-1)
+        u = 2*s_ - 1
+        
+        s_sc_ = s_*(1-s_)
+
+        ## Constants
+        # sx = Sx.sum()
+        sx = np.dot(s_, s - s_)
+        ux = 2*sx - s.sum() + s_.sum()
+        
+        # Form the threshold 
+        h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk - beta*(scl**2)*r
+        
+        # Need to subtract the diagonal and add it back in
+        Jii = 2*(n-1)*s_sc_ + t*u**2
+
+        ## Hopfield update of s
+        news = 1*s
+        for step in range(steps):
+            for j in range(m): # concept
+
+                # rows = ridx[rptr[j]:rptr[j+1]]
+
+                # Compute sparse dot product
+                dot = 2*np.dot(StS[j], news - s_)
+                dot -= 2*(n-1)*s_[j]*sx
+                dot += t*u[j]*ux
+                dot -= Jii[j]*news[j]
+                dot += beta*(scl**2)*np.dot(R[j], news)
+
+                ## Compute currents
+                curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
+
+                ## Apply sigmoid (overflow robust)
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+                
+                ## Update outputs
+                sj = 1*(np.random.rand() < prob)
+                ds = sj - news[j]
+                news[j] = sj
+                
+                ## Update dot products
+                if np.abs(ds) > 0:
+                    sx += ds*s_[j]
+                    ux += ds*u[j]
+
+        ## Update 
+        S[i] = news
+        St1 += news
+        StS += np.outer(news, news) 
+
+        ## Keep in sparsest form
+        # flip = (St1 > (n//2))
+
+        # StS[flip] = St1[None,:] - StS[flip]
+        # St1[flip] = n - St1[flip]
+        # StS[:,flip] = St1[:,None] - StS[:,flip]
+    
+    return S
+
+
+def update_concepts_asymmetric(K, S):
+
+    pass

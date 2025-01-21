@@ -144,11 +144,11 @@ neur_dim = 100
 X = util.grid_vecs(grid_size, grid_dim)
 y = np.sign(X[0])
 
-Z = util.gaussian_process(X.T, neur_dim, kernel=util.RBF(1/5))
+Z = util.gaussian_process(X.T, neur_dim, kernel=util.RBF(1))
 
 #%% Plot "behavior"
 
-_,axs = plt.subplots(1,2)
+_,axs = plt.subplots(1,3)
 
 ## Extrapolation
 clf = svm.LinearSVC()
@@ -162,16 +162,25 @@ clf.fit(Z.T[X[1]>=0], y[X[1]>=0])
 y_ext[X[1]<0] = clf.predict(Z.T[X[1]<0])
 
 axs[0].scatter(X[0], X[1], c=y_ext, cmap='bwr')
+axs[0].set_title('SVM')
+# tpl.square_axis(axs[0])
 
 ## Kernel-logit
 K = util.center(Z.T@Z)
 K -= np.diag(np.diag(K))
 
-# y_logit = np.zeros(len(y))
-# y_logit[X[1]>=0] = spc.expit(K[X[1]>=0][:,X[1]<0]@y[X[1]<0])
-# y_logit[X[1]<0] = spc.expit(K[X[1]<0][:,X[1]>=0]@y[X[1]>=0])
-y_logit = spc.expit(K@y)
+y_logit = np.zeros(len(y))
+y_logit[X[1]>=0] = spc.expit(K[X[1]>=0][:,X[1]<0]@y[X[1]<0])
+y_logit[X[1]<0] = spc.expit(K[X[1]<0][:,X[1]>=0]@y[X[1]>=0])
 
 axs[1].scatter(X[0], X[1], c=y_logit, cmap='bwr')
+axs[1].set_title('All points')
 
+# Weight points according to prototype distance
+ptype = np.exp(-(X[1]**2 + (np.abs(X[0])-1)**2)/0.01)
+ptype /= np.sum(ptype)
 
+y_logit = spc.expit(K@np.diag(ptype)@y)
+
+axs[2].scatter(X[0], X[1], c=y_logit, cmap='bwr')
+axs[2].set_title('Prototypes')

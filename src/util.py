@@ -890,6 +890,20 @@ def spunique(sp_matrix, axis=1):
         ret = ret.T        
     return ret
 
+def csr(A):
+    """
+    Return A in compressed sparse row format:
+
+    indices, indpointer, values
+    """
+
+    aye, jay = np.nonzero(A)
+    ridx = np.unique(aye, return_index=True)[1]
+    ridx = np.append(ridx, len(jay))
+
+    return jay, ridx, A[aye,jay]
+
+
 def embed(K):
     """
     Generate euclidean embedding of kernel K
