@@ -8,7 +8,7 @@ import os
 import pickle
 import warnings
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, field
 
 import torch
 # import torchvision
@@ -23,6 +23,7 @@ from sklearn import svm, linear_model
 # this is my code base, this assumes that you can access it
 import util
 import pt_util
+import students
 import assistants as ta
 import dichotomies as dic
 import server_utils as su
@@ -96,6 +97,51 @@ class Model:
         """
         pass
 
+@dataclass
+class PTModel(Model):
+    """
+    If the model is an instance of a 'NeuralNet' claass
+    """
+
+    opt_args: dict = field(default_factory=dict)
+    batch_size: int = 64
+    epochs: int = 100
+
+    def fit(self, **data):
+        
+        self.init_metrics()
+        self.net = self.init_network(**data)
+        self.net.init_optimizer(**self.opt_args)
+
+        dl = pt_util.batch_data(*[d for d in data.values()],  batch_size=self.batch_size)
+
+        ls = []
+        for epoch in range(self.epochs):
+            self.loop(**data)
+            self.metrics['train_loss'].append(self.net.grad_step(dl))
+
+    def init_network(self, **data):
+        """
+        Should output an initialized NeuralNet object
+        """
+        return NotImplementedError
+
+    def loop(self, **data):
+        """
+        All the code that should be run during a training loop
+
+        could include, for example, a tqdm iterator
+        """
+        pass
+
+    def init_metrics(self):
+        self.metrics = {'train_loss': []}
+
+    def save(self, fname):
+        self.net.save(fname)
+
+    def load(self, fname):
+        self.net.load(fname)
 
 #%% Base experiment
 @dataclass

@@ -404,7 +404,7 @@ def flat_torus(*xs):
 def circ_distance(x, y):
 
     diffs = np.exp(1j*x)/np.exp(1j*y)
-    distances = np.arctan2(diffs.imag,diffs.real)
+    distances = np.arctan2(diffs.imag, diffs.real)
 
     return distances
 
@@ -928,6 +928,17 @@ class RBF:
 class LinearKernel:
     def __call__(self, X):
         return X@X.T
+
+@dataclass
+class CircularRBF:
+    """
+    Expects a 1-dimensional variable
+    """
+    sigma: float = 1
+    scale: float = 1
+    def __call__(self, X):
+        D = X[...,None] - X[...,None,:]
+        return self.scale*np.exp((np.cos(D)-1)/(2*self.sigma))
 
 def gaussian_process(X, d, kernel=RBF(1)):
     """
@@ -1707,6 +1718,13 @@ def yuke(X, Y=None):
 
     return Xnrm + Ynrm - 2*XYdot
 
+def cosdist(X, Y=None):
+
+    if Y is None:
+        Y= X
+
+    return 1 - np.cos(X - Y.swapaxes(-1,-2))
+
 def elliptify(K):
     """
     Linearly convert K into a correlation matrix
@@ -1752,7 +1770,7 @@ def ker(K, thrsh=1e-6, return_psd=True):
 def chapultapec(n, d, steps=200, lr=1e-2):
     """
     Place n points on the d-sphere, as far apart from each other as
-    possible, like the lovers in Chapultapec park
+    possible, like the many pairs of lovers in Chapultapec park
     """
 
     def expmap(x, v, t):

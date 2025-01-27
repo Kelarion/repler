@@ -18,7 +18,7 @@ m = 10
 F = np.random.choice([0,1], (n,m))
 Fsum = F.sum(0)
 # F = np.mod(F+(Fsum>n/2),2)
-# Fsum = F.sum(0, keepdims=True)
+# Fsum = F.sum(0) #, keepdims=True)
 
 # follows = (2*F.T@F > Fsum)
 
@@ -57,6 +57,14 @@ best *= (best.sum(0)==1)
 
 Q = best[0] - best[1] - best[2] + best[3]
 p = 2*(best[1].sum(0) - best[3].sum(0))
+
+# I1 = np.sign(2*FF - Fsum[None,:]) # si'sj - (1-si)'sj
+# I2 = np.sign(2*FF - Fsum[:,None]) # si'sj - si'(1-sj)
+# I3 = np.sign(Fsum[None,:] - Fsum[:,None]) # (1-si)'sj - si'(1-sj)
+# I4 = np.sign(Fsum[None,:] + Fsum[:,None] - n) # si'sj - (1-si)'(1-sj)
+
+# Q = (1*(I1<0)*(I2<0) - 1*(I1>0)*(I3<0) - 1*(I2>0)*(I3>0))*(I4<0)
+# p = ((I2>0)*(I3>0)*(I4<0)).sum(1)
 
 oldD = deez.min(0)
 
@@ -190,8 +198,6 @@ for n in range(5,6):
         verts = ppm.compute_polytope_vertices(A, b)
 
         sols.append([np.diag(v[v>1e-6])@all_cats[v>1e-6] for v in verts])
-
-
 #%%
 
 def plot_graph(S):

@@ -40,6 +40,7 @@ from numba import njit
 import util
 import df_util
 import bae
+import bae_util
 import plotting as tpl
 import anime
 
@@ -55,6 +56,64 @@ neurz = (neurs-neurs.mean(0,keepdims=True))/(neurs.std(0,keepdims=True)+1e-12)
 
 #%%
 
+CV = []
+TRN = []
+best = []
 
+for this_area in range(29):
+
+    Z = neurz[:,area==this_area]
+    
+    cv = []
+    trn = []
+    Es = []
+    for k in tqdm(range(2,16)):
+        mod = bae.BAE(Z, k, penalty=0.1)
+        mod.init_optimizer(decay_rate=0.98, period=1)
+        for it in range(500):
+            mod.grad_step()
+        trn.append(mod.energy())  
+        Es.append(mod.S.todense())  
+    
+        mod = bae.BAE(Z, k, penalty=0.1)
+        cv.append(bae_util.impcv(mod, folds=10, iters=500, draws=10, 
+                                 decay_rate=0.98, period=1))
+
+    TRN.append(trn)
+    CV.append(np.mean(cv, axis=1))
+    best.append(Es[np.argmin(np.mean(cv, axis=1))])
+    
+    
+#%%
+
+_,axs = plt.subplots(5,6)
+
+for this_area in range(29):
+    j = this_area//5
+    i = np.mod(this_area,5)
+    
+    wa = neurz[:,area==this_area]@neurz[:,area==this_area].T
+    axs[i,j].imshow(wa,'bwr', vmin=-np.abs(wa).max(), vmax=np.abs(wa).max())
+    axs[i,j].set_title(list(X.keys())[this_area])
+    
+    axs[i,j].set_xticks([])
+    axs[i,j].set_yticks([])
+    axs[i,j].set_xlim([-0.5,15.5])
+    axs[i,j].set_ylim([15.5,-0.5])
+    
+    plt.autoscale(False)
+    axs[i,j].plot([7.5,7.5],[0,16],'k--')
+    axs[i,j].plot([0,16],[7.5,7.5],'k--')
+
+#%% Single trials
+
+this_area = 'MOs'
+this_session = 0
+
+Z = []
+labels = []
+for key, value in trl[this_area][0].items():
+    Z.append(value)
+    labels
 
 

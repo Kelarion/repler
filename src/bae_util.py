@@ -45,33 +45,53 @@ class Neal:
     decay_rate: float = 0.8
     period: int = 2
     initial: float = 10.0
-    
-    def __post_init__(self):
-        self.t = 0
-    
-    def __call__(self, freeze=False):
-        T =  self.initial*(self.decay_rate**(self.t//self.period))
-        if not freeze:
-            self.t += 1
-        return T
 
-    def fit(self, model, *data, T_min=1e-4, verbose=True, **opt_args):
+    def fit(self, model, *data, T_min=1e-4, max_iter=None, verbose=True, **opt_args):
 
-        max_iter = self.period*int(np.log(T_min)/ np.log(self.decay_rate))
+        if max_iter is None:
+            max_iter = self.period*int(np.log(T_min)/ np.log(self.decay_rate))
 
         en = []
         for it in tqdm(range(max_iter)):
-            T = self()
+            T = self.initial*(self.decay_rate**(it//self.period))
             en.append(model.grad_step(*data, T, **opt_args))
 
         return en
+
+    def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=True, **opt_args):
+
+        if max_iter is None:
+            max_iter = self.period*int(np.log(T_min)/ np.log(self.decay_rate))
+
+        ens = []
+        for fold in range(draws):
+            model.initialize()
+
+            ## Mask
+            M = np.random.rand(*X.shape) < (1/folds)
+
+            ## Initialize masked values at random
+            X_M = X*1
+            X_M[M] = np.random.randn(M.sum())
+
+            ## Fit parameters and mask
+            en = []
+            for it in range(iters):
+                T = self.initial*(self.decay_rate**(it//self.period))
+                en.append(model.grad_step(X_M, T, **opt_args))
+                X_M[M] = model()[M]
+
+            ens.append(model.loss(X))
+
+        return ens
+
 
 #############################################################
 ###### Model comparison #####################################
 #############################################################
 
 
-def impcv(model, mask='random', folds=10, iters=100, draws=10):
+def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
     """
     Imputation-based cross validation 
 
@@ -82,6 +102,9 @@ def impcv(model, mask='random', folds=10, iters=100, draws=10):
 
     ens = []
     for fold in range(draws):
+        model.initialize()
+        model.init_optimizer(**opt_args)
+
         ## Mask
         M = np.random.rand(*model.X.shape) < (1/folds)
 
@@ -123,6 +146,26 @@ def impcv(model, mask='random', folds=10, iters=100, draws=10):
 
 
 #############################################################
+###### Log-normalizers ######################################
+#############################################################
+
+@njit
+def gaussian(nat):
+    return 0.5*nat**2
+
+@njit
+def poisson(nat):
+    return np.exp(nat)
+
+@njit
+def bernoulli(nat):
+    return np.log(1+np.exp(nat))
+
+@njit
+def enby(nat):
+    return -np.log(1-np.exp(nat))
+
+#############################################################
 ###### Custom distributions #################################
 #############################################################
 
@@ -161,4 +204,5 @@ class Enby(dis.ExponentialFamily):
         """
         raise NotImplementedError
 
+#################################################################
 

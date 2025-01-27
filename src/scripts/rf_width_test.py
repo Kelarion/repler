@@ -21,7 +21,7 @@ from tqdm import tqdm
 from sklearn import svm, discriminant_analysis, manifold, linear_model
 from sklearn.neighbors import KNeighborsRegressor as knr
 import scipy.stats as sts
-import scipy.linalg as la
+import scipy.linalg as la 
 import scipy.spatial as spt
 import scipy.sparse as sprs
 import scipy.special as spc
@@ -91,7 +91,31 @@ import dichotomies as dics
 #         return numer/spc.iv(0,self.kappa)
 
 # def GRF_kernel()
- 
+
+class RadialBoyfriend:
+    """
+    Gaussian process receptive fields with RBF kernel
+    """
+    
+    def __init__(self, width):
+        
+        self.width = width
+        # Set the scale so that the variance of each neuron is 1
+        self.scale = 1/(1-np.exp(-0.5/width)*spc.i0(0.5/width))
+        
+    def __call__(self, error, quantile=1e-4):
+        """
+        compute k(x,y) = k(x-y) ... so input x-y
+        """
+        return self.scale*np.exp((np.cos(error)-1)/(2*self.width))
+
+    def sample(self, colors, size=1):
+        """
+        Sample activity in response to colors
+        """
+        kern = util.CircularRBF(sigma=self.width, scale=self.scale)
+        return util.gaussian_process(colors, size, kernel=kern).T
+
 
 class MisesLogNormal:
     """
@@ -207,7 +231,7 @@ def mises_simil(error, kappa):
 
 #%%
 
-n_col = 3000
+n_col = 300
 n_err = 100
 n_neur = 500
 
@@ -224,8 +248,11 @@ errors = np.linspace(-np.pi, np.pi, n_err) # for the theory
 
 clf = knr(n_neighbors=1)
 
-mus = np.linspace(0, np.pi/2, 100)
-sigs = np.linspace(0, 2, 5)
+# mus = np.linspace(0, np.pi/2, 100)
+# mus = [1]
+betas = np.linspace(1,10,5)
+this_mu = 0
+sigs = np.linspace(0.5, 2, 5)
 
 err_std = []
 samp_err_std = []
@@ -233,7 +260,8 @@ tcc_err_std = []
 err_kur = []
 tcc_err_kur = []
 samp_err_kur = []
-for i,this_mu in enumerate(mus):
+# for i,this_mu in enumerate(mus):
+for i,this_beta in enumerate(betas):
     stds = []
     samp_stds = []
     tcc_stds = []
@@ -243,7 +271,8 @@ for i,this_mu in enumerate(mus):
     samp_kur = []
     for this_sig in sigs:
         
-        pop = MisesLogNormal(this_mu, this_sig)
+        # pop = MisesLogNormal(this_mu, this_sig)
+        pop = RadialBoyfriend(this_sig)
 
         ## theory
         kernel = pop(errors, quantile=1e-3) # numerically integrate
@@ -257,7 +286,7 @@ for i,this_mu in enumerate(mus):
         if np.mod(i, samp_every) <=0:
             ## decoder
             X = pop.sample(colors, size=n_neur)
-            X /= la.norm(X, axis=1,keepdims=True) # normalize response across neurons
+            # X /= la.norm(X, axis=1,keepdims=True) # normalize response across neurons
             
             K = X@X.T
             K_perturb = K + np.random.gumbel(scale=1/beta, size=K.shape)
@@ -298,15 +327,17 @@ samp_err_kur = np.array(samp_err_kur)
 #%%
 
 # samps = samp_err_std
-# samps = tcc_err_std 
-# thry = err_std
-thry = err_kur
-samps = tcc_err_kur
+samps = tcc_err_std 
+thry = err_std
+# thry = err_kur
+# samps = tcc_err_kur
 # samps = samp_err_kur
 
 cols = cm.copper(np.linspace(0,1,len(sigs)))
-for i in range(len(sigs)):
-    plt.plot(mus, thry[:,i]/(2*np.pi), color=cols[i], linestyle='--')
-    plt.plot(mus[::samp_every], samps[:,i]/(2*np.pi), color=cols[i])
-
+# for i in range(len(sigs)):
+#     plt.plot(mus, thry[:,i]/(2*np.pi), color=cols[i], linestyle='--')
+#     plt.plot(mus[::samp_every], samps[:,i]/(2*np.pi), color=cols[i])
+for i in range(len(betas)):
+    plt.plot(sigs, thry[i]/(2*np.pi), color=cols[i], linestyle='--')
+    plt.plot(sigs, samps[i]/(2*np.pi), color=cols[i])
 

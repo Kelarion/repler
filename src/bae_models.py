@@ -41,7 +41,6 @@ class BAE(nn.Module):
 
     def __init__(self):
         super().__init__()
-        self.initialized = False
 
     def EStep(self, X):
         """
@@ -55,22 +54,41 @@ class BAE(nn.Module):
         """
         return NotImplementedError
 
-    def grad_step(self, X, temp, opt_alg=geo.optim.RiemannianSGD, **opt_args):
+    def grad_step(self, X, temp, use_sample=True, **opt_args):
         """
         One iteration of optimization
         """
 
-        if not self.initialized:
-            self.init_optimizer(opt_alg=opt_alg, **opt_args)
-
         E = self.EStep(X, temp)
-        loss = self.MStep(X, E)
+        if use_sample:
+            loss = self.MStep(X, self.S, **opt_args)
+        else:
+            loss = self.MStep(X, E, **opt_args)
 
         return loss
 
-    def init_optimizer(self, opt_alg=geo.optim.RiemannianSGD, **opt_args):
-        self.optimizer = opt_alg(self.parameters(), **opt_args)
-        self.initialized = True
+    def initialize(self, X=None, alpha=2, beta=5):
+
+        ## Initialise b
+        self.b = np.zeros(self.d) # -X.mean(0)
+
+        ## Initialize W
+        self.W = np.random.randn(self.d, self.r)
+
+        ## Initialize S 
+        coding_level = np.random.beta(alpha, beta, self.r)/2
+        num_active = np.floor(coding_level*self.n).astype(int)
+
+        if X is None:
+            self.S = 1*(np.random.rand(self.n, self.r) > coding_level)
+        else:
+            n,d = X.shape
+            assert n == self.n
+            assert d == self.d
+
+            Mx = X@self.W
+            thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
+            self.S = 1*(Mx >= thr)
 
 
 ####################################################################
@@ -87,8 +105,8 @@ class GaussBAE(BAE):
     on non-identifiable instances. 
     """
 
-    def __init__(self, num_inp, dim_inp, dim_hid, weight_alg='exact', 
-        tree_reg=0, sparse_reg=1e-2):
+    def __init__(self, num_inp, dim_inp, dim_hid, 
+        tree_reg=0, X_init=None, alpha=2, beta=5):
 
         super().__init__()
 
@@ -96,26 +114,10 @@ class GaussBAE(BAE):
         self.d = dim_inp
         self.r = dim_hid
 
-        self.alpha = sparse_reg
         self.beta = tree_reg
-        self.weight_alg = weight_alg
-        if weight_alg not in ['exact', 'sgd']:
-            raise ValueError('weight_alg must be either "exact" or "sgd"')
 
         ## Parameters
-        W = sts.ortho_group.rvs(dim_inp)[:,:dim_hid]
-        self.W = geo.ManifoldParameter(torch.FloatTensor(W), geo.Stiefel())
-        self.b = geo.ManifoldParameter(torch.zeros(dim_inp), geo.Euclidean())
-        self.scl = geo.ManifoldParameter(torch.ones(1), geo.Euclidean())
-
-        ## Latents
-        
-
-        ## Latent distribution
-        self.bern = dis.bernoulli.Bernoulli
-
-    def forward(self, X, temp=1e-4, size=[]):
-        return self.bern(logits=((X-self.b)@self.W)/temp).sample(size)
+        self.initialize(X_init, alpha, beta)
 
     def EStep(self, X, temp):
         """
@@ -124,86 +126,179 @@ class GaussBAE(BAE):
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
-        ## Input signal (without regularization this is the whole step)
-        C = 2*(X - self.b)@self.W - self.scl 
-        if self.beta < 1e-6:
-            return torch.special.expit(C/temp)
+        oldS = 1*self.S
+        newS = binary_glm(X-self.b, oldS, self.W, beta=self.beta, temp=temp, lognorm=self.lognorm)
 
-        ## Regularization 
-        ES = torch.zeros(C.shape) 
+        self.S = newS
 
-        S = self.bern(logits=C/temp).sample()
-        StS = S.T@S     
-        St1 = S.sum(0)
-
-        n = self.n - 1
-        for it in np.random.permutation(range(self.n)):
-            ## Current row
-            s = S[it]
-
-            ## Energy
-            StS -= torch.outer(s,s)
-            St1 -= s
-
-            ## Make recurrent weight matrix
-            D1 = StS
-            D2 = St1[None,:] - StS
-            D3 = St1[:,None] - StS
-            D4 = n - St1[None,:] - St1[:,None] + StS
-
-            deez = torch.stack([D1,D2,D3,D4])
-            best = 1*(deez == deez.min(0)[0]).float()
-            best *= (best.sum(0)==1)
-
-            Q = best[0] - best[1] - best[2] + best[3]
-            p = (best[1].sum(0) - best[3].sum(0))
-
-            ## Dynamics 
-            for i in np.random.permutation(range(self.r)):
-
-                inhib = Q[i]@s + p[i]
-
-                ES[it,i] = torch.special.expit((C[it,i] - self.beta*inhib)/temp)
-                s[i] = self.bern(logits=ES[it,i]).sample()
-
-            StS += torch.outer(s,s)
-            St1 += s
-
-            S[it] = s
-
-        return ES
-        # return S
+        return newS
 
     def MStep(self, X, ES):
 
-        M = (X-self.b).T@ES
-        if self.weight_alg == 'exact': ## Closed-form updates
-            U,s,V = tla.svd(M, full_matrices=False)
+        U,s,V = tla.svd((X-self.b).T@ES, full_matrices=False)
 
-            self.W.data = U@V
-            self.scl.data = torch.sum(s)/torch.sum(ES)
-            self.b.data = (X - self.scl*ES@self.W.T).mean(0)
+        self.W = U@V
+        self.scl = torch.sum(s)/torch.sum(ES)
+        self.b = (X - self.scl*ES@self.W.T).mean(0)
 
-            loss = 1 - torch.sum(s)/torch.sqrt(torch.sum(ES)*torch.trace((X-self.b).T@(X-self.b)))
+        return self.scl*np.sqrt(np.sum(ES))/np.sqrt(np.sum(X-self.b))
 
-        elif self.weight_alg == 'sgd':
+class GeBAE(BAE):
+    """
+    Generalized BAE, taking any exponential family observation (in theory)
+    """
 
-            self.optimizer.zero_grad()
-            loss = nn.MSELoss()(self.scl*ES@self.W.T + self.b, X)
-            loss.backward()
-            self.optimizer.step()
+    def __init__(self, num_inp, dim_inp, dim_hid, observations='gaussian', 
+        tree_reg=1e-2, weight_reg=1e-2, X_init=None, alpha=2, beta=5, S_steps=1, W_steps=1):
 
-            # ls = loss.item()
+        super().__init__()
+        self.n = num_inp
+        self.d = dim_inp
+        self.r = dim_hid
 
-        return loss.item()
+        self.S_steps = S_steps
+        self.W_steps = W_steps
 
+        self.alpha = weight_reg
+        self.beta = tree_reg
 
-# class GeBAE(BAE):
-#     """
-#     Generalized BAE, taking any exponential family observation
-#     """
+        ## rn only support three kinds of observation noise, because
+        ## other distributions have constraints on the natural params
+        ## (mostly non-negativity) which I don't want to deal with 
+        if observations == 'gaussian':
+            self.lognorm = bae_util.gaussian
+            self.mean = lambda x:x
+            self.likelihood = sts.norm
 
-#     def __init__(self, num_inp, dim_inp, dim_hid, obs=dis.normal.Normal, tree_reg=0):
+        elif observations == 'poisson':
+            self.lognorm = bae_util.poisson
+            self.mean = np.exp
+            self.likelihood = sts.poisson
 
+        elif observations == 'bernoulli':
+            self.lognorm = bae_util.bernoulli
+            self.mean = spc.expit
+            self.likelihood = sts.bernoulli
+
+        ## Initialization is better when it's data-dependent
+        self.initialize(X_init, alpha, beta)
+
+    def __call__(self):
+        N = self.S@self.W.T + self.b
+        return self.likelihood(self.mean(N)).rvs()
+
+    def EStep(self, X, temp):
+
+        oldS = 1.0*self.S
+        newS = binary_glm(X*1.0, oldS, self.W, self.b, steps=self.S_steps,
+            beta=self.beta, temp=temp, lognorm=self.lognorm)
+
+        self.S = newS
+
+        return newS
+
+    def MStep(self, X, ES, W_lr=0.1, b_lr=0.1):
+
+        for i in range(self.W_steps):
+            N = ES@self.W.T + self.b
+
+            dXhat = (X - self.mean(N))
+            dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
+
+            dW = dXhat.T@ES/len(X)
+            db = dXhat.sum(0)/len(X)
+
+            self.W += W_lr*(dW - dReg)
+            self.b += b_lr*db
+
+        return np.mean(X*N - self.lognorm(N))
+
+    def loss(self, X):
+        N = self.S@self.W.T + self.b
+        return np.mean(X*N - self.lognorm(N))
+
+############################################################
+######### Jitted update of S ###############################
+############################################################
+
+@njit
+def binary_glm(X, S, W, b, beta, temp, steps=1, lognorm=bae_util.gaussian):
+    """
+    One gradient step on S
+
+    TODO: figure out a good sparse implementation!
+    """
+
+    n, m = S.shape
+
+    StS = np.dot(S.T, S)
+    St1 = S.sum(0)
+
+    ## Initial values
+    E = np.dot(S,W.T) + b  # Natural parameters
+    C = np.dot(X,W)        # Constant term
+
+    for step in range(steps):
+        for i in np.random.permutation(np.arange(n)):
+        # en = np.zeros((n,m))
+        # for i in np.arange(n): 
+
+            idx = np.mod(np.arange(n)+i, n) ## item i goes first
+            I = idx[1:]
+
+            ## Organize states
+            s = S[i]
+            St1 -= s
+            StS -= np.outer(s,s)
+
+            ## Regularization (more verbose because of numba reasons)
+            D1 = StS
+            D2 = St1[None,:] - StS
+            D3 = St1[:,None] - StS
+            D4 = (n-1) - St1[None,:] - St1[:,None] + StS
+
+            best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+            best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+            best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+            best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+            R = (best1 - best2 - best3 + best4)*1.0
+            r = (best2.sum(0) - best4.sum(0))*1.0
+
+            ## Hopfield update of s
+            for j in np.random.permutation(np.arange(m)): # concept
+
+                ## Compute linear terms
+                dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
+                dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
+                inhib = np.dot(R[j], S[i]) + r[j]
+
+                ## Compute currents
+                curr = (C[i,j] - beta*inhib - dot)/temp
+
+                # ## Apply sigmoid (overflow robust)
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+
+                ## Update outputs
+                sj = 1*(np.random.rand() < prob)
+                ds = sj - S[i,j]
+                S[i,j] = sj
+                
+                ## Update dot products
+                E[i] += ds*W[:,j]
+
+                # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
+
+            ## Update 
+            # S[i] = news
+            St1 += S[i]
+            StS += np.outer(S[i], S[i]) 
+
+    return S #, en
 
 

@@ -786,12 +786,6 @@ class NeuralNet(nn.Module):
         for i, batch in enumerate(dl):
             self.optimizer.zero_grad()
             
-            # nums, labels = batch
-            # nums = nums.squeeze(1).reshape((-1, 784))
-            
-            # # forward
-            # y_hat = self(batch[0])
-            # loss = self.loss(batch[1], y_hat, *self.loss_args(batch))
             loss = self.loss(batch)
 
             # optimise

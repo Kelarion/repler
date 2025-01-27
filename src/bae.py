@@ -29,6 +29,7 @@ import math
 # my code
 import util
 import df_util 
+import bae_util
 
 #############################################################################
 ############### Binary autoencoder with recurrent updates ###################
@@ -81,16 +82,10 @@ class KernelBAE:
 
         ## Penalty matrix
         # self.StS = self.S.T@self.S
-        # St1 = self.sum_s[None,:]
 
-        # self.I1 = 2*StS - St1 
-        # self.I2 = 2*Sts - St1.T 
-        # self.I3 = St1 - St1.T 
-        # self.I4 = St1 + St1.T - self.n 
+    def predict(self):
 
-    def predict(self, I=None):
-
-        return self.S[I]@self.S[I].T
+        return self.S@self.S.T
 
     def grad_step(self, pause_schedule=False, **opt_args):
         
@@ -100,30 +95,6 @@ class KernelBAE:
         
         T = self.schedule(freeze=pause_schedule)
         
-        # for i in np.random.permutation(np.arange(self.n)):
-        # for i in range(self.n):
-            
-        #     idx = np.mod(np.arange(self.n)+i, self.n) ## item i goes first
-            
-        #     olds = self.S[[i]].todense().squeeze()
-        #     # news = self.recur(i, T, I=idx[1:self.max_ctx])
-        #     news = self.slow_recur(i, T, I=idx[1:self.max_ctx])
-
-        #     ## Update 
-        #     self.sum_s += (news - olds)
-            
-        #     self.S[[i]] = news
-
-        #     self.StS += np.outer(news,news) - np.outer(olds,olds)
-
-            ## Keep in sparsest form
-            # flip = (self.sum_s > (self.n//2))
-
-            # oldS = self.S[:,flip]*1
-            # self.S[:,flip] = self.notS[:,flip]*1 
-            # self.notS[:,flip] = oldS
-
-            # self.sum_s[flip] = self.n - self.sum_s[flip]
         newS = update_concepts_kernel(self.K, self.S.astype(float), 
             scl=self.scl, beta=self.beta, temp=T)
         self.S = newS
@@ -328,6 +299,9 @@ class BAE:
         self.beta = penalty
         self.fix_scl = fix_scale
 
+        self.prior_b = beta
+        self.prior_a = alpha
+
         self.weight_class = weight_class
         self.weight_alg = weight_alg
         self.lr = lr
@@ -348,14 +322,26 @@ class BAE:
         self.U = self.U[:,:r]
         self.trXX = np.sum(sx[:r]**2)
 
+        self.initialize()
+
+    def predict(self):
+        """
+        Make predictions for items I
+        """
+        return self.S@self.W.T
+
+    def initialize(self):
+
         ## Initialize S 
-        coding_level = np.random.beta(alpha, beta, dim_hid)/2
-        num_active = np.floor(coding_level*len(X)).astype(int)
+        coding_level = np.random.beta(self.prior_a, self.prior_b, self.r)/2
+        num_active = np.floor(coding_level*self.n).astype(int)
         
         Mx = self.X@np.random.randn(self.d,self.r)
-        thr = -np.sort(-Mx, axis=0)[num_active, np.arange(dim_hid)]
-        self.S = sprs.csr_array(1*(Mx >= thr))
-        self.trSS = (self.S.T@self.S).trace()
+        thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
+        # self.S = sprs.csr_array(1*(Mx >= thr))
+        self.S = 1*(Mx >= thr)
+        self.trSS = np.trace(self.S.T@self.S)
+        # self.trSS = (self.S.T@self.S).trace()
 
         ## Initialise b
         self.b = np.zeros(self.d) # -X.mean(0)
@@ -376,12 +362,6 @@ class BAE:
         self.StS = self.S.T@self.S
         self.Ssum = self.S.sum(0)
 
-    def predict(self):
-        """
-        Make predictions for items I
-        """
-        return self.S@self.W.T
-
     def grad_step(self, pause_schedule=False, **opt_args):
 
         if not self.initialized:
@@ -390,18 +370,27 @@ class BAE:
         
         T = self.schedule(freeze=pause_schedule)
 
-        # self.updateS(T)
-        ES = self.updateS_reg(T) ## E step
-        self.updateWb(ES)        ## M step
+        self.updateS(T)          ## "E step"
+        # ES = self.updateS_reg(T) ## E step
+        self.updateWb(ES)        ## "M step"
         # self.updateWb(self.S)
+
+    # def updateS(self, temp):
+
+    #     C = (self.U@(self.U.T@self.S) + self.S.mean(0) - 0.5)
+    #     current = self.beta*C + 2*(self.X - self.b)@self.W - self.scl
+    #     prb = spc.expit(current/temp)
+    #     self.S = sprs.csr_array(np.random.binomial(1, prb))
+    #     self.trSS = (self.S.T@self.S).trace()
 
     def updateS(self, temp):
 
-        C = (self.U@(self.U.T@self.S) + self.S.mean(0) - 0.5)
-        current = self.beta*C + 2*(self.X - self.b)@self.W - self.scl
-        prb = spc.expit(current/temp)
-        self.S = sprs.csr_array(np.random.binomial(1, prb))
-        self.trSS = (self.S.T@self.S).trace()
+        oldS = self.S.todense().astype(float)
+        newS = update_concepts_asymmetric(self.X-self.b, oldS, self.scl*self.W, 
+            beta=self.beta, temp=temp)
+
+        self.S = newS
+        self.trSS = np.trace(newS.T@newS)
 
     def updateWb(self, ES):
 
@@ -448,6 +437,7 @@ class BAE:
         ES = np.zeros(C.shape) ## keep track of the expectation
 
         for it in np.random.permutation(range(self.n)):
+        # for it in np.arange(self.n):
 
             ## Organize states
             s = self.S[[it]].todense().squeeze()
@@ -469,11 +459,10 @@ class BAE:
 
             Q = best[0] - best[1] - best[2] + best[3]
             p = (best[1].sum(0) - best[3].sum(0))
-            # I1 = np.sign(2*StS - S1[None,:]) # si'sj - (1-si)'sj
-            # I2 = np.sign(2*StS - S1[:,None]) # si'sj - si'(1-sj)
-            # I3 = np.sign(S1[None,:] - S1[:,None]) # (1-si)'sj - si'(1-sj)
-            # I4 = np.sign(S1[None,:] + S1[:,None] - n) # si'sj - (1-si)'(1-sj)
-            # I5 = np.sign()
+            # I1 = np.sign(2*StS - Ssum[None,:]) # si'sj - (1-si)'sj
+            # I2 = np.sign(2*StS - Ssum[:,None]) # si'sj - si'(1-sj)
+            # I3 = np.sign(Ssum[None,:] - Ssum[:,None]) # (1-si)'sj - si'(1-sj)
+            # I4 = np.sign(Ssum[None,:] + Ssum[:,None] - n) # si'sj - (1-si)'(1-sj)
 
             # Q = (1*(I1<0)*(I2<0) - 1*(I1>0)*(I3<0) - 1*(I2>0)*(I3>0))*(I4<0)
             # p = ((I2>0)*(I3>0)*(I4<0)).sum(1)
@@ -483,7 +472,7 @@ class BAE:
 
                 inhib = Q[i]@s + p[i]
 
-                ES[it,i] = spc.expit((C[it,i] - self.beta*inhib)/temp)
+                ES[it,i] = spc.expit((self.scl*C[it,i] - self.beta*inhib)/temp)
                 s[i] = np.random.binomial(1, ES[it,i])
 
             StS += np.outer(s,s)
@@ -947,6 +936,83 @@ def update_concepts_kernel(K, S, scl, beta, temp, steps=1):
     return S
 
 
-def update_concepts_asymmetric(K, S):
+@njit
+def update_concepts_asymmetric(X, S, W, beta, temp, steps=1, lognorm=bae_util.gaussian):
+    """
+    One gradient step on S
 
-    pass
+    TODO: figure out a good sparse implementation!
+    """
+
+    n, m = S.shape
+
+    StS = np.dot(S.T, S)
+    St1 = S.sum(0)
+
+    ## Initial values
+    E = np.dot(S,W.T)  # Natural parameters
+    C = np.dot(X,W)    # Constant term
+
+    for i in np.random.permutation(np.arange(n)):
+    # en = np.zeros((n,m))
+    # for i in np.arange(n): 
+
+        idx = np.mod(np.arange(n)+i, n) ## item i goes first
+        I = idx[1:]
+
+        ## Organize states
+        s = S[i]
+        St1 -= s
+        StS -= np.outer(s,s)
+
+        ## Regularization (more verbose because of numba reasons)
+        D1 = StS
+        D2 = St1[None,:] - StS
+        D3 = St1[:,None] - StS
+        D4 = (n-1) - St1[None,:] - St1[:,None] + StS
+
+        best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+        best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+        best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+        best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+        R = (best1 - best2 - best3 + best4)*1.0
+        r = (best2.sum(0) - best4.sum(0))*1.0
+
+        ## Hopfield update of s
+        # news = 1*s
+        for step in range(steps):
+            for j in range(m): # concept
+
+                ## Compute linear terms
+                dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
+                dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
+                inhib = np.dot(R[j], S[i]) + r[j]
+
+                ## Compute currents
+                curr = (2*C[i,j] - beta*inhib - dot)/temp
+
+                # ## Apply sigmoid (overflow robust)
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+
+                ## Update outputs
+                sj = 1*(np.random.rand() < prob)
+                ds = sj - S[i,j]
+                S[i,j] = sj
+                
+                ## Update dot products
+                E[i] += ds*W[:,j]
+
+                # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
+
+        ## Update 
+        # S[i] = news
+        St1 += S[i]
+        StS += np.outer(S[i], S[i]) 
+
+    return S #, en
