@@ -40,6 +40,7 @@ from numba import njit
 import util
 import df_util
 import bae
+import bae_models
 import bae_util
 import plotting as tpl
 import anime
@@ -108,12 +109,23 @@ for this_area in range(29):
 #%% Single trials
 
 this_area = 'MOs'
-this_session = 0
+this_session = 2
 
 Z = []
 labels = []
-for key, value in trl[this_area][0].items():
+for key, value in trl[this_area][this_session].items():
     Z.append(value)
-    labels
+    labels.append(np.repeat(np.array(key)[None], len(value), axis=0))
+
+Z = np.vstack(Z)
+Y = np.vstack(labels)
+Y = np.stack([np.unique(y, return_inverse=True)[1] for y in Y.T]).T
+
+unq, cond = np.unique(Y, axis=0, return_inverse=True)
+
+zZ = (Z-Z.mean(0,keepdims=True))/(Z.std(0,keepdims=True)+1e-12)
+
+#%%
+
 
 

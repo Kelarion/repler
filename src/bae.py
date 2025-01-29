@@ -857,14 +857,27 @@ def update_concepts_kernel(K, S, scl, beta, temp, steps=1):
         St1 -= s
         StS -= np.outer(s,s)
 
-        ## Regularization
-        I1 = np.sign(2*StS - St1[None,:])
-        I2 = np.sign(2*StS - St1[:,None])
-        I3 = np.sign(St1[None,:] - St1[:,None])
-        I4 = np.sign(St1[None,:] + St1[:,None] - (n-1))
+        ## Regularization (more verbose because of numba reasons)
+        # I1 = np.sign(2*StS - St1[None,:])
+        # I2 = np.sign(2*StS - St1[:,None])
+        # I3 = np.sign(St1[None,:] - St1[:,None])
+        # I4 = np.sign(St1[None,:] + St1[:,None] - (n-1))
 
-        R = ((1*(I1<0)*(I2<0) - 1*(I1>0)*(I3<0) - 1*(I2>0)*(I3>0))*(I4<0))*1.0
-        r = ((I2>0)*(I3>0)*(I4<0)).sum(1)*1.0
+        # R = ((1*(I1<0)*(I2<0) - 1*(I1>0)*(I3<0) - 1*(I2>0)*(I3>0))*(I4<0))*1.0
+        # r = ((I2>0)*(I3>0)*(I4<0)).sum(1)*1.0
+
+        D1 = StS
+        D2 = St1[None,:] - StS
+        D3 = St1[:,None] - StS
+        D4 = (n-1) - St1[None,:] - St1[:,None] + StS
+
+        best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+        best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+        best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+        best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+        R = (best1 - best2 - best3 + best4)*1.0
+        r = (best2.sum(0) - best4.sum(0))*1.0
 
         ## Recurrence
         t = (n-1)/n

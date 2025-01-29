@@ -57,6 +57,8 @@ import bae_util
 
 #%%
 
+## Rehashing my GRU sequential memory project with SueYeon from ages ago
+
 class RNNClassifier(students.NeuralNet):
     
     def __init__(self, dim_inp, dim_out, dim_hidden, rnn_type=nn.RNN, **rnn_args):
@@ -86,9 +88,9 @@ class SequenceCompletion(sxp.Task):
     max_length: int
     min_delay: int = 0
     max_delay: int = 0
-    reconstruct: bool = False # include reconstruction in output?
-    silent_delay: bool = True # enforce no output during delay?
-    # mask_value: 
+    reconstruct: bool = False   # include reconstruction in output?
+    silent_delay: bool = True   # enforce no output during delay?
+    num_groups: int = 1         # how many groups of equivalent tokens
     
     seed: int = 0
     
@@ -96,7 +98,8 @@ class SequenceCompletion(sxp.Task):
         
         np.random.seed(self.seed)
         
-        I = np.eye(self.num_tok+2)
+        ntok = self.num_tok*self.num_groups
+        I = np.eye(ntok + 2)
         pad = nn.utils.rnn.pad_sequence
         
         Xs = []
@@ -115,7 +118,7 @@ class SequenceCompletion(sxp.Task):
             T = np.cumsum(D) - D[0]
             
             ## Package data
-            X = np.zeros((T[-1]+1, self.num_tok+2))
+            X = np.zeros((T[-1]+1, ntok + 2))
             X[T[:L]] = I1           # first sequence
             X[T[L],-2] = 1          # context cue
             X[T[L+1:-1]] = I2[:-1]  # second sequence
@@ -170,18 +173,26 @@ this_exp = sxp.Experiment(task, net)
 
 this_exp.run()
 
-#%% Take a subset and compute kernels
+#%% Organize hidden states
 
-cond = this_exp.train_conditions.detach()
-deez = np.argsort(cond)[np.concatenate([np.arange(100)+i*6000 for i in range(10)])]
+samps = task.sample()
+X = samps['X'].numpy()
 
+## Organize according to cummulative tokens
+ctx = X[...,-2].cumsum(-1)
+cue = X[...,-2].argmax(-1)
+toks = X.cumsum(1)
 
-X = np.squeeze(this_exp.train_data[0][deez].numpy())
-X_ = (X - X.mean((-1,-2),keepdims=True))/255
-Y = this_exp.train_data[1][deez].numpy()
+## The hypothesised memory state at each time point
+in_trial = X[...,-1].cumsum(-1) < 1
+mem = (X[...,:-2]*(1-2*ctx[...,None])).cumsum(1)
 
-Kx = np.einsum('ikl,jkl->ij',X_,X_)
-Ky = Y@Y.T
+is_tok = X.max(-1)
+which_tok = X.argmax(-1)
+trl, inp_time = np.where(is_tok)
+
+Z = net.net.rnn(samps['X'])[0]
+
 
 #%% reps
 

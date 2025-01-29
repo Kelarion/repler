@@ -1658,6 +1658,12 @@ def find_clique(A, first=0):
 
     return clq
 
+def decimal(B, axis=-1):
+    """
+    Convert binary vectors to decimal integers
+    """
+    b = B.shape[axis]
+    return np.einsum('...i,...i->...', B, 2**np.arange(b))
 
 #####################################
 ####### Metrics/similarities ########
@@ -2229,13 +2235,13 @@ def random_basis(dim):
     C = np.random.randn(dim, dim)
     return la.qr(C)[0][:dim,:]
 
-def decimal(binary, base=2):
-    """ 
-    convert binary vector to dedimal number (i.e. enumerate) 
-    assumes second axis is the bits
-    """
-    d = (binary*(base**np.arange(binary.shape[1]))[None,:]).sum(1)
-    return d
+# def decimal(binary, base=2):
+#     """ 
+#     convert binary vector to dedimal number (i.e. enumerate) 
+#     assumes second axis is the bits
+#     """
+#     d = (binary*(base**np.arange(binary.shape[1]))[None,:]).sum(1)
+#     return d
 
 def group_sum(X, groups, axis=-1, **mean_args):
     """

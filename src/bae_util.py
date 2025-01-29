@@ -49,23 +49,30 @@ class Neal:
     def fit(self, model, *data, T_min=1e-4, max_iter=None, verbose=True, **opt_args):
 
         if max_iter is None:
-            max_iter = self.period*int(np.log(T_min)/ np.log(self.decay_rate))
+            max_iter = self.period*int(np.log(T_min/self.initial)/ np.log(self.decay_rate))
 
         en = []
+        model.initialize(*data)
         for it in tqdm(range(max_iter)):
             T = self.initial*(self.decay_rate**(it//self.period))
             en.append(model.grad_step(*data, T, **opt_args))
 
         return en
 
-    def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=True, **opt_args):
+    def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=False , 
+        draws=10, folds=10, **opt_args):
 
         if max_iter is None:
-            max_iter = self.period*int(np.log(T_min)/ np.log(self.decay_rate))
+            max_iter = self.period*int(np.log(T_min/self.initial)/ np.log(self.decay_rate))
+
+        if verbose:
+            pbar = tqdm(range(draws))
 
         ens = []
+        mods = []
         for fold in range(draws):
-            model.initialize()
+
+            model.initialize(X)
 
             ## Mask
             M = np.random.rand(*X.shape) < (1/folds)
@@ -75,15 +82,18 @@ class Neal:
             X_M[M] = np.random.randn(M.sum())
 
             ## Fit parameters and mask
-            en = []
-            for it in range(iters):
+            for it in range(max_iter):
                 T = self.initial*(self.decay_rate**(it//self.period))
-                en.append(model.grad_step(X_M, T, **opt_args))
+                model.grad_step(X_M, T, **opt_args)
                 X_M[M] = model()[M]
 
             ens.append(model.loss(X))
+            mods.append(model.S*1)
 
-        return ens
+            if verbose:
+                pbar.update(1)
+
+        return ens, mods
 
 
 #############################################################
