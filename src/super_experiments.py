@@ -58,6 +58,13 @@ class Task:
 
 @dataclass
 class Model:
+    """
+    Abstract class enforcing the core functions
+
+    A Model should contain the code for fitting the parameters given data, and
+    optionally for saving and loading the parameters. Any metrics computed 
+    during fitting (like training loss) are stored in a dict in the Model. 
+    """
 
     # if there's multiple model instances, need to handle case-by-case
 
@@ -76,12 +83,6 @@ class Model:
         """
         A function which takes in data and changes parameters
         Should also populate the metrics dictionary
-        """
-        return NotImplementedError
-
-    def score(self):
-        """
-        A function which takes in data and returns a score
         """
         return NotImplementedError
 

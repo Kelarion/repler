@@ -109,7 +109,7 @@ for this_area in range(29):
 #%% Single trials
 
 this_area = 'MOs'
-this_session = 2
+this_session = 6
 
 Z = []
 labels = []
@@ -127,5 +127,12 @@ zZ = (Z-Z.mean(0,keepdims=True))/(Z.std(0,keepdims=True)+1e-12)
 
 #%%
 
-
-
+cv = []
+eses = []
+neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
+for k in tqdm(range(2, 29)):
+    mod = bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
+    ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
+    cv.append(np.mean(ba[0]))
+    eses.append(ba[1])
+    

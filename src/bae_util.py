@@ -87,7 +87,7 @@ class Neal:
                 model.grad_step(X_M, T, **opt_args)
                 X_M[M] = model()[M]
 
-            ens.append(model.loss(X))
+            ens.append(model.loss(X, mask=M))
             mods.append(model.S*1)
 
             if verbose:

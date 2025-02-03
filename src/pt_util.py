@@ -44,6 +44,14 @@ def sphere_weights(*dims):
 	return w / w.norm(dim=0, keepdim=True)
 
 
+def train_model(mod, dl, epochs=100, verbose=False, **opt_args):
+
+    ls = []
+    for it in range(epochs):
+        ls.append(mod.grad_step(dl, **opt_args))
+
+    return ls 
+
 #####################################################################
 ################ data loading from torchvision ######################
 #####################################################################

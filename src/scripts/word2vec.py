@@ -21,6 +21,7 @@ from itertools import permutations, combinations
 import itertools as itt
 from tqdm import tqdm
 
+
 from sklearn import svm, discriminant_analysis, manifold, linear_model
 import scipy.stats as sts
 import scipy.linalg as la
@@ -57,6 +58,8 @@ import distance_factorization as df
 import df_util
 import df_models as mods
 import bae
+import bae_models
+import bae_util
 
 #%%
 

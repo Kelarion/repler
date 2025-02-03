@@ -671,11 +671,17 @@ def bures(X, Y):
 
 def nbs(X, Y):
 
+    n,m = X.shape
+    n,l = Y.shape
+
     X_ = X - X.mean(0)
     Y_ = Y - Y.mean(0)
-    U,s,V = la.svd(X_.T@Y_, full_matrices=False)
+    if (n**2 > m*l) or (m != l):
+        U,s,V = la.svd(X_.T@Y_, full_matrices=False)
+    else:
+        U,s,V = la.svd(X_@Y_.T, full_matrices=False)
 
-    return np.sum(s)/np.sqrt(np.trace(X_.T@X_)*np.trace(Y_.T@Y_))
+    return np.sum(s)/np.sqrt(np.sum(X_**2)*np.sum(Y_**2))
 
 def centered_kernel_alignment(K1,K2):
 

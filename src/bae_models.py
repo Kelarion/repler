@@ -86,20 +86,37 @@ class GaussBAE(BAE):
     on non-identifiable instances. 
     """
 
-    def __init__(self, num_inp, dim_inp, dim_hid, tree_reg=0, X_init=None, alpha=2, beta=5):
+    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, do_pca=False):
 
         super().__init__()
 
-        self.n = num_inp
-        self.d = dim_inp
         self.r = dim_hid
 
-        self.beta = tree_reg
+        self.alpha = sparse_reg
+        self.beta = tree_reg 
+        self.reduce = do_pca
 
-        ## Parameters
-        self.initialize(X_init, alpha, beta)
+    def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1):
 
-    def initialize(self, X=None, alpha=2, beta=5):
+        self.n, self.d = X.shape
+        if self.reduce:
+
+            Ux,sx,Vx = la.svd(X-X.mean(0), full_matrices=False)
+            self.frac_var = np.cumsum(sx**2)/np.sum(sx**2)
+            if rank is None:
+                r = np.min([len(sx), np.sum(self.frac_var <= pvar)+1])
+                # r = np.max([dim_hid, np.sum(self.frac_var <= pvar)+1])
+            else:
+                r = np.min([rank, np.sum(self.frac_var <= pvar)+1])
+
+            r = np.max([self.r, r]) # needs to have enough 'space' for each dimension
+
+            self.d = r
+
+            self.data = Ux[:,:r]@np.diag(sx[:r])
+            self.V = Vx[:r]
+        else:
+            self.data = X
 
         ## Initialise b
         self.b = np.zeros(self.d) # -X.mean(0)
@@ -112,61 +129,57 @@ class GaussBAE(BAE):
         coding_level = np.random.beta(alpha, beta, self.r)/2
         num_active = np.floor(coding_level*self.n).astype(int)
 
-        if X is None:
-            self.S = 1*(np.random.rand(self.n, self.r) > coding_level)
-        else:
-            n,d = X.shape
-            assert n == self.n
-            assert d == self.d
+        Mx = self.data@self.W
+        thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
+        self.S = 1*(Mx >= thr)
 
-            Mx = X@self.W
-            thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
-            self.S = 1*(Mx >= thr)
-
-    def EStep(self, X, temp):
+    def EStep(self, temp):
         """
         Compute expectation of log-likelihood over S 
 
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
-        oldS = 1.0*self.S
-        newS = binary_glm(X, oldS, self.scl*self.W, self.b, 
-            beta=self.beta, 
-            temp=temp, 
-            lognorm=bae_util.gaussian)
+        if self.beta > 1e-6:
+            oldS = 1.0*self.S
+            newS = update_concepts_asym(self.data-self.b, oldS, self.W, self.scl, 
+                beta=self.beta, temp=temp)
+        else:
+            C = 2*(self.data-self.b)@self.W - self.scl - self.alpha
+            newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/temp))
 
         self.S = newS
 
         return newS
 
-    def MStep(self, X, ES):
+    def MStep(self, ES):
 
-        U,s,V = la.svd((X-self.b).T@ES, full_matrices=False)
+        U,s,V = la.svd((self.data-self.b).T@ES, full_matrices=False)
 
         self.W = U@V
         self.scl = np.sum(s)/np.sum(ES)
-        self.b = (X - self.scl*ES@self.W.T).mean(0)
+        self.b = (self.data - self.scl*ES@self.W.T).mean(0)
 
-        return self.scl*np.sqrt(np.sum(ES))/np.sqrt(np.sum((X-self.b)**2))
+        return self.scl*np.sqrt(np.sum(ES))/np.sqrt(np.sum((self.data-self.b)**2))
 
     def __call__(self):
         return self.S@self.W.T + self.b
 
     def loss(self, X):
-        return self.scl*np.sqrt(np.sum(self.S))/np.sqrt(np.sum(X-self.b))
+        return self.scl*np.sqrt(np.sum(self.S))/np.sqrt(np.sum(X-self.b)**2)
 
 class GeBAE(BAE):
     """
     Generalized BAE, taking any exponential family observation (in theory)
     """
 
-    def __init__(self, dim_hid, observations='gaussian', 
-        tree_reg=1e-2, weight_reg=1e-2, S_steps=1, W_steps=1):
+    def __init__(self, dim_hid, noise='gaussian', tree_reg=1e-2, weight_reg=1e-2, 
+        S_steps=1, W_steps=1, do_pca=False):
 
         super().__init__()
 
         self.has_data = False
+        self.reduce = do_pca
 
         self.r = dim_hid
 
@@ -179,20 +192,23 @@ class GeBAE(BAE):
         ## rn only support three kinds of observation noise, because
         ## other distributions have constraints on the natural params
         ## (mostly non-negativity) which I don't want to deal with 
-        if observations == 'gaussian':
+        if noise == 'gaussian':
             self.lognorm = bae_util.gaussian
             self.mean = lambda x:x
             self.likelihood = sts.norm
+            self.base = lambda x: (-x**2 - np.log(2*np.pi))/2
 
-        elif observations == 'poisson':
+        elif noise == 'poisson':
             self.lognorm = bae_util.poisson
             self.mean = np.exp
             self.likelihood = sts.poisson
+            self.base = lambda x: -np.log(spc.factorial(x))
 
-        elif observations == 'bernoulli':
+        elif noise == 'bernoulli':
             self.lognorm = bae_util.bernoulli
             self.mean = spc.expit
             self.likelihood = sts.bernoulli
+            self.base = lambda x: 0
 
         # ## Initialization is better when it's data-dependent
         # self.initialize(X_init, alpha, beta)
@@ -201,10 +217,25 @@ class GeBAE(BAE):
         N = self.S@self.W.T + self.b
         return self.likelihood(self.mean(N)).rvs()
 
-    def initialize(self, X, alpha=2, beta=5):
+    def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1):
 
         self.n, self.d = X.shape
-        self.data = X
+        if self.reduce:
+
+            Ux,sx,Vx = la.svd(X-X.mean(0), full_matrices=False)
+            self.frac_var = np.cumsum(sx**2)/np.sum(sx**2)
+            if rank is None:
+                r = np.min([len(sx), np.sum(self.frac_var <= pvar)+1])
+                # r = np.max([dim_hid, np.sum(self.frac_var <= pvar)+1])
+            else:
+                r = np.min([rank, np.sum(self.frac_var <= pvar)+1])
+
+            self.d = r
+
+            self.data = Ux[:,:r]@np.diag(sx[:r])
+            self.V = Vx[:r]
+        else:
+            self.data = X
         self.has_data = True
 
         ## Initialise b
@@ -217,9 +248,10 @@ class GeBAE(BAE):
         coding_level = np.random.beta(alpha, beta, self.r)/2
         num_active = np.floor(coding_level*self.n).astype(int)
 
-        Mx = X@self.W
-        thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
-        self.S = 1*(Mx >= thr)
+        Mx = self.data@self.W
+        # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
+        # self.S = 1*(Mx >= thr)
+        self.S = 1*(Mx >= 0)
 
     def EStep(self, temp):
 
@@ -232,30 +264,37 @@ class GeBAE(BAE):
         return newS
 
     def MStep(self, ES, W_lr=0.1, b_lr=0.1):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
 
         for i in range(self.W_steps):
             N = ES@self.W.T + self.b
 
+            WTW = self.W.T@self.W
+
             dXhat = (self.data - self.mean(N))
-            dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
+            # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
+            dReg = self.alpha*self.W@(np.eye(self.r) - WTW*np.trace(WTW)/np.sum(WTW**2))
 
             dW = dXhat.T@ES/len(self.data)
             db = dXhat.sum(0)/len(self.data)
 
-            self.W += W_lr*(dW - dReg)
+            self.W += W_lr*(dW + dReg)
             self.b += b_lr*db
 
         return np.mean(self.data*N - self.lognorm(N))
 
-    def loss(self, X):
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
         N = self.S@self.W.T + self.b
-        return -np.mean(X*N - self.lognorm(N))
+        return -np.mean(X[mask]*N[mask] - self.lognorm(N[mask]) + self.base(X[mask]))
 
 
 class KernelBAE(BAE):
     
-    def __init__(self, dim_hid, penalty=1e-2, 
-        steps=1, alpha=2, beta=5, max_ctx=None, fix_scale=True):
+    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, fix_scale=True):
         
         super().__init__()
 
@@ -365,6 +404,86 @@ def binary_glm(X, S, W, b, beta, temp, steps=1, lognorm=bae_util.gaussian):
         # en = np.zeros((n,m))
         # for i in np.arange(n): 
 
+            if beta > 1e-6:
+                ## Organize states
+                s = S[i]
+                St1 -= s
+                StS -= np.outer(s,s)
+
+                ## Regularization (more verbose because of numba reasons)
+                D1 = StS
+                D2 = St1[None,:] - StS
+                D3 = St1[:,None] - StS
+                D4 = (n-1) - St1[None,:] - St1[:,None] + StS
+
+                best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+                best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+                best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+                best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+                R = (best1 - best2 - best3 + best4)*1.0
+                r = (best2.sum(0) - best4.sum(0))*1.0
+
+            ## Hopfield update of s
+            for j in np.random.permutation(np.arange(m)): # concept
+
+                ## Compute linear terms
+                dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
+                dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
+                if beta > 1e-6:
+                    inhib = np.dot(R[j], S[i]) + r[j]
+                else:
+                    inhib = 0
+
+                ## Compute currents
+                curr = (C[i,j] - beta*inhib - dot)/temp
+
+                ## Apply sigmoid (overflow robust)
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+
+                ## Update outputs
+                sj = 1*(np.random.rand() < prob)
+                ds = sj - S[i,j]
+                S[i,j] = sj
+                
+                ## Update dot products
+                E[i] += ds*W[:,j]
+
+                # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
+
+            ## Update 
+            # S[i] = news
+            St1 += S[i]
+            StS += np.outer(S[i], S[i]) 
+
+    return S #, en
+
+@njit
+def update_concepts_asym(X, S, W, scl, beta, temp, steps=1):
+    """
+    One gradient step on S
+
+    TODO: figure out a good sparse implementation!
+    """
+
+    n, m = S.shape
+
+    StS = np.dot(S.T, S)
+    St1 = S.sum(0)
+
+    ## Initial values
+    C = np.dot(X,W)        # Constant term
+
+    for step in range(steps):
+        for i in np.random.permutation(np.arange(n)):
+        # en = np.zeros((n,m))
+        # for i in np.arange(n): 
+
             idx = np.mod(np.arange(n)+i, n) ## item i goes first
             I = idx[1:]
 
@@ -391,12 +510,10 @@ def binary_glm(X, S, W, b, beta, temp, steps=1, lognorm=bae_util.gaussian):
             for j in np.random.permutation(np.arange(m)): # concept
 
                 ## Compute linear terms
-                dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
-                dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
                 inhib = np.dot(R[j], S[i]) + r[j]
 
                 ## Compute currents
-                curr = (C[i,j] - beta*inhib - dot)/temp
+                curr = (2*C[i,j] - beta*inhib - scl)/temp
 
                 # ## Apply sigmoid (overflow robust)
                 if curr < -100:
@@ -410,9 +527,6 @@ def binary_glm(X, S, W, b, beta, temp, steps=1, lognorm=bae_util.gaussian):
                 sj = 1*(np.random.rand() < prob)
                 ds = sj - S[i,j]
                 S[i,j] = sj
-                
-                ## Update dot products
-                E[i] += ds*W[:,j]
 
                 # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
 
@@ -422,7 +536,6 @@ def binary_glm(X, S, W, b, beta, temp, steps=1, lognorm=bae_util.gaussian):
             StS += np.outer(S[i], S[i]) 
 
     return S #, en
-
 
 @njit
 def update_concepts_kernel(K, S, scl, beta, temp, steps=1):
@@ -518,7 +631,7 @@ def update_concepts_kernel(K, S, scl, beta, temp, steps=1):
                 dot -= 2*(n-1)*s_[j]*sx
                 dot += t*u[j]*ux
                 dot -= Jii[j]*news[j]
-                dot += beta*(scl**2)*np.dot(R[j], news)
+                dot += beta*np.dot(R[j], news)
 
                 ## Compute currents
                 curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
