@@ -108,9 +108,13 @@ for this_area in range(29):
 
 #%% Single trials
 
-this_area = 'MOs'
-this_session = 6
+# this_area = 'MOs'
+this_area = 'VISp'
+# this_area = 'ACAd'
+this_session = 7
 
+# Zall = []
+# for this_session in range(len(trl[this_area])):
 Z = []
 labels = []
 for key, value in trl[this_area][this_session].items():
@@ -127,12 +131,24 @@ zZ = (Z-Z.mean(0,keepdims=True))/(Z.std(0,keepdims=True)+1e-12)
 
 #%%
 
-cv = []
-eses = []
-neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
-for k in tqdm(range(2, 29)):
-    mod = bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
-    ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
-    cv.append(np.mean(ba[0]))
-    eses.append(ba[1])
+# cv = []
+# eses = []
+# neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
+# for k in tqdm(range(2, 29)):
+#     mod = bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
+#     ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
+#     cv.append(np.mean(ba[0]))
+#     eses.append(ba[1])
+    
+#%%
+
+plt.imshow(util.correlify(util.center(Z@Z.T)), 'bwr', vmin=-1, vmax=1)
+# plt.imshow(util.center(Z@Z.T))
+
+deez = np.where(np.abs(np.diff(cond))>0)[0]
+
+for d in deez:
+    plt.plot([d,d],plt.xlim(),'k--')
+    plt.plot(plt.xlim(), [d,d],'k--')
+    
     

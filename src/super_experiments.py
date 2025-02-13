@@ -108,10 +108,13 @@ class PTModel(Model):
     batch_size: int = 64
     epochs: int = 100
 
-    def fit(self, **data):
+    def fit(self, initialized=False, **data):
         
-        self.init_metrics()
-        self.net = self.init_network(**data)
+        if not initialized:
+            self.metrics = {'train_loss': []}
+            self.init_metrics()
+            self.net = self.init_network(**data)
+            
         self.net.init_optimizer(**self.opt_args)
 
         dl = pt_util.batch_data(*[d for d in data.values()],  batch_size=self.batch_size)
@@ -136,7 +139,8 @@ class PTModel(Model):
         pass
 
     def init_metrics(self):
-        self.metrics = {'train_loss': []}
+
+        pass
 
     def save(self, fname):
         self.net.save(fname)

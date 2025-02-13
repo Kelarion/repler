@@ -86,22 +86,30 @@ class GaussBAE(BAE):
     on non-identifiable instances. 
     """
 
-    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, do_pca=False):
+    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, 
+        do_pca=False, center=True, chains=1):
 
         super().__init__()
 
         self.r = dim_hid
+        self.k = chains
 
         self.alpha = sparse_reg
         self.beta = tree_reg 
         self.reduce = do_pca
+        self.center = center
 
-    def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1):
+    def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1, W_init='pca'):
 
         self.n, self.d = X.shape
-        if self.reduce:
 
-            Ux,sx,Vx = la.svd(X-X.mean(0), full_matrices=False)
+        if self.center:
+            X_ = X - X.mean(0)
+        else:
+            X_ = X
+
+        if self.reduce:
+            Ux,sx,Vx = la.svd(X_-X_.mean(0), full_matrices=False)
             self.frac_var = np.cumsum(sx**2)/np.sum(sx**2)
             if rank is None:
                 r = np.min([len(sx), np.sum(self.frac_var <= pvar)+1])
@@ -116,22 +124,30 @@ class GaussBAE(BAE):
             self.data = Ux[:,:r]@np.diag(sx[:r])
             self.V = Vx[:r]
         else:
-            self.data = X
+            self.data = X_
 
         ## Initialise b
         self.b = np.zeros(self.d) # -X.mean(0)
 
         ## Initialize W
-        self.W = sts.ortho_group.rvs(self.d)[:,:self.r]
+        if W_init == 'pca':
+            X_-X_.mean(0)
+            _, V = la.eigh((X_-X_.mean(0)).T@(X_-X_.mean(0)))
+            if self.n > self.r:
+                self.W = V[:,:self.r]
+        else:
+            self.W = sts.ortho_group.rvs(self.d)[:,:self.r]
+        # self.W = Vx[:self.r].T 
         self.scl = 1
 
-        ## Initialize S 
-        coding_level = np.random.beta(alpha, beta, self.r)/2
-        num_active = np.floor(coding_level*self.n).astype(int)
+        ## Initialize S
+        self.S = 1*(self.data@self.W > 1/2)
+        # coding_level = np.random.beta(alpha, beta, self.r)/2
+        # num_active = np.floor(coding_level*self.n).astype(int)
 
-        Mx = self.data@self.W
-        thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
-        self.S = 1*(Mx >= thr)
+        # Mx = self.data@self.W
+        # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
+        # self.S = 1*(Mx >= thr)
 
     def EStep(self, temp):
         """
@@ -140,33 +156,41 @@ class GaussBAE(BAE):
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
-        if self.beta > 1e-6:
-            oldS = 1.0*self.S
-            newS = update_concepts_asym(self.data-self.b, oldS, self.W, self.scl, 
-                beta=self.beta, temp=temp)
+        if (self.beta > 1e-6) or self.center:
+            if self.center:
+                newS = update_concepts_asym_cntr(self.data, 1.0*self.S, self.W, self.scl, 
+                    alpha=self.alpha, beta=self.beta, temp=temp)
+            else:
+                newS = update_concepts_asym(self.data-self.b, 1.0*self.S, self.W, self.scl, 
+                    beta=self.beta, temp=temp)
         else:
             C = 2*(self.data-self.b)@self.W - self.scl - self.alpha
             newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/temp))
 
         self.S = newS
 
-        return newS
+        if self.center:
+            return newS - newS.mean(0)
+        else:
+            return newS
 
     def MStep(self, ES):
 
         U,s,V = la.svd((self.data-self.b).T@ES, full_matrices=False)
 
         self.W = U@V
-        self.scl = np.sum(s)/np.sum(ES)
-        self.b = (self.data - self.scl*ES@self.W.T).mean(0)
+        self.scl = np.sum(s)/np.sum(ES**2)
+        if not self.center:
+            self.b = (self.data - self.scl*ES@self.W.T).mean(0)
 
-        return self.scl*np.sqrt(np.sum(ES))/np.sqrt(np.sum((self.data-self.b)**2))
+        return self.scl*np.sqrt(np.sum(ES**2))/np.sqrt(np.sum((self.data-self.b)**2))
 
     def __call__(self):
-        return self.S@self.W.T + self.b
+        return self.scl*self.S@self.W.T + self.b
 
     def loss(self, X):
         return self.scl*np.sqrt(np.sum(self.S))/np.sqrt(np.sum(X-self.b)**2)
+
 
 class GeBAE(BAE):
     """
@@ -269,6 +293,7 @@ class GeBAE(BAE):
         """
 
         for i in range(self.W_steps):
+
             N = ES@self.W.T + self.b
 
             WTW = self.W.T@self.W
@@ -294,7 +319,7 @@ class GeBAE(BAE):
 
 class KernelBAE(BAE):
     
-    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, fix_scale=True):
+    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, fix_scale=False):
         
         super().__init__()
 
@@ -484,13 +509,9 @@ def update_concepts_asym(X, S, W, scl, beta, temp, steps=1):
         # en = np.zeros((n,m))
         # for i in np.arange(n): 
 
-            idx = np.mod(np.arange(n)+i, n) ## item i goes first
-            I = idx[1:]
-
             ## Organize states
-            s = S[i]
-            St1 -= s
-            StS -= np.outer(s,s)
+            St1 -= S[i]
+            StS -= np.outer(S[i],S[i])
 
             ## Regularization (more verbose because of numba reasons)
             D1 = StS
@@ -513,7 +534,7 @@ def update_concepts_asym(X, S, W, scl, beta, temp, steps=1):
                 inhib = np.dot(R[j], S[i]) + r[j]
 
                 ## Compute currents
-                curr = (2*C[i,j] - beta*inhib - scl)/temp
+                curr = (2*C[i,j] - beta*scl*inhib - scl)/temp
 
                 # ## Apply sigmoid (overflow robust)
                 if curr < -100:
@@ -530,6 +551,96 @@ def update_concepts_asym(X, S, W, scl, beta, temp, steps=1):
 
                 # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
 
+            ## Update 
+            # S[i] = news
+            St1 += S[i]
+            StS += np.outer(S[i], S[i]) 
+
+    return S #, en
+
+@njit
+def update_concepts_asym_cntr(X, S, W, scl, alpha, beta, temp, steps=1):
+    """
+    One gradient step on S
+
+    TODO: figure out a good sparse implementation!
+    """
+
+    n, m = S.shape
+
+    if beta >= 1e-6:
+        StS = np.dot(S.T, S)
+    St1 = S.sum(0)
+
+    ## Initial values
+    # C = np.dot(X,W)        # Constant term
+    
+    for step in range(steps):
+        for i in np.random.permutation(np.arange(n)):
+
+            ## Organize states
+            St1 -= S[i]
+
+            if beta >= 1e-6:
+                StS -= np.outer(S[i], S[i])
+
+                ## Regularization (more verbose because of numba reasons)
+                D1 = StS
+                D2 = St1[None,:] - StS
+                D3 = St1[:,None] - StS
+                D4 = (n-1) - St1[None,:] - St1[:,None] + StS
+
+                best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+                best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+                best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+                best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+                R = (best1 - best2 - best3 + best4)*1.0
+                r = (best2.sum(0) - best4.sum(0))*1.0
+
+            ## Hopfield update of s
+            for j in np.random.permutation(np.arange(m)): # concept
+
+                # inp = (2*C[i,j] - scl*(n - 1 - 2*St1[j])/n - alpha)
+                inp = (2*np.dot(X[i], W[:,j]) - scl*(n - 1 - 2*St1[j])/n - alpha)
+
+                ## Compute linear terms
+                if beta >= 1e-6:
+                    inhib = np.dot(R[j], S[i]) + r[j]
+                else:
+                    inhib = 0
+
+                ## Compute currents
+                curr = (inp - beta*scl*inhib)/temp
+
+                # ## Apply sigmoid (overflow robust)
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+
+                ## Update outputs
+                S[i,j] = 1*(np.random.rand() < prob)
+
+            # else:
+
+            #     for j in range(m):
+
+            #         # curr = (2*C[i,j] - scl*(n - 1 - 2*St1[j])/n - alpha)/temp
+            #         inp = (2*np.dot(X[i], W[:,j]) - scl*(n - 1 - 2*St1[j])/n - alpha)
+                    
+            #         if curr < -100:
+            #             prob = 0.0
+            #         elif curr > 100:
+            #             prob = 1.0
+            #         else:
+            #             prob = 1.0 / (1.0 + math.exp(-curr))
+
+            #         ## Update outputs
+            #         S[i,j] = 1*(np.random.rand() < prob)
+                
             ## Update 
             # S[i] = news
             St1 += S[i]

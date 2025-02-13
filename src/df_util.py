@@ -116,6 +116,11 @@ def permham(S, Z):
     outputs an (num_S_features,)-sized vector of hamming distances
     """
 
+    if np.all(np.abs(S**2 - S) < 1e-6):
+        S = 2*S-1
+    if np.all(np.abs(Z**2 - Z) < 1e-6):
+        Z = 2*Z-1
+
     dH = len(S) - np.abs(S.T@Z)
     aye,jay = util.unbalanced_assignment(dH, one_sided=True)
 
@@ -1031,6 +1036,16 @@ def noisyembed(S, dim, logsnr, orth=True, scl=0.1):
 
     return S@W.T + a*noise.T
 
+def snr2scl(S, dim, logsnr):
+    """
+    Scaling of random noise to achieve a desired logSNR in decibels
+    """
+
+    return np.sqrt(np.sum(S**2)/(len(S)*dim))*10**(-logsnr/20)
+
+# def logsnr(S, noise):
+
+
 def extract_rank_one(A, rand=False, eps=0, **solver_args):
     """
     Looking for rank-1 binary components of A, symmetric PSD
@@ -1370,6 +1385,17 @@ def catdist(A, B):
     A and B are (N, k) binary matrices
     """
     return np.min([A.T@B, (1-A).T@B, A.T@(1-B), (1-A).T@(1-B)], axis=0)
+
+
+def catorder(S):
+    """
+    Compute partial order over categories, based on subset relation
+    ties broken by the index of first item
+    """
+    
+    Sp = np.mod(S + (S.mean(0)>0.5), 2)
+
+    is_sup = (Sp.T@Sp)
 
 
 ## 

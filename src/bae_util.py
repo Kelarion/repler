@@ -41,7 +41,7 @@ class Neal:
     """
     Annealing scheduler
     """
-    
+
     decay_rate: float = 0.8
     period: int = 2
     initial: float = 10.0
@@ -51,11 +51,17 @@ class Neal:
         if max_iter is None:
             max_iter = self.period*int(np.log(T_min/self.initial)/ np.log(self.decay_rate))
 
+        if verbose:
+            pbar = tqdm(range(max_iter))
+
         en = []
         model.initialize(*data)
-        for it in tqdm(range(max_iter)):
+        for it in range(max_iter):
             T = self.initial*(self.decay_rate**(it//self.period))
             en.append(model.grad_step(*data, T, **opt_args))
+
+            if verbose:
+                pbar.update(1)
 
         return en
 
