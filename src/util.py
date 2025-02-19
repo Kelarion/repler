@@ -12,7 +12,7 @@ import scipy.special as spc
 import scipy.sparse as sprs
 import scipy.stats as sts
 from scipy.spatial.distance import pdist, squareform
-from scipy.optimize import linear_sum_assignment 
+from scipy.optimize import linear_sum_assignment, nnls, lsq_linear
 from scipy.optimize import linprog as lp
 from itertools import permutations, combinations
 import itertools as itt
@@ -403,10 +403,15 @@ def flat_torus(*xs):
 
 def circ_distance(x, y):
 
-    diffs = np.exp(1j*x)/np.exp(1j*y)
-    distances = np.arctan2(diffs.imag, diffs.real)
+    dist = 1- np.cos(x-y)
 
-    return distances
+    return dist
+
+def circ_err(x, y):
+
+    err = np.arctan2(np.sin(x-y), np.cos(x-y))
+
+    return err
 
 class RFColors():
     def __init__(self, n_units=10, wid=2):
@@ -1326,7 +1331,7 @@ def dot2sign(K):
 
 def hamming(A, B=None):
     """
-    For 0/1 binary matrices A and B, compute the Hamming distance between rows
+    For 0/1 binary matrices A and B, compute the Hamming distance between columns
     """
     if B is None:
         B = A

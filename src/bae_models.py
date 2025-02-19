@@ -403,6 +403,7 @@ class KernelBAE(BAE):
         
         return nrm - 2*dot
 
+
 ############################################################
 ######### Jitted update of S ###############################
 ############################################################
@@ -570,10 +571,11 @@ def update_concepts_asym_cntr(X, S, W, scl, alpha, beta, temp, steps=1):
 
     if beta >= 1e-6:
         StS = np.dot(S.T, S)
-    St1 = S.sum(0)
+    St1 = np.diag(StS)
+    # St1 = S.sum(0)
 
     ## Initial values
-    # C = np.dot(X,W)        # Constant term
+    C = np.dot(X,W)        # Constant term
     
     for step in range(steps):
         for i in np.random.permutation(np.arange(n)):
@@ -601,8 +603,8 @@ def update_concepts_asym_cntr(X, S, W, scl, alpha, beta, temp, steps=1):
             ## Hopfield update of s
             for j in np.random.permutation(np.arange(m)): # concept
 
-                # inp = (2*C[i,j] - scl*(n - 1 - 2*St1[j])/n - alpha)
-                inp = (2*np.dot(X[i], W[:,j]) - scl*(n - 1 - 2*St1[j])/n - alpha)
+                inp = (2*C[i,j] - scl*(n - 1 - 2*St1[j])/n - alpha)
+                # inp = (2*np.dot(X[i], W[:,j]) - scl*(n - 1 - 2*St1[j])/n - alpha)
 
                 ## Compute linear terms
                 if beta >= 1e-6:
@@ -624,23 +626,6 @@ def update_concepts_asym_cntr(X, S, W, scl, alpha, beta, temp, steps=1):
                 ## Update outputs
                 S[i,j] = 1*(np.random.rand() < prob)
 
-            # else:
-
-            #     for j in range(m):
-
-            #         # curr = (2*C[i,j] - scl*(n - 1 - 2*St1[j])/n - alpha)/temp
-            #         inp = (2*np.dot(X[i], W[:,j]) - scl*(n - 1 - 2*St1[j])/n - alpha)
-                    
-            #         if curr < -100:
-            #             prob = 0.0
-            #         elif curr > 100:
-            #             prob = 1.0
-            #         else:
-            #             prob = 1.0 / (1.0 + math.exp(-curr))
-
-            #         ## Update outputs
-            #         S[i,j] = 1*(np.random.rand() < prob)
-                
             ## Update 
             # S[i] = news
             St1 += S[i]

@@ -708,6 +708,15 @@ class Faces():
 ########### General utility ##################
 ##############################################
 
+def vecs(x,y, **kwargs):
+    """
+    My version of quiver where vectors are always at the origin
+    """
+
+    n = len(x)
+
+    plt.quiver(np.zeros(n), np.zeros(n), x, y, **kwargs)
+
 def square_axis(ax=None):
     if ax is None:
         ax = plt.gca()

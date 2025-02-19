@@ -97,24 +97,37 @@ class RadialBoyfriend:
     Gaussian process receptive fields with RBF kernel
     """
     
-    def __init__(self, width):
+    def __init__(self, width, center=True):
         
-        self.width = width
-        # Set the scale so that the variance of each neuron is 1
-        self.scale = 1/(1-np.exp(-0.5/width)*spc.i0(0.5/width))
+        # self.width = width
+        self.kap = 0.5/width
+        ## Set the scale so that the average variance of each neuron is 1
+        ## and shift so the mean population response across stimuli is 0
+        # self.scale = 1/(1-np.exp(-0.5/width)*spc.i0(0.5/width))
+        # self.shift = 0
+        self.scale = 1/(np.exp(0.5/width) - spc.i0(0.5/width))
+        if center:
+            self.shift = spc.i0(self.kap)
+        else:
+            self.shift = 0
         
     def __call__(self, error, quantile=1e-4):
         """
         compute k(x,y) = k(x-y) ... so input x-y
         """
-        return self.scale*np.exp((np.cos(error)-1)/(2*self.width))
+        # return self.scale*np.exp((np.cos(error)-1)/(2*self.width))
+        # return self.scale*(np.exp(0.5*np.cos(error)/self.width) - self.shift)
+        denom = (np.exp(self.kap) - spc.i0(self.kap))
+        return (np.exp(self.kap*np.cos(error)) - self.shift)/denom
 
     def sample(self, colors, size=1):
         """
         Sample activity in response to colors
         """
-        kern = util.CircularRBF(sigma=self.width, scale=self.scale)
-        return util.gaussian_process(colors, size, kernel=kern).T
+        # kern = util.CircularRBF(sigma=self.width, scale=self.scale)
+        K = self(colors[None] - colors[:,None])
+        mu = np.zeros(len(colors))
+        return np.random.multivariate_normal(mu, K, size=size).T/np.sqrt(size)
 
 
 class MisesLogNormal:
@@ -231,9 +244,36 @@ def mises_simil(error, kappa):
 
 #%%
 
+n_neur = 1000
+n_col = 1000
+
+betas = np.linspace(0.1, 2, 20)
+widths = np.linspace(0.1, 5, 20)
+
+cols = (2*np.random.rand(n_col)-1)*np.pi
+
+var = np.zeros((len(widths), len(betas)))
+kur = np.zeros((len(widths), len(betas)))
+
+for i,width in tqdm(enumerate(widths)):
+    pop = RadialBoyfriend(width)
+    
+    for j,beta in enumerate(betas):
+        
+        X = pop.sample(cols, n_neur)
+        
+        noise = np.random.randn(*X.shape)*beta
+        idx = np.argmax((X+noise)@(X).T, axis=1)
+        err = util.circ_err(cols,cols[idx])
+        
+        var[i,j] = np.var(err)
+        kur[i,j] = sts.kurtosis(err)
+        
+#%%
+
 n_col = 300
 n_err = 100
-n_neur = 500
+n_neur = 5000
 
 samp_every = 3
 
@@ -252,7 +292,7 @@ clf = knr(n_neighbors=1)
 # mus = [1]
 betas = np.linspace(1,10,5)
 this_mu = 0
-sigs = np.linspace(0.5, 2, 5)
+sigs = np.linspace(0.5, 2, 10)
 
 err_std = []
 samp_err_std = []
@@ -273,48 +313,51 @@ for i,this_beta in enumerate(betas):
         
         # pop = MisesLogNormal(this_mu, this_sig)
         pop = RadialBoyfriend(this_sig)
-
+        
         ## theory
         kernel = pop(errors, quantile=1e-3) # numerically integrate
         # kernel /= np.sqrt(np.sum(dx*kernel**2))
-        kernel /= np.max(kernel)
-        apprx = np.exp(beta*kernel)/np.sum(np.exp(beta*kernel)*dx)
+        # kernel /= np.max(kernel)
+        # kernel -= kernel.mean()
+        apprx = np.exp(this_beta*kernel)/np.sum(np.exp(this_beta*kernel)*dx)
         var = np.sum(dx*apprx*errors**2)
         stds.append(var)
         kur.append(np.sum(dx*apprx*errors**4)/var**2 - 3)
         
-        if np.mod(i, samp_every) <=0:
-            ## decoder
-            X = pop.sample(colors, size=n_neur)
-            # X /= la.norm(X, axis=1,keepdims=True) # normalize response across neurons
-            
-            K = X@X.T
-            K_perturb = K + np.random.gumbel(scale=1/beta, size=K.shape)
-            tcc_pred = K_perturb.argmax(1)
-            tcc_err = util.circ_distance(colors, colors[tcc_pred])
-            tcc_stds.append(np.var(tcc_err))
-            tcc_kur.append(sts.kurtosis(tcc_err))
-            
-            # X_tst = X + np.random.randn(n_col, n_neur)/np.sqrt(2*beta)
-            X_tst = X + np.random.randn(n_col, n_neur)*np.sqrt(1/6)*(np.pi/beta)
-            
-            clf.fit(X, colors)
-            pred = clf.predict(X_tst)
-            err = np.arctan2(np.sin(colors-pred), np.cos(colors-pred))
-            # err = util.circ_distance(pred, colors)
-            
-            samp_stds.append(np.var(err))
-            samp_kur.append(sts.kurtosis(err))
+        # if np.mod(i, samp_every) <=0:
+        ## decoder
+        X = pop.sample(colors, size=n_neur)
+        # X /= la.norm(X, axis=1,keepdims=True) # normalize response across neurons
         
+        # K = util.center(X@X.T)
+        K = X@X.T/X.shape[1]
+        K_perturb = K + np.random.gumbel(scale=1/this_beta, size=K.shape)
+        tcc_pred = K_perturb.argmax(1)
+        # tcc_err = util.circ_distance(colors, colors[tcc_pred])
+        tcc_err = np.arctan2(np.sin(colors-colors[tcc_pred]), np.cos(colors-colors[tcc_pred])) 
+        tcc_stds.append(np.var(tcc_err))
+        tcc_kur.append(sts.kurtosis(tcc_err))
+        
+        # X_tst = X + np.random.randn(n_col, n_neur)/np.sqrt(2*beta)
+        X_tst = X + np.random.randn(n_col, n_neur)*np.sqrt(1/6)*(np.pi/this_beta)
+        
+        clf.fit(X, colors)
+        pred = clf.predict(X_tst)
+        err = np.arctan2(np.sin(colors-pred), np.cos(colors-pred))
+        # err = util.circ_distance(pred, colors)
+        
+        samp_stds.append(np.var(err))
+        samp_kur.append(sts.kurtosis(err))
+    
     err_std.append(stds)
         # apprx *= (n_col/2*np.pi)
     err_kur.append(kur)
     
-    if np.mod(i, samp_every) <=0:
-        samp_err_std.append(samp_stds)
-        tcc_err_std.append(tcc_stds)
-        tcc_err_kur.append(tcc_kur)
-        samp_err_kur.append(samp_kur)
+    # if np.mod(i, samp_every) <=0:
+    samp_err_std.append(samp_stds)
+    tcc_err_std.append(tcc_stds)
+    tcc_err_kur.append(tcc_kur)
+    samp_err_kur.append(samp_kur)
 
 err_std = np.array(err_std)
 samp_err_std = np.array(samp_err_std)
@@ -333,11 +376,11 @@ thry = err_std
 # samps = tcc_err_kur
 # samps = samp_err_kur
 
-cols = cm.copper(np.linspace(0,1,len(sigs)))
+cols = cm.copper(np.linspace(0,1,len(betas)))
 # for i in range(len(sigs)):
 #     plt.plot(mus, thry[:,i]/(2*np.pi), color=cols[i], linestyle='--')
 #     plt.plot(mus[::samp_every], samps[:,i]/(2*np.pi), color=cols[i])
 for i in range(len(betas)):
     plt.plot(sigs, thry[i]/(2*np.pi), color=cols[i], linestyle='--')
-    plt.plot(sigs, samps[i]/(2*np.pi), color=cols[i])
+    plt.scatter(sigs, samps[i]/(2*np.pi), color=cols[i])
 

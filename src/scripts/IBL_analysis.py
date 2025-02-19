@@ -52,6 +52,7 @@ trl = pkl.load(open('C:/Users/mmall/Downloads/trials_forMatteo.pck','rb'))
 
 neurs = np.hstack([x for x in X.values()])
 area = np.concatenate([i*np.ones(len(x.T)) for i,x in enumerate(X.values())])
+names = list(X.keys())
 
 neurz = (neurs-neurs.mean(0,keepdims=True))/(neurs.std(0,keepdims=True)+1e-12)
 

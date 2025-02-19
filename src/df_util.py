@@ -7,7 +7,9 @@ import torchvision
 import torch.optim as optim
 import numpy as np
 import numpy.linalg as nla
+import matplotlib.pyplot as plt
 from itertools import permutations, combinations
+from dataclasses import dataclass
 from tqdm import tqdm
 
 from sklearn import svm, discriminant_analysis, manifold, linear_model
@@ -21,6 +23,7 @@ from scipy.optimize import linprog as lp
 from scipy.optimize import nnls
 
 import networkx as nx
+from networkx.drawing.nx_pydot import graphviz_layout
 import cvxpy as cvx
 
 # my code
@@ -403,6 +406,76 @@ def sparse_feats(num_feats, num_data, sparsity=0.1):
     C = np.random.rand(num_feats, num_data)
 
     return S*C
+
+
+#####################################
+##### NMF ###########################
+#####################################
+
+@dataclass
+class NMF:
+
+    r: int 
+    zl2: float = 1e-2       # L2 penalty on Z
+    zl1: float = 0          # L1 penalty on Z
+    wl2: float = 1e-2       # L2 penalty on W
+    wpr: float = 0          # PR penalty on W
+
+    def initialize(self, X):
+
+        self.n, self.d = X.shape
+
+        self.W = np.random.randn(self.d, self.r)
+        N = X@self.W
+        self.Z = N*(N>0)
+    
+    def grad_step(self, X):
+        """
+        Single step of alternating least squares
+        """
+
+        ## Update Z
+        if (self.zl2 > 1e-6) or (self.zl1 > 1e-6):
+            Z = cvx.Variable((self.n, self.r))
+            cost = cvx.sum_squares(Z@self.W.T - X) 
+            l2 = self.zl2*cvx.sum_squares(Z)
+            l1 = self.zl1*cvx.sum(cvx.abs(Z))
+            prob = cvx.Problem(cvx.Minimize(cost + l2 + l1), constraints=[Z>=0])
+            _ = prob.solve()
+            self.Z = Z.value 
+        else:
+            for i in range(self.n):
+                self.Z[i] = nnls(self.W, X[i])[0]
+
+        ## Update W
+        if (self.wl2 <= 1e-6) and (self.wpr <= 1e-6): 
+            self.W = la.pinv(self.Z)@X
+
+        elif self.wpr <= 1e-6:
+            U,s,V = la.svd(self.Z, full_matrices=False)
+            shat = s/(s**2 + self.wl2**2)
+            self.W = X.T@U@np.diag(shat)@V
+
+        else:
+            WTW = self.W.T@self.W
+            dXhat = (X - Z@W.T)
+            # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
+            dReg = self.wpr*self.W@(np.eye(self.r) - WTW*np.trace(WTW)/np.sum(WTW**2))
+
+            dW = dXhat.T@Z/self.n
+            db = dXhat.sum(0)/self.n
+
+            self.W += 1e-2*(dW + dReg)
+
+def seminmf(X, r, max_iter=10, **kwargs):
+
+    fac = NMF(r, **kwargs)
+    fac.initialize(X)
+
+    for it in range(max_iter):
+        fac.grad_step(X)
+
+    return fac.Z, fac.W
 
 
 #############################################
@@ -1244,6 +1317,48 @@ class CompGraph:
 
 ## for constructing graph 
 
+def dH(S):
+
+    n = len(S)
+    StS = S.T@S
+    St1 = np.diag(StS)
+
+    D1 = StS
+    D2 = St1[None,:] - StS
+    D3 = St1[:,None] - StS
+    D4 = n - St1[None,:] - St1[:,None] + StS
+
+    best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+    best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+    best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+    best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+    R = (best1 - best2 - best3 + best4)*1.0
+    r = (best2.sum(0) - best4.sum(0))*1.0
+
+    return R, r
+
+def dynamics(S):
+
+    n = len(S)
+    StS = S.T@S
+    St1 = np.diag(StS)
+
+    D1 = StS
+    D2 = St1[None,:] - StS
+    D3 = St1[:,None] - StS
+    D4 = n - St1[None,:] - St1[:,None] + StS
+
+    best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+    best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+    best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+    best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+    R = (best2 - best1)*1.0
+    r = (best2.sum(0) - best4.sum(0))*1.0
+
+    return R, r
+
 def allpaths(S, verbose=False):
     """
     Paths of the graph of S
@@ -1350,6 +1465,24 @@ def path(S, i, j):
     addcomp(i, visited)
 
     return np.array(edges).T, np.array(H[N:])
+
+
+def plotgraph(S, type='twopi', **scat_args):
+
+    E,H = allpaths(np.mod(S+S[[0]],2))
+    G = nx.Graph()
+    G.add_edges_from(E.T)
+
+    pos = graphviz_layout(G, type)
+
+    idx = np.argsort(list(pos.keys()))
+    xy = np.array(list(pos.values()))[idx]
+
+    deez = np.isin(np.array(list(G.nodes))[idx], np.arange(len(S)))
+
+    nx.draw(G, pos, node_size=0)
+
+    plt.scatter(xy[deez,0], xy[deez,1], **scat_args)
 
 
 def ancestors(S):
