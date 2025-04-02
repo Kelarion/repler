@@ -13,7 +13,6 @@ import torch.linalg as tla
 import numpy as np
 from itertools import permutations, combinations
 from tqdm import tqdm
-import geoopt as geo
 
 import scipy.stats as sts
 import scipy.linalg as la
