@@ -761,6 +761,7 @@ class Categorical(DeepDistribution):
 class NeuralNet(nn.Module):
     """Abstract class for all pytorch models, to enforce some regularity"""
     def __init__(self):
+        
         super().__init__()
         self.initialized = False
         self.__name__ = self.__class__.__name__

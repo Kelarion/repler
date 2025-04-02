@@ -84,9 +84,15 @@ cogmat = np.zeros((len(lunq), len(cunq)))
 for f,l in tqdm(zip(fid, lid)):
     
     c = cid[cogs['Form_ID'].tolist().index(f)]
-    cogmat[l,c] = 1
+    cogmat[l,c] += 1
 
 #%%
+
+mod = bae_models.KernelBAE(300, penalty=2)
+
+neal = bae_util.Neal(decay_rate=0.98, period=2, initial=10)
+
+en = neal.fit(mod, cogmat)
 
 # cv = []
 # neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
@@ -95,19 +101,22 @@ for f,l in tqdm(zip(fid, lid)):
 #     ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
 #     cv.append(np.mean(ba[0]))
 #     eses.append(ba[1])
-    
+
 #%%
 
-G = nx.Graph()
+E,H = df_util.allpaths(mod.S)
 
-pos = graphviz_layout(G, prog='twopi')
+G = nx.Graph()
+G.add_edges_from(E)
+
+pos = graphviz_layout(G, prog='neato')
 
 #%%
 
 cmap = cm.tab10
 
 these_langs = ['Latin',
-               'Brazilian Portuguese',
+               # 'Brazilian Portuguese',
                'Hindi',
                'Urdu',
                'Italian',
@@ -143,16 +152,16 @@ these_langs = ['Latin',
                'Bakhtiari',
                'Romanian',
                'Central Alemannic',
-               # 'Francoprovencalic',
-               # 'Oscan',
+               'Francoprovencalic',
+               'Oscan',
                'Latvian',
-               'Dalmatian',
+               # 'Dalmatian',
                'Khwarezmian',
                'Ukrainian',
                'Eastern Armenian']
 
 plt_these = np.isin(G.nodes,range(160))
-nx.draw(G,pos=pos, node_size=10*plt_these, 
+nx.draw(G, pos=pos, node_size=10*plt_these, 
         node_color=cmap(grp[np.where(plt_these, G.nodes, 0)]))
 
 p_cntr = np.mean([p for p in pos.values()],0)

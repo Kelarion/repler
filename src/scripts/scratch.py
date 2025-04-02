@@ -11,7 +11,131 @@ import torch.optim as optim
 
 #%%
 
+def inc(S):
+    """
+    Given the binary embedding of a partial cube, return the incidence 
+    """
+    
+    dif = S[None] - S[:,None]
+    dif *= (np.abs(dif).sum(-1,keepdims=True)==1)
+    
+    return dif.sum(1)
 
+def sadj(S):
+    """
+    Given the binary embedding of a partial cube, find the adjacency 
+    structure of the set elements
+    """
+    
+    n,k = S.shape
+    
+    I = 2*inc(S)
+    S_ = np.hstack([S, np.ones((n,1))])
+    
+    A = la.pinv(2*S_-1)@I
+    adj = (A[:-1]+np.eye(k))
+    
+    return 2*adj, A[-1] - adj.sum(0) 
+
+#%%
+
+neal = bae_util.Neal(decay_rate=0.98, period=2, initial=1)
+
+cntr_fit = []
+aff_fit = []
+cntr_nbs = []
+aff_nbs = []
+for _ in tqdm(range(100)):
+    
+    Strue = df_util.randtree_feats(16, 2, 4) 
+    X = df_util.noisyembed(Strue, 100, 30, scl=1e-3)
+
+    mod = bae_models.BiPCA(Strue.shape[1], center=False, tree_reg=1)
+    en = neal.fit(mod, X, verbose=False)
+    aff_fit.append(df_util.permham(Strue, mod.S))
+    aff_nbs.append(util.nbs(Strue, mod.S))
+    
+    mod = bae_models.BiPCA(Strue.shape[1], center=True, tree_reg=1)
+    en = neal.fit(mod, X, verbose=False)
+    cntr_fit.append(df_util.permham(Strue, mod.S))
+    cntr_nbs.append(util.nbs(Strue, mod.S))
+    
+#%%
+
+samps = 5000
+
+theta = np.pi/6
+phi = np.pi/2
+
+delta = np.random.randn(samps)*0.4
+x = np.array([np.cos(theta), np.sin(theta)])
+
+eps = x[:,None] + delta*np.array([[np.cos(phi)], [np.sin(phi)]])
+xhat = eps/np.sqrt(np.sum(eps**2, axis=0))
+thhat = np.arctan2(xhat[1], xhat[0])
+
+deez = np.random.choice(range(samps), np.min([samps, 500]), replace=False)
+
+circ = np.linspace(-np.pi, np.pi, 100)
+plt.plot(np.sin(circ), np.cos(circ))
+plt.scatter(xhat[0][deez], xhat[1][deez])
+plt.scatter(x[0], x[1],  s=500, marker='*')
+plt.scatter(np.cos(phi), np.sin(phi))
+tpl.square_axis()
+
+#%%
+from scipy.optimize import root_scalar
+
+def Phi(x):
+    return 0.5*(1+spc.erf(x/np.sqrt(2)))
+
+def phi(x):
+    return np.exp(-0.5*x**2)/np.sqrt(2*np.pi)
+
+samps = 5000
+std = 0.5
+
+theta = 0
+
+x = np.array([np.cos(theta), np.sin(theta)])
+
+eps = x[:,None] + np.random.randn(2,samps)*std
+xhat = eps/np.sqrt(np.sum(eps**2, axis=0))
+thhat = np.arctan2(xhat[1], xhat[0])
+
+deez = np.random.choice(range(samps), np.min([samps, 50]), replace=False)
+
+circ = np.linspace(-np.pi, np.pi, 100)
+plt.scatter(xhat[0][deez], xhat[1][deez], s=50, marker='o', color=(0.5,0.5,0.5))
+plt.scatter(eps[0][deez], eps[1][deez], s=50, marker='.', color=(0.5,0.5,0.5))
+plt.plot([eps[0][deez], xhat[0][deez]], [eps[1][deez], xhat[1][deez]], color=(0.5,0.5,0.5))
+plt.plot(np.cos(circ), np.sin(circ), 'k-')
+plt.scatter(x[0], x[1], s=200, marker='*', color='k', zorder=100)
+
+plt.plot(np.cos(circ)*std + x[0], np.sin(circ)*std + x[1], 'k-')
+
+tpl.square_axis()
+
+
+#%%
+plt.hist(thhat, bins=25, density=True, color=(0.5,0.5,0.5))
+
+kap = 1/std
+xi = (kap**2)/4
+rho = np.sqrt(np.pi*xi/2)*np.exp(-xi)*(spc.i0(xi) + spc.i1(xi))
+guess = np.exp(-0.5*kap**2)/(2*np.pi) 
+corr = kap*np.cos(circ)*Phi(kap*np.cos(circ))/phi(kap*np.cos(circ))
+# corr = kap*np.cos(circ)*Phi(kap*np.cos(circ))*np.exp(-0.5*(kap*np.sin(circ))**2)/np.sqrt(2*np.pi)
+
+plt.plot(circ, guess*(1+corr), 'k', linewidth=2)
+
+ratio = lambda x,r=1: spc.i1(x)/spc.i0(x) - r
+sol = root_scalar(ratio, args=(rho,), bracket=(0,100))
+vmkap = sol.root
+
+plt.plot(circ, np.exp(vmkap*np.cos(circ))/(2*np.pi*spc.i0(vmkap)), 'k--', linewidth=2)
+
+plt.legend(['Actual', 'Von Mises approximation'])
 
 #%%
 

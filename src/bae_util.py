@@ -55,15 +55,18 @@ class Neal:
             pbar = tqdm(range(max_iter))
 
         en = []
-        model.initialize(*data)
+        mets = []
+        model.initialize(*data, **opt_args)
         for it in range(max_iter):
             T = self.initial*(self.decay_rate**(it//self.period))
-            en.append(model.grad_step(*data, T, **opt_args))
+            model.temp = T
+            en.append(model.grad_step(*data))
+            mets.append(model.metrics(*data))
 
             if verbose:
                 pbar.update(1)
 
-        return en
+        return en, mets
 
     def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=False , 
         draws=10, folds=10, **opt_args):
@@ -77,7 +80,7 @@ class Neal:
         ens = []
         mods = []
         for fold in range(draws):
-
+            
             model.initialize(X)
 
             ## Mask
@@ -137,16 +140,61 @@ def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
 
     return ens
 
-# def bcv(model, fold=1, iters=10):
 
+def multifit(model, X, chains=10, **neal_args):
 
+    Xpr = []
+    ls = []
+    neal = Neal(**neal_args)
+    for it in tqdm(range(chains)):
+        en = neal.fit(model, X, verbose=False)
+        ls.append(en)
+        Xpr.append(model())
 
-# def pdmask(n,d,folds):
-#     """
-#     pseudo-diagonal mask for cross-validation (Wold 1978 Technometrics)
-#     """
+    return np.mean(Xpr, axis=0), np.mean(ls, axis=0)
 
+def splitfit(model, X, draws=100, **neal_args):
 
+    N = len(X)
+
+    neal = Neal(**neal_args)
+
+    trn_loss = []
+    tst_loss = []
+    X_pred = np.zeros(X.shape)
+    for draw in tqdm(range(draws)):
+
+        idx = np.random.permutation(range(N))
+        A = idx[:N//2]
+        B = idx[N//2:]
+
+        enA = neal.fit(model, X[A], verbose=False)
+        ApredB = (X[B] - model.b)@model.W/model.scl
+        SA = model.S*1
+        WA = model.W*1
+        sclA = model.scl*1
+        bA = model.b*1
+
+        enB = neal.fit(model, X[A], verbose=False)
+        SB = model.S*1
+        WB = model.W*1
+        sclB = model.scl*1
+        bB = model.b*1
+        
+        ## Predict heldout latents
+        ApredB = (X[B] - bA)@WA/sclA
+        BpredA = (X[A] - bB)@WB/sclB
+        AhamB = df_util.permham(SB, 1*(ApredB > 0.5))
+        BhamA = df_util.permham(SA, 1*(BpredA > 0.5))
+
+        ## Predict heldout data
+        X_pred[A] += (sclB*SA@WB.T + bB)/draws
+        X_pred[B] += (sclA*SB@WA.T + bA)/draws
+
+        trn_loss.append((enA[-1] + enB[-1])/2)
+        tst_loss.append((AhamB.mean() + BhamA.mean())/2)
+
+    return X_pred, trn_loss, tst_loss
 
 
 #############################################################

@@ -129,58 +129,47 @@ kqmw = [words.index('king'),
         words.index('woman')]
 
 #%%
-steps = 200
+# steps = 200
 
-# bae = util.BAE(vecs, 5000)
-baer = bae.BAE(vecs, 1000, pvar=0.95, alpha=1, beta=5, penalty=1e-1, max_ctx=None)
+# # bae = util.BAE(vecs, 5000)
+# baer = bae.BAE(vecs, 1000, pvar=0.95, alpha=1, beta=5, penalty=1e-1, max_ctx=None)
 
-# foo = bae.fit(500, verbose=True)
+# # foo = bae.fit(500, verbose=True)
 
-# baer.init_optimizer(decay_rate=0.8, period=1, initial=1)
-baer.init_optimizer(decay_rate=0.95, period=1, initial=1)
-# en = []
-cka = []
-nbs = []
-for t in tqdm(range(steps)):
-    #r = np.sum(pvar< (0.8 + 0.2*(t//10)/10))
-    baer.proj()
-    baer.scl = baer.scaleS()
-    baer.grad_step()
-    # en.append(baer.energy())
-    # cka.append(util.centered_kernel_alignment(vecs@vecs.T, (baer.S@baer.S.T).todense()))
-    nbs.append(util.nbs(vecs, baer.S))
+# # baer.init_optimizer(decay_rate=0.8, period=1, initial=1)
+# baer.init_optimizer(decay_rate=0.95, period=1, initial=1)
+# # en = []
+# cka = []
+# nbs = []
+# for t in tqdm(range(steps)):
+#     #r = np.sum(pvar< (0.8 + 0.2*(t//10)/10))
+#     baer.proj()
+#     baer.scl = baer.scaleS()
+#     baer.grad_step()
+#     # en.append(baer.energy())
+#     # cka.append(util.centered_kernel_alignment(vecs@vecs.T, (baer.S@baer.S.T).todense()))
+#     nbs.append(util.nbs(vecs, baer.S))
     
-S = baer.S.todense()
+# S = baer.S.todense()
 
-# S = np.sign(bae.current())
-# S = np.unique(S*S[[0]], axis=1)
-# S = S[:,np.abs(S.sum(0))<len(vecs)]
+# # S = np.sign(bae.current())
+# # S = np.unique(S*S[[0]], axis=1)
+# # S = S[:,np.abs(S.sum(0))<len(vecs)]
 
-#%%
-ortho = True
-# ortho = False
+mod2 = bae_models.BiPCA(300, center=False)
 
-Es = np.unique(np.mod(S+S[[0]],2), axis=1)
-Es = Es[:,Es.sum(0)>0]
-Es, pie = df_util.mindistX(vecs, Es, beta=1e-6, reg='sparse')
+neal = bae_util.Neal(decay_rate=0.95, period=5)
+en = neal.fit(mod2, vecs)
 
-# Es, pie = df_util.mindistX(vecs, Es[:,pie>1e-2], beta=1e-6, reg='sparse')
-if ortho:
-    # W = df_util.krusty(np.diag(np.sqrt(pie))@Es.T, (vecs-vecs[[0]]).T)
-    # W = np.diag(np.sqrt(pie))@W
-    W = df_util.krusty(np.diag(np.sqrt(pie))@(Es-Es.mean(0)).T, (vecs-vecs.mean(0)).T)
-    W = np.diag(np.sqrt(pie))@W
-    # W = df_util.krusty(wa[0].T, (vecs-vecs.mean(0)).T - wa[2][:,None])
-else:
-    W = la.pinv(Es - Es.mean(0))@(vecs-vecs.mean(0))
-
+S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
+S, pi = df_util.mindistX(vecs, S, beta=1e-6, nonzero=False)
 
 #%% Local Structure
 
-S_cntr = np.mod(Es+Es[kqmw[0]],2)
+S_cntr = np.mod(S+S[kqmw[0]],2)
 Z,grp = np.unique(S_cntr[kqmw], axis=1, return_inverse=True)
 
-piw = pie/(util.group_sum(pie,grp)[grp])
+piw = pi/(util.group_sum(pi,grp)[grp])
 P = util.group_sum(S_cntr@np.diag(piw), grp, axis=1)
 
 #%%

@@ -6,9 +6,6 @@ dependencies:
  - numpy
  - scipy
  - matplotlib
- - pytorch
- - torchvision
- - torchaudio
  - scikit-learn
  - cvxpy
  - networkx
@@ -16,5 +13,12 @@ dependencies:
  - numba
  - einops
  - tqdm
+ - pip
  - pip:
+   - transformers
    - jaxtyping
+   - transformer_lens
+   - torch 
+   - torchvision 
+   - torchaudio 
+   - --extra-index-url https://download.pytorch.org/whl/cu126

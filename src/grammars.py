@@ -65,7 +65,7 @@ class ParsedSequence(object):
             `order` is the maximum depth of the subtree that is considered a phrase 
         
     """
-    def __init__(self, bs, dep_tree=False, op_brak='[', cl_brak=']', no_words=True):
+    def __init__(self, bs, dep_tree=False, op_brak='(', cl_brak=')', no_words=False):
         """
         Take a bracketed sentence, bs, and compute various quantities defined 
         on it and/or the corresponding parse tree. Provides methods to ask
@@ -76,6 +76,7 @@ class ParsedSequence(object):
         
         super(ParsedSequence,self).__init__()
         
+        self.bracketed_string = bs
         self.dep_parse = dep_tree
 
         op = np.array([i for i,j in enumerate(bs) if j==op_brak])
@@ -138,11 +139,6 @@ class ParsedSequence(object):
         self.subtree_order = np.array(max_depth) # each node's order (=0 for terminals)
         
         # Represent the bracketed sentence as +/- 1 string
-        # brah = np.sort(np.append(op,cl))
-        # brah[np.isin(braks,op)] = 1
-        # brah[np.isin(braks,cl)] = -1
-        # brah[np.diff(iscl.astype(int),append=0)==1] = 0
-        # # brah[np.diff(iscl.astype(int),append=0)==-1] = 0
         brah = np.array([1 if b in op[~np.isin(op,term_op)] \
                          else -1 if b in cl[~np.isin(cl,term_cl)] \
                              else 0 if b in term_op \
@@ -150,29 +146,42 @@ class ParsedSequence(object):
         brah = brah[~np.isnan(brah)]
         self.brackets = brah.astype(int)
         self.term2brak = np.where(brah==0)[0]
-        
-        # # old code, not sure what exactly it computes
-        # is_trough = np.flip(np.diff(np.flip(~iscl*2-1),prepend=1)) == -2
-        # trough_depths = np.cumsum(~iscl*2-1)[is_trough]-1
-        # is_trough[-1] = False
-        # subtree_depths = trough_depths[np.cumsum(is_trough)][np.isin(braks,op)]
-        # self.subtree_depth = subtree_depths
-        
-        # 
+
+        ## Heuristic conversion to original sentence
+        nolspace = ["n't", ".", ",", "'s","''", "%", ":", ";"] # special words
+        norspace = ["``"]
+
+        if dep_tree:
+            words = labels
+        else:
+            words = np.array(labels)[leaves]
+
+        line = []
+        self.word_tags = []
+        self.string = ''
+        prev = False
+        for i,w in enumerate(words):
+            tag, wrd = w.split(' ')
+            self.word_tags.append(tag)
+            if (wrd in nolspace) or (i == 0) or prev:
+                line.append(wrd)
+                self.string += wrd
+            else:
+                line.append(' ' + wrd)
+                self.string += ' ' + wrd
+
+            if wrd in norspace:
+                prev = True
+            else:
+                prev = False
+    
         if no_words:
             self.words = leaves
             self.ntok = len(leaves)
         else:
-            if dep_tree:
-                line = [n.split(' ')[1] for n in labels]
-            else:
-                words = np.array(labels)[leaves]
-                line = [w.split(' ' )[1] for w in words]
             self.words = line
             self.ntok = len(line)
-        
-        self.bracketed_string = bs
-        
+
         # when dealing with dep trees, the index in the actual sentence
         # is no the same as the index in the bracketed sentence 
         if dep_tree:
@@ -194,7 +203,16 @@ class ParsedSequence(object):
         
     def __repr__(self):
         return self.bracketed_string
-    
+
+    def binary(self):
+
+        d = len(self.nodes)
+        B = np.zeros((self.ntok, d))
+        for i,w in enumerate(self.term2word):
+            B[i, self.path_to_root([], w)] = 1
+
+        return B[:,1:]
+
     def parse_depth(self, i, term=True):
         """Distance to root"""
         if term: # indexing terminal tokens?

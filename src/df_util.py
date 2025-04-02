@@ -107,6 +107,36 @@ def krusty(X, Y):
 
     return A
 
+def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, W_lr=1e-2, b_lr=1e-2):
+    """
+    A 'soft' Procrustes regression:
+    
+    min |WX - Y|^2 + lam * |W|^2 - gam * (tr W'W)^2 / tr W'WW'W 
+
+    which encourages W to be as orthogonal. Trained by gradient descent.
+    """
+
+    m,n = X.shape
+    l,n = Y.shape
+    W = np.random.randn(l,m)/np.sqrt(m)
+    b = np.zeros(l)
+    for it in range(iters):
+
+        WTW = W.T@W
+
+        dXhat = (Y - W@X - b)
+        # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
+        dReg = gam*W@(np.eye(m) - WTW*np.trace(WTW)/np.sum(WTW**2))
+        dReg -= lam*W
+
+        dW = dXhat@X.T/n
+        db = dXhat.sum(0)/n
+
+        W += W_lr*(dW + dReg)
+        b += b_lr*db
+
+    return W, b
+
 def permham(S, Z):
     """
     Compute the permutation-invariant hamming distance between S and Z
@@ -338,6 +368,28 @@ def circle(N):
     X = circle_feats(N)
     return X.T@X
 
+def cyclecats(N):
+    """
+    Binary features of a 2N-cycle
+    """
+    return np.array([np.roll(1*(np.arange(2*N) < N), i) for i in range(N)]).T
+
+def gridcats(N, M=None):
+    """
+    Binary features of an NxN grid
+    """
+    if M is None:
+        M = N
+    gr1 = np.arange(N)
+    gr2 = np.arange(M)
+
+    x,y = np.meshgrid(gr1,gr2)
+    x = x.flatten()
+    y = y.flatten()
+    Sx = np.stack([1*(x<=i) for i in range(N-1)])
+    Sy = np.stack([1*(y<=i) for i in range(M-1)])
+    return np.vstack([Sx, Sy]).T
+
 def grid_feats(N, M=None):
     """
     N x N grid
@@ -458,7 +510,7 @@ class NMF:
 
         else:
             WTW = self.W.T@self.W
-            dXhat = (X - Z@W.T)
+            dXhat = (X - Z@self.W.T)
             # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
             dReg = self.wpr*self.W@(np.eye(self.r) - WTW*np.trace(WTW)/np.sum(WTW**2))
 
@@ -1338,36 +1390,25 @@ def dH(S):
 
     return R, r
 
-def dynamics(S):
-
-    n = len(S)
-    StS = S.T@S
-    St1 = np.diag(StS)
-
-    D1 = StS
-    D2 = St1[None,:] - StS
-    D3 = St1[:,None] - StS
-    D4 = n - St1[None,:] - St1[:,None] + StS
-
-    best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
-    best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
-    best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
-    best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
-
-    R = (best2 - best1)*1.0
-    r = (best2.sum(0) - best4.sum(0))*1.0
-
-    return R, r
-
 def allpaths(S, verbose=False):
     """
     Paths of the graph of S
     """
 
-    N, k = S.shape
+    ## Only unique non-zero columns
+    S_ = np.unique(np.mod(S+S[[0]],2),axis=1)
+    S_ = S_[:,S_.sum(0)>0]
 
-    cats = [set(np.nonzero(s)[0]) for s in S]
-    ovlp = S.T@S
+    ## Identify unique rows
+    Sunq, idx, inv, cnt = np.unique(S_, axis=0, 
+        return_index=True, return_inverse=True, return_counts=True)
+    vni = np.argsort(inv)
+
+    N, k = Sunq.shape
+    Nall = len(S)
+
+    cats = [set(np.nonzero(s)[0]) for s in Sunq]
+    ovlp = Sunq.T@Sunq
 
     ## Superset relation
     issup = (ovlp == np.diag(ovlp)) - np.eye(k)
@@ -1406,12 +1447,79 @@ def allpaths(S, verbose=False):
                 addcomp(idx, visited)
 
     edges = []
-    H = [s for s in S]
+    H = [s for s in Sunq]
     visited = []
     addcomp(0, visited)
 
-    return np.array(edges).T, np.array(H)
+    E = np.array(edges)
+    H = np.array(H)
 
+    M = len(H) 
+
+    ## Deal with items having the same hash
+    is_dup = cnt[inv]>1
+    ndup = np.sum(is_dup)
+
+    H = np.block([[H, np.zeros((M,ndup))],
+                  [H[inv][is_dup], np.eye(ndup)]])
+
+    E = np.block([[E], [inv[is_dup,None], M+np.arange(ndup)[:,None]]])
+
+    ## Sort so that the data is at the top in original order
+    is_data = np.concatenate([cnt==1, np.zeros(M-N), np.ones(ndup)]) > 0
+    data_idx = Nall*np.ones(len(H))
+    ixall = np.arange(Nall)
+    data_idx[is_data] = np.append(idx[cnt==1], ixall[is_dup])
+
+    ids = np.argsort(data_idx)
+    sdi = np.argsort(ids)
+    H = H[ids]
+    E = sdi[E]
+
+    return E, H
+
+# def iswgfam(S):
+#     """
+#     Check whether S is the incidence matrix of a well-graded set system
+#     """
+
+#     check = True
+#     for i,si in enumerate(S):
+#         for sj in S[i+1:]:
+#             diff = 
+
+def inc(S):
+    """
+    Given the binary embedding of a partial cube, return the incidence 
+    """
+    
+    dif = S[None] - S[:,None]
+    dif *= (np.abs(dif).sum(-1,keepdims=True)==1)
+    
+    return dif.sum(1)
+
+def adj(S):
+    """
+    Return adjacency matrix of rows of S
+    """
+    dif = S[None] - S[:,None]
+
+    return (np.abs(dif).sum(-1)==1)*1
+
+
+def walk(A, a, s, steps=10):
+
+    K = len(A)
+
+    samps = [1*s]
+    for it in range(steps):
+        for k in np.random.permutation(range(K)):
+            newsk = (np.sign(A[k]@s + a[k])+1)//2
+            if newsk != s[k]:
+                s[k] = newsk
+                samps.append(1*s)
+
+    return np.array(samps)
 
 def path(S, i, j):
 
@@ -1467,11 +1575,11 @@ def path(S, i, j):
     return np.array(edges).T, np.array(H[N:])
 
 
-def plotgraph(S, type='twopi', **scat_args):
+def plotgraph(S, type='neato', **scat_args):
 
     E,H = allpaths(np.mod(S+S[[0]],2))
     G = nx.Graph()
-    G.add_edges_from(E.T)
+    G.add_edges_from(E)
 
     pos = graphviz_layout(G, type)
 

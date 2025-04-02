@@ -4,6 +4,8 @@ CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
 import os, sys, re
 import pickle
 sys.path.append(CODE_DIR)
+from dataclasses import dataclass
+import itertools
 
 import torch
 import torch.nn as nn
@@ -11,6 +13,7 @@ import torchvision
 import torch.optim as optim
 
 import numpy as np
+import scipy as sp
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -22,12 +25,13 @@ from sklearn import svm, discriminant_analysis, manifold, linear_model
 from sklearn.neighbors import KNeighborsRegressor as knr
 import scipy.stats as sts
 import scipy.linalg as la 
-import scipy.spatial as spt
+import scipy.spatial as spt 
 import scipy.sparse as sprs
 import scipy.special as spc
 from scipy.integrate import quad as qint
 from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
+from scipy.optimize import root_scalar
 from sklearn.manifold import MDS
 
 import students
@@ -218,6 +222,63 @@ class MisesLogNormal:
         return self.subpop_kernel(err, k)*self.p_k(k)
     
 
+class VMM:
+    ## fix the local minima
+    
+    def __init__(self, k=0, pic=0.5, kmax=100):
+        
+        self.k = k
+        self.pic = pic
+        self.pig = 1-pic
+        self.kmax = kmax
+    
+    def fit(self, err, iters=10):
+        
+        lik = []
+        for i in range(iters):
+            ## E step
+            pe_c = self.pcorr(err)
+            pc = (self.pic*pe_c/(self.pig/(2*np.pi) + self.pic*pe_c))
+            
+            ## M step
+            R = np.cos(err)@pc/np.sum(pc)
+            if (R > 0) and (self.ratio(self.kmax, R)>0):
+                sol = root_scalar(self.ratio, args=(R,), bracket=(0,self.kmax))
+                self.k = sol.root
+            elif R <=0:
+                self.k = 0
+            else:
+                self.k = self.kmax
+            
+            self.pic = np.mean(pc)
+            self.pig = 1 - self.pic
+            
+            lik.append(np.sum(np.log(self.p(err))))
+        
+        return lik
+        
+    def sample(self, n):
+        c = np.random.choice([0,1], size=n, p=(self.pig, self.pic))
+        guess = np.pi*(2*np.random.rand(n)-1)
+        corr = sts.vonmises(loc=0, kappa=self.k).rvs(n)
+        return np.where(c>0, corr, guess)
+    
+    def pcorr(self, err):
+        
+        return np.exp(self.k*np.cos(err))/(2*np.pi*spc.i0(self.k))
+    
+    def p(self, err):
+        return self.pic*self.pcorr(err) + self.pig/(2*np.pi)
+    
+    def ratio(self, x, R=1):
+        return spc.i1(x)/spc.i0(x) - R
+
+## function for fitting the kernel model
+
+
+def vmpdf(err, k):
+    return np.exp(k*np.cos(err))/(2*np.pi*spc.i0(k))
+
 def ln_cdf(k, mu, sig):
    return 0.5*(1 + spc.erf((np.log(k)-mu)/(sig*np.sqrt(2))))
       
@@ -229,7 +290,6 @@ def ln_pdf(self, k):
     denom = k*self.sig*np.sqrt(2*np.pi)
     return np.exp(-(np.log(k) - self.mu)**2/(2*self.sig**2))/denom
 
-    
 def mises_simil(error, kappa):
     """
     kernel of subpopulation, conditional on specific concentration parameter
@@ -242,33 +302,181 @@ def mises_simil(error, kappa):
 
 # def tcc_sample(k, x):
 
+def kuiper_two(data1, data2):
+    """Compute the Kuiper statistic to compare two samples.
+
+    Parameters
+    ----------
+    data1 : array-like
+        The first set of data values.
+    data2 : array-like
+        The second set of data values.
+    
+    Returns
+    -------
+    D : float
+        The raw test statistic.
+    fpp : float
+        The probability of obtaining two samples this different from
+        the same distribution.
+
+    Notes
+    -----
+    Warning: the fpp is quite approximate, especially for small samples.
+
+    """
+    data1, data2 = np.sort(data1), np.sort(data2)
+
+    if len(data2)<len(data1):
+        data1, data2 = data2, data1
+
+    cdfv1 = np.searchsorted(data2, data1)/float(len(data2)) # this could be more efficient
+    cdfv2 = np.searchsorted(data1, data2)/float(len(data1)) # this could be more efficient
+    D = (np.amax(cdfv1-np.arange(len(data1))/float(len(data1))) + 
+            np.amax(cdfv2-np.arange(len(data2))/float(len(data2))))
+
+    Ne = len(data1)*len(data2)/float(len(data1)+len(data2))
+    return D, kuiper_FPP(D, Ne)    
+
+def kuiper_FPP(D,N):
+    """Compute the false positive probability for the Kuiper statistic.
+
+    Uses the set of four formulas described in Paltani 2004; they report 
+    the resulting function never underestimates the false positive probability 
+    but can be a bit high in the N=40..50 range. (They quote a factor 1.5 at 
+    the 1e-7 level.
+
+    Parameters
+    ----------
+    D : float
+        The Kuiper test score.
+    N : float
+        The effective sample size.
+
+    Returns
+    -------
+    fpp : float
+        The probability of a score this large arising from the null hypothesis.
+
+    Reference
+    ---------
+    Paltani, S., "Searching for periods in X-ray observations using 
+    Kuiper's test. Application to the ROSAT PSPC archive", Astronomy and
+    Astrophysics, v.240, p.789-790, 2004.
+
+    """
+    if D<0. or D>2.:
+        raise ValueError("Must have 0<=D<=2 by definition of the Kuiper test")
+
+    if D<2./N:
+        return 1. - sp.factorial(N)*(D-1./N)**(N-1)
+    elif D<3./N:
+        k = -(N*D-1.)/2.
+        r = np.sqrt(k**2 - (N*D-2.)/2.)
+        a, b = -k+r, -k-r
+        return 1. - sp.factorial(N-1)*(b**(N-1.)*(1.-a)-a**(N-1.)*(1.-b))/float(N)**(N-2)*(b-a)
+    elif (D>0.5 and N%2==0) or (D>(N-1.)/(2.*N) and N%2==1):
+        def T(t):
+            y = D+t/float(N)
+            return y**(t-3)*(y**3*N-y**2*t*(3.-2./N)/N-t*(t-1)*(t-2)/float(N)**2)
+        s = 0.
+        # NOTE: the upper limit of this sum is taken from Stephens 1965
+        for t in range(int(np.floor(N*(1-D)))+1):
+            term = T(t)*spc.comb(N,t)*(1-D-t/float(N))**(N-t-1)
+            s += term
+        return s
+    else:
+        z = D*np.sqrt(N) 
+        S1 = 0.
+        term_eps = 1e-12
+        abs_eps = 1e-100
+        for m in itertools.count(1):
+            T1 = 2.*(4.*m**2*z**2-1.)*np.exp(-2.*m**2*z**2)
+            so = S1
+            S1 += T1
+            if abs(S1-so)/(abs(S1)+abs(so))<term_eps or abs(S1-so)<abs_eps:
+                break
+        S2 = 0.
+        for m in itertools.count(1):
+            T2 = m**2*(4.*m**2*z**2-3.)*np.exp(-2*m**2*z**2)
+            so = S2
+            S2 += T2
+            if abs(S2-so)/(abs(S2)+abs(so))<term_eps or abs(S1-so)<abs_eps:
+                break
+        return S1 - 8*D/(3.*np.sqrt(N))*S2
+
 #%%
 
-n_neur = 1000
+n_neur = 100
 n_col = 1000
+draws = 50
 
-betas = np.linspace(0.1, 2, 20)
-widths = np.linspace(0.1, 5, 20)
+betas = np.linspace(0.01, 2.0, 20)
+# betas = np.array([0.1, 0.5, 1.0, 2.0])
+kaps = 1/np.linspace(0.01, 5, 10)
+# kaps = 1/np.linspace(0.01, 5, 40)
+# kaps = np.array([0.1, 1, 10, 100])
 
 cols = (2*np.random.rand(n_col)-1)*np.pi
 
-var = np.zeros((len(widths), len(betas)))
-kur = np.zeros((len(widths), len(betas)))
+K = np.zeros((len(kaps), len(betas)))
+Pi = np.zeros((len(kaps), len(betas)))
+# logL = np.zeros((len(kaps), len(betas)))
+KS = np.zeros((len(kaps), len(betas)))
+FP = np.zeros((len(kaps), len(betas)))
 
-for i,width in tqdm(enumerate(widths)):
-    pop = RadialBoyfriend(width)
+
+for i,kap in tqdm(enumerate(kaps)):
+    pop = RadialBoyfriend(1/kap)
     
     for j,beta in enumerate(betas):
         
-        X = pop.sample(cols, n_neur)
+        k = []
+        p = []
+        l = []
+        f = []
+        for it in range(draws):
+            
+            X = pop.sample(cols, n_neur)
+            
+            noise = np.random.randn(*X.shape)*beta
+            idx = np.argmax((X+noise)@X.T, axis=1)
+            err = util.circ_err(cols,cols[idx])
+            
+            vmm = VMM(k=1,pic=0.1, kmax=300)
+            lik = vmm.fit(err, iters=50)
+            samps = vmm.sample(n_col)
+            
+            k.append(vmm.k)
+            p.append(vmm.pic)
+            # l.append(lik[-1])
+            kt = kuiper_two(err, samps)
+            l.append(kt[0])
+            f.append(kt[1])
         
-        noise = np.random.randn(*X.shape)*beta
-        idx = np.argmax((X+noise)@(X).T, axis=1)
-        err = util.circ_err(cols,cols[idx])
-        
-        var[i,j] = np.var(err)
-        kur[i,j] = sts.kurtosis(err)
-        
+        K[i,j] = np.mean(k)
+        Pi[i,j] = np.mean(p)
+        KS[i,j] = np.mean(l)
+        FP[i,j] = np.mean(f)
+
+#%%
+c = np.linspace(-np.pi, np.pi, 100)
+
+pop = RadialBoyfriend(5)
+
+cols = (2*np.random.rand(1000)-1)*np.pi
+
+X = pop.sample(cols, 1000)
+
+ovlp = X@(X+np.random.randn(*X.shape)*5).T
+
+idx = np.argmax(ovlp, axis=0)
+
+err = util.circ_err(cols, cols[idx])
+
+plt.hist(err, density=True, bins=20, histtype='step', linewidth=2)
+
+
 #%%
 
 n_col = 300

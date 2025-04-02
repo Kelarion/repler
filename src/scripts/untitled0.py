@@ -3,7 +3,7 @@ CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
  
 import os, sys, re
 import pickle
-from dataclasses import dataclass, fields, field
+from time import time
 sys.path.append(CODE_DIR)
 
 import torch
@@ -11,50 +11,57 @@ import torch.nn as nn
 import torchvision
 import torch.optim as optim
 import numpy as np
-import matplotlib.pyplot as pl
+import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib import animation as anime
 from mpl_toolkits.mplot3d import Axes3D
 from itertools import permutations, combinations
+import itertools as itt
 from tqdm import tqdm
+
 
 from sklearn import svm, discriminant_analysis, manifold, linear_model
 import scipy.stats as sts
 import scipy.linalg as la
 import scipy.spatial as spt
-import scipy.special as spc
+import scipy.sparse as sprs
 from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
 from sklearn.manifold import MDS
 
 import networkx as nx
-# import pydot 
+# import pydot
 from networkx.drawing.nx_pydot import graphviz_layout
+
+import gensim as gs
+from gensim import models as gmod
+from gensim import downloader as gdl
+
+from nltk.corpus import wordnet as wn # natural language toolkit
 
 # import umap
 from cycler import cycler
-
-from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
-import cvxpy as cvx
-# import polytope as pc
 
 # my code
 import students
 import assistants
 import experiments as exp
-import super_experiments as sxp
 import util
 import pt_util
 import tasks
 import plotting as dicplt
+import dichotomies as dics
 
 import distance_factorization as df
 import df_util
+import df_models as mods
 import bae
 import bae_models
 import bae_util
 
 #%%
+
+
 

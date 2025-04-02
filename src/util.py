@@ -237,16 +237,25 @@ def pca_kernel(K, thrs=None, num_comp=None):
 #     _, evs = pca(X)
 #     return (np.sum(evs, -1)**2)/np.sum(evs**2, -1)
 
-def participation_ratio(X=None, K=None):
+def participation_ratio(X=None, K=None, center=False):
     """ (..., n_feat, n_sample) """
     ## computes in a more numerically stable way
     if X is not None:
-        C = center_kernel(X@X.swapaxes(-1,-2))
+        if center:
+            X_ = X - X.mean(-2, keepdims=True)
+        else:
+            X_ = X
+        C = X_@X_.swapaxes(-1,-2)
+        return (np.sum(X_**2, axis=(-1,-2))**2)/np.sum(C**2, axis=(-1,-2))
+
     elif K is not None:
-        C = center_kernel(K)
+        if center:
+            C_ = center_kernel(K)
+        else:
+            C_ = K
+        return (np.trace(C_, axis1=-2, axis2=-1)**2)/np.sum(C_**2, axis=(-1,-2))
     else:
         raise ValueError('Requires either features (X) or kernel (K)')
-    return (np.trace(C, axis1=-2, axis2=-1)**2)/np.sum(C**2, axis=(-1,-2))
 
 def sample_normalize(data, sigma, eps=1e-10):
     """ 
@@ -599,23 +608,11 @@ def distance_correlation(x=None, y=None, dist_x=None, dist_y=None):
     V_y = distance_covariance(y, y, dist_y, dist_y)
 
     return V_xy/np.where(V_x*V_y>0, np.sqrt(V_x*V_y), 1e-12)
-    # print([V_x, V_y, V_xy])
-    # sing = V_x*V_y > 0
-    # return sing*V_xy/(np.sqrt(V_x*V_y)+1e-30)
-    # if 0 in [V_x, V_y]:
-        # return 0
-    # else:
-        # return np.sqrt(V_xy/np.sqrt(V_x*V_y))
-        # return V_xy/np.sqrt(V_x*V_y)
 
 def partial_distance_correlation(x=None, y=None, z=None, dist_x=None, dist_y=None, dist_z=None):
     R_xy = distance_correlation(x, y, dist_x=dist_x, dist_y=dist_y)
     R_xz = distance_correlation(x, z, dist_x=dist_x, dist_y=dist_z)
     R_yz = distance_correlation(y, z, dist_x=dist_y, dist_y=dist_z)
-
-    # print(R_xy)
-    # print(R_xz)
-    # print(R_yz)
 
     sing = (((R_xz**2) > 1-1e-12)+((R_yz**2) > 1-1e-12))
     return np.where(sing, 0, (R_xy - R_xz*R_yz)/np.sqrt((1-R_xz**2)*(1-R_yz**2)))
@@ -824,6 +821,18 @@ def outers(V):
     Compute outer products of columns of V
     """
     return np.einsum('...ik,...jk->...kij', V, V)
+
+def const(v, d=None):
+    """
+    Return a matrix with d columns that are all v 
+
+    shorthand for v[:,None]*np.ones((1,d)) 
+
+    default for d is len(v)
+    """
+    if d is None:
+        d = len(v)
+    return v[:,None]*np.ones((1,d)) 
 
 
 def spouters(i, j, v=None, incl_diag=True, shape=None):
@@ -1336,7 +1345,10 @@ def hamming(A, B=None):
     if B is None:
         B = A
 
-    return A.sum(0)[:,None] + B.sum(0)[None,:] - 2*A.T@B
+    Asum = A.sum(-2,keepdims=True)
+    Bsum = B.sum(-2,keepdims=True)
+
+    return Asum.swapaxes(-1,-2) + Bsum - 2*A.swapaxes(-1,-2)@B
 
 def rangediff(N, vals):
     """
@@ -2254,7 +2266,7 @@ def random_basis(dim):
 #     d = (binary*(base**np.arange(binary.shape[1]))[None,:]).sum(1)
 #     return d
 
-def group_sum(X, groups, axis=-1, **mean_args):
+def group_sum(X, groups, axis=-1):
     """
     Take the group-wise sum of X along axis
 
@@ -2263,19 +2275,22 @@ def group_sum(X, groups, axis=-1, **mean_args):
     
     returns array of shape (X.shape[:axis:], len(unique(groups)) )
     """
+    
+    ## Organize info
+    grps, inv = np.unique(groups, return_inverse=True)
+    shp = list(X.shape)
+    shp[axis] = len(grps)
 
-    idx = np.argsort(groups)
-    grps, counts = np.unique(groups, return_counts=True)
-    averager = np.repeat(np.eye(len(grps)), counts, axis=1)
+    ## Prepare output
+    Xavg = np.zeros(shp)
+    Xavg = np.swapaxes(Xavg, 0, axis)
 
-    X_swapped = X.swapaxes(axis, 0)
-    X_sorted = X_swapped[idx]
+    ## Use magical function `at'
+    np.add.at(Xavg, inv, np.swapaxes(X, 0, axis))
 
-    X_avg = averager@X_sorted
+    return np.swapaxes(Xavg, 0, axis)
 
-    return X_avg.swapaxes(axis, 0)
-
-def group_mean(X, groups, axis=-1, **mean_args):
+def group_mean(X, groups, axis=-1):
     """
     Take the group-wise mean of X along axis
 
@@ -2285,16 +2300,20 @@ def group_mean(X, groups, axis=-1, **mean_args):
     returns array of shape (X.shape[:axis:], len(unique(groups)) )
     """
 
-    idx = np.argsort(groups)
-    grps, counts = np.unique(groups, return_counts=True)
-    averager = np.repeat(np.eye(len(grps))/counts, counts, axis=1)
+    ## Organize info
+    grps, inv, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    shp = list(X.shape)
+    shp[axis] = len(grps)
 
-    X_swapped = X.swapaxes(axis, 0)
-    X_sorted = X_swapped[idx]
+    ## Prepare output
+    Xavg = np.zeros(shp)
+    Xavg = np.swapaxes(Xavg, 0, axis)
 
-    X_avg = averager@X_sorted
+    ## Use magical function `at'
+    np.add.at(Xavg, inv, np.swapaxes(X, 0, axis))
+    Xavg = Xavg/counts[:,*([None]*(len(shp)-1))]
 
-    return X_avg.swapaxes(axis, 0)
+    return np.swapaxes(Xavg, 0, axis)
 
 def mask_mean(X, mask, axis=-1, **mean_args):
     """Take the mean of X along axis, but exluding particular elements"""
