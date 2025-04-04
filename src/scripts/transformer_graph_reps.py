@@ -34,7 +34,6 @@ from scipy.optimize import linprog as lp
 from sklearn.manifold import MDS
 
 import networkx as nx
-# import pydot
 from networkx.drawing.nx_pydot import graphviz_layout
 
 # import gensim as gs
@@ -158,8 +157,8 @@ class ICLAR(sxp.Task):
 
 #%% 
 
-model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device=device)
-# model = HookedTransformer.from_pretrained('gpt2-medium', device=device)
+# model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device=device)
+model = HookedTransformer.from_pretrained('gpt2-medium', device=device)
 
 vocab = []
 tokens = []
@@ -179,8 +178,8 @@ num_ctx = 90
 ctx_len = 500
 prepend_bos = False
 
-B = df_util.cyclecats(3) 
-# B = df_util.gridcats(2)
+# B = df_util.cyclecats(4)
+B = df_util.gridcats(4)
 A = df_util.adj(B)
 G = nx.Graph(df_util.adj(B))
 T = len(G.nodes)
@@ -213,7 +212,7 @@ Z = np.array(Z)
 
 probs = np.exp(L)/np.exp(L).sum(-1, keepdims=True)
 n,t,x = np.where(A[data['X']]) # adjacent tokens for each time and sequence
-acc = util.group_mean(probs[n,t,x], t)
+acc = util.group_sum(probs[n,t,x], t)/num_ctx
 plt.plot(acc)
 
 #%%
