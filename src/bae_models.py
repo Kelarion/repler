@@ -442,7 +442,7 @@ class BAE(students.NeuralNet):
         return self.p((torch.sign(self.q(X))+1)/2)
     
     def hidden(self, X):
-        return torch.sigmoid(self.q(X))
+        return (1+torch.sign(self.q(X)))/2
 
     def metrics(self, dl):
         pass
@@ -513,9 +513,9 @@ class BinaryAutoencoder(BAE):
     Most general BAE, without constraints on the readout weights
     """
 
-    tree_reg: float = 1e-2
+    tree_reg: float = 0
     sparse_reg: float = 1e-2
-    weight_reg: float = 0.1
+    weight_reg: float = 1e-2
 
     def metrics(self, dl):
 

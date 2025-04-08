@@ -11,31 +11,64 @@ import torch.optim as optim
 
 #%%
 
-def inc(S):
-    """
-    Given the binary embedding of a partial cube, return the incidence 
-    """
-    
-    dif = S[None] - S[:,None]
-    dif *= (np.abs(dif).sum(-1,keepdims=True)==1)
-    
-    return dif.sum(1)
+# S = df_util.allpaths(df_util.randtree_feats(8,2,4))[1]
+# S = df_util.cyclecats(7)
+S = df_util.gridcats(5)
 
-def sadj(S):
-    """
-    Given the binary embedding of a partial cube, find the adjacency 
-    structure of the set elements
-    """
-    
-    n,k = S.shape
-    
-    I = 2*inc(S)
-    S_ = np.hstack([S, np.ones((n,1))])
-    
-    A = la.pinv(2*S_-1)@I
-    adj = (A[:-1]+np.eye(k))
-    
-    return 2*adj, A[-1] - adj.sum(0) 
+k = S.shape[1]
+Sall = util.F2(k)
+is_attr = df_util.minham(S.T, Sall.T) == 0
+
+I = 1.0*df_util.inc(S)
+
+R = -I.T@I
+R /= (-R[0,0]/2)
+
+r = R@S.mean(0)
+
+dA = []
+for s in Sall[~is_attr]:
+    samps = df_util.walk(2*(R+np.eye(k)), -2*r-1, s)
+    dA.append(df_util.minham(S.T, samps.T))
+    plt.plot(dA[-1])
+    plt.xticks(ticks=np.arange(len(samps)-1,step=k),labels=np.arange(len(samps)//k))
+
+
+#%%
+
+@dataclass
+class Bernardi(sxp.Task):
+
+    num_trials: int
+    trials_per_context: int
+    samps: int
+
+    def sample(self):
+
+        num_ctx = self.num_trials//self.trials_per_context
+
+        A1 = np.array([1,0,1,0]) # action
+        R1 = np.array([1,1,0,0]) # reward
+
+        A = np.concatenate([A1, np.roll(A1,1)])
+        R = np.concatenate([R1, np.roll(R1,1)])
+
+        X = []
+        Y = []
+        for i in range(self.samps):
+
+            s = np.random.choice(range(4), self.num_trials)
+            c = np.tile(np.repeat([0,1], self.trials_per_context), num_ctx//2)
+
+            a = A[s+4*c] + 8
+            r = R[s+4*c] + 10
+
+            stim = np.array([s,a,r]).T.flatten()
+            X.append(stim)
+            Y.append([c,a,r])
+        
+        return {'X':X, 'Y':Y}
+
 
 #%%
 

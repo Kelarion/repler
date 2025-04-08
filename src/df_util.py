@@ -137,6 +137,27 @@ def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, W_lr=1e-2, b_lr=1e-2):
 
     return W, b
 
+def minham(S, Z):
+    """
+    Compute the hamming distance between S and Z
+
+    Assumes that S and Z are sign matrices, i.e. +/- 1
+
+    S is (num_item, num_S_features)
+    Z is (num_item, num_Z_features)
+
+    outputs an (num_S_features,)-sized vector of hamming distances
+    """
+
+    if np.all(np.abs(S**2 - S) < 1e-6):
+        S = 2*S-1
+    if np.all(np.abs(Z**2 - Z) < 1e-6):
+        Z = 2*Z-1
+
+    dH = S.T@Z
+
+    return len(S) - dH.max(0)
+
 def permham(S, Z):
     """
     Compute the permutation-invariant hamming distance between S and Z
@@ -500,15 +521,15 @@ class NMF:
                 self.Z[i] = nnls(self.W, X[i])[0]
 
         ## Update W
-        if (self.wl2 <= 1e-6) and (self.wpr <= 1e-6): 
+        if (self.wl2 <= 1e-6) and (self.wpr <= 1e-6): ## linear regression
             self.W = la.pinv(self.Z)@X
 
-        elif self.wpr <= 1e-6:
+        elif self.wpr <= 1e-6: ## ridge regression
             U,s,V = la.svd(self.Z, full_matrices=False)
             shat = s/(s**2 + self.wl2**2)
             self.W = X.T@U@np.diag(shat)@V
 
-        else:
+        else: ## gradient descent
             WTW = self.W.T@self.W
             dXhat = (X - Z@self.W.T)
             # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
@@ -1507,7 +1528,7 @@ def adj(S):
     return (np.abs(dif).sum(-1)==1)*1
 
 
-def walk(A, a, s, steps=10):
+def walk(A, a, s, steps=10, only_unique=False):
 
     K = len(A)
 
@@ -1515,11 +1536,12 @@ def walk(A, a, s, steps=10):
     for it in range(steps):
         for k in np.random.permutation(range(K)):
             newsk = (np.sign(A[k]@s + a[k])+1)//2
-            if newsk != s[k]:
+            if (newsk != s[k]) or (not only_unique):
                 s[k] = newsk
                 samps.append(1*s)
 
     return np.array(samps)
+
 
 def path(S, i, j):
 

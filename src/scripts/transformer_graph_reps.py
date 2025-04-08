@@ -57,14 +57,16 @@ import plotting as tpl
 from cycler import cycler
 import linecache
 
-import transformer_lens as tfl
-import transformer_lens.utils as tfl_utils
-from transformer_lens.hook_points import (
-    HookPoint,
-)  # Hooking utilities
-from transformer_lens import HookedTransformer, FactoredMatrix
+import nnsight
 
-device = tfl_utils.get_device()
+# import transformer_lens as tfl
+# import transformer_lens.utils as tfl_utils
+# from transformer_lens.hook_points import (
+#     HookPoint,
+# )  # Hooking utilities
+# from transformer_lens import HookedTransformer, FactoredMatrix
+
+# device = tfl_utils.get_device()
 torch.set_grad_enabled(False)
 
 #%%
@@ -155,22 +157,80 @@ class ICLAR(sxp.Task):
         return G.edges, list(E_test)
         
 
+@dataclass
+class Bernardi(sxp.Task):
+
+    num_trials: int
+    trials_per_context: int
+    samps: int
+
+    def sample(self):
+
+        num_ctx = self.num_trials//self.trials_per_context
+
+        A1 = np.array([1,0,1,0]) # action
+        R1 = np.array([1,1,0,0]) # reward
+
+        A = np.concatenate([A1, np.roll(A1,1)])
+        R = np.concatenate([R1, np.roll(R1,1)])
+
+        X = []
+        Y = []
+        for i in range(self.samps):
+
+            s = np.random.choice(range(4), self.num_trials)
+            c = np.tile(np.repeat([0,1], self.trials_per_context), num_ctx//2)
+
+            a = A[s+4*c] + 8
+            r = R[s+4*c] + 10
+
+            stim = np.array([s,a,r]).T.flatten()
+            X.append(stim)
+            Y.append([c,a,r])
+        
+        return {'X':X, 'Y':Y}
+
+#%%
+
+from nnsight import CONFIG
+
+CONFIG.API.APIKEY = input("Enter your API key: ")
+# clear_output()
+
+#%%
+
+from nnsight import LanguageModel
+
+# don't worry, this won't load locally!
+llm = LanguageModel("meta-llama/Meta-Llama-3.1-70B", device_map="auto")
+
+print(llm)
+
+#%%
+
+with llm.trace("The Eiffel Tower is in the city of", remote=True):
+
+    # user-defined code to access internal model components
+    hidden_states = llm.model.layers[-1].output[0].save()
+    output = llm.output.save()
+
+
 #%% 
 
-# model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device=device)
-model = HookedTransformer.from_pretrained('gpt2-medium', device=device)
+# # model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device=device)
+# model = HookedTransformer.from_pretrained('gpt2-medium', device=device)
 
-vocab = []
-tokens = []
-lines = linecache.getlines(SAVE_DIR+'top-1000-nouns.txt')
-for line in lines:
-    word = line.split('\n')[0]
-    toks = model.to_str_tokens(word, prepend_bos=False)
-    if len(toks) == 1:
-        vocab.append(toks[0])
-        tokens.append(model.to_single_token(toks[0]))
+# vocab = []
+# tokens = []
+# lines = linecache.getlines(SAVE_DIR+'top-1000-nouns.txt')
+# for line in lines:
+#     word = line.split('\n')[0]
+#     toks = model.to_str_tokens(word, prepend_bos=False)
+#     if len(toks) == 1:
+#         vocab.append(toks[0])
+#         tokens.append(model.to_single_token(toks[0]))
 
-tokens = np.array(tokens)
+# tokens = np.array(tokens)
 
 #%%
 

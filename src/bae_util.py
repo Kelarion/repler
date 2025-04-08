@@ -54,18 +54,18 @@ class Neal:
             pbar = tqdm(range(max_iter))
 
         en = []
-        mets = []
+        # mets = []
         model.initialize(*data, **opt_args)
         for it in range(max_iter):
             T = self.initial*(self.decay_rate**(it//self.period))
             model.temp = T
             en.append(model.grad_step(*data))
-            mets.append(model.metrics(*data))
+            # mets.append(model.metrics(*data))
 
             if verbose:
                 pbar.update(1)
 
-        return en, mets
+        return en # , mets
 
     def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=False , 
         draws=10, folds=10, **opt_args):

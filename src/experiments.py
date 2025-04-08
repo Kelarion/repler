@@ -37,63 +37,66 @@ import distance_factorization as df
 import df_util
 import sparse_autoencoder as spae
 import bae
+import bae_models
+import bae_util
 
 #############################################################################
 ################## Models for server interface ##############################
 #############################################################################
 
-@dataclass
-class SBMF(exp.Model):
+# @dataclass
+# class SBMF(exp.Model):
 
-    beta: float 
-    eps: float
-    br: int
-    tol: float
-    pimin: float
-    reg: str = 'sparse'
-    order: str = 'ball'
+#     beta: float 
+#     eps: float
+#     br: int
+#     tol: float
+#     pimin: float
+#     reg: str = 'sparse'
+#     order: str = 'ball'
 
-    def fit(self, K, Strue):
+#     def fit(self, K, Strue):
 
-        self.metrics = {'loss':[],
-                        'mean_hamming':[],
-                        'median_hamming':[],
-                        'weighted_hamming':[],
-                        'time':[]}
+#         self.metrics = {'loss':[],
+#                         'mean_hamming':[],
+#                         'median_hamming':[],
+#                         'weighted_hamming':[],
+#                         'time':[]}
 
-        for it in range(len(K)):
+#         for it in range(len(K)):
 
-            t0 = time()
-            S, pi = df.cuts(K[it], 
-                            branches=self.br, eps=self.eps, beta=self.beta, 
-                            order=self.order, tol=self.tol, pimin=self.pimin,
-                            reg = self.reg, rmax=2*len(K[it]))
-            self.metrics['time'].append(time()-t0)
+#             t0 = time()
+#             S, pi = df.cuts(K[it], 
+#                             branches=self.br, eps=self.eps, beta=self.beta, 
+#                             order=self.order, tol=self.tol, pimin=self.pimin,
+#                             reg = self.reg, rmax=2*len(K[it]))
+#             self.metrics['time'].append(time()-t0)
 
-            S = S.toarray()
-            bestS, bestpi = df_util.mindist(K[it], S, beta=1e-5)
+#             S = S.toarray()
+#             bestS, bestpi = df_util.mindist(K[it], S, beta=1e-5)
 
-            nrm = np.sum(util.center(K[it])**2)
-            ls = util.centered_kernel_alignment(K[it], bestS@np.diag(bestpi)@bestS.T)
-            ham = len(bestS) - (np.abs((2*S-1).T@Strue[it]).max(0))
-            w = np.min([(Strue[it]>0).sum(0), (Strue[it]<0).sum(0)], axis=0)
+#             nrm = np.sum(util.center(K[it])**2)
+#             ls = util.centered_kernel_alignment(K[it], bestS@np.diag(bestpi)@bestS.T)
+#             ham = len(bestS) - (np.abs((2*S-1).T@Strue[it]).max(0))
+#             w = np.min([(Strue[it]>0).sum(0), (Strue[it]<0).sum(0)], axis=0)
 
-            self.metrics['loss'].append(ls)
-            self.metrics['mean_hamming'].append(np.mean(ham))
-            self.metrics['median_hamming'].append(np.median(ham))
-            self.metrics['weighted_hamming'].append(ham@w/np.sum(w))
+#             self.metrics['loss'].append(ls)
+#             self.metrics['mean_hamming'].append(np.mean(ham))
+#             self.metrics['median_hamming'].append(np.median(ham))
+#             self.metrics['weighted_hamming'].append(ham@w/np.sum(w))
 
 @dataclass
 class BAE(exp.Model):
 
-    dim_hid: int
-    max_iter: int = 100
-    eps: float = 1e-5
-    tol: float = 1e-2
-    lr: float = 0.0
-    beta: float = 5 
-    alpha: float = 0.88
-    whiten: bool = True
+    dim_hid: int = None
+    search: bool = True     # whether to include discrete search
+    tree_reg: float = 0
+    sparse_reg: float = 1e-2
+    pr_reg: float = 1e-2
+    max_iter: int = None
+    epochs: int = 10
+    decay_rate: float = 0.88
+    T0: float = 5
 
     def fit(self, X, Strue):
 
@@ -106,41 +109,61 @@ class BAE(exp.Model):
 
             K = X[it]@X[it].T
 
-            mod = util.BAE(K, self.eps, rmax=len(Strue[it].T), whiten=self.whiten)
+            if self.dim_hid is None:
+                h = len(Strue[it].T)
+            else:
+                h = self.dim_hid
+
+            if self.search:
+                mod = bae_models.BinaryAutoencoder(
+                            dim_inp=X[it].shape[1], 
+                            dim_hid=h,
+                            tree_reg=self.tree_reg, 
+                            sparse_reg=self.sparse_reg, 
+                            weight_reg=self.pr_reg,
+                            )
+            else:
+                mod = bae_models.BernVAE(
+                            dim_inp=X[it].shape[1], 
+                            dim_hid=h,
+                            weight_reg=self.pr_reg
+                            )
+
+            neal = bae_util.Neal(decay_rate=self.decay_rate, 
+                period=self.epochs, 
+                initial=self.T0)
+
+            dl = pt_util.batch_data(torch.FloatTensor(X[it]))
 
             t0 = time()
-            S, _ = mod.fit(self.dim_hid, max_iter=self.max_iter, 
-                tol=self.tol, lr=self.lr, alpha=self.alpha, beta=self.beta)
+            en = neal.fit(mod, dl, max_iter=self.max_iter)
             self.metrics['time'].append(time()-t0)
 
-            bestS, bestpi = df_util.mindist(K, S)
+            S = mod.hidden(torch.FloatTensor(X[it])).detach().numpy()
 
             nrm = np.sum(util.center(K)**2)
-            # ls = util.centered_distance(K, bestS@np.diag(bestpi)@bestS.T)/nrm
-            ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            ham = len(bestS) - (np.abs(S.T@Strue[it]).max(0))
+            ls = util.centered_kernel_alignment(K, S@S.T)
+            mat_ham = df_util.permham(Strue[it], S)
 
             self.metrics['loss'].append(ls)
-            self.metrics['mean_hamming'].append(np.mean(ham))
-            self.metrics['median_hamming'].append(np.median(ham))
+            self.metrics['mean_hamming'].append(np.mean(mat_ham))
+            self.metrics['median_hamming'].append(np.median(mat_ham))
 
 @dataclass
-class BAER(exp.Model):
+class KBMF(exp.Model):
 
     dim_hid: int = None
     steps: int = 1
-    max_iter: int = 100
     decay_rate: float = 0.8
     T0: float = 5
     period: int = 2
-    rank: int = None
-    penalty: float = 1e-2
+    tree_reg: float = 1e-2
+    max_iter: int = None
 
     def fit(self, X, Strue):
 
         self.metrics = {'loss':[],
-                        'mean_hamming':[],
-                        'median_hamming':[],
+                        'nbs':[],
                         'mean_mat_ham':[],
                         'median_mat_ham':[],
                         'mean_norm_ham': [],
@@ -150,38 +173,40 @@ class BAER(exp.Model):
 
             K = X[it]@X[it].T
 
-            if self.rank is None:
-                r = len(Strue[it].T)
-            else:
-                r = self.rank
             if self.dim_hid is None:
-                h = r
+                h = len(Strue[it].T)
             else:
                 h = self.dim_hid
 
-            mod = bae.KernelBAE(X[it], h, rank=r, 
-                steps=self.steps, penalty=self.penalty)
-
-            mod.init_optimizer(decay_rate=self.decay_rate,
-                period=self.period,
+            # mod = bae.KernelBAE(X[it], h, rank=r, 
+            #     steps=self.steps, penalty=self.penalty)
+            mod = bae_models.KernelBMF(h, penalty=self.tree_reg)
+            neal = bae_util.Neal(decay_rate=self.decay_rate, 
+                period=self.period, 
                 initial=self.T0)
 
+            # mod.init_optimizer(decay_rate=self.decay_rate,
+            #     period=self.period,
+            #     initial=self.T0)
+
             t0 = time()
-            for i in range(self.max_iter):
-                mod.proj()
-                mod.grad_step()
+            en = neal.fit(mod, X[it], max_iter=self.max_iter)
+            # for i in range(self.max_iter):
+            #     mod.proj()
+            #     mod.grad_step()
 
             self.metrics['time'].append(time()-t0)
 
-            S = mod.S.todense()
+            # S = mod.S.todense()
+            S = mod.S
 
             # bestS, bestpi = df_util.mindistX(X[it], S)
 
             nrm = np.sum(util.center(K)**2)
             # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
+            # ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
             cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
-            mat_ham = df_util.permham(Strue[it], 2*S-1)
+            mat_ham = df_util.permham(Strue[it], S)
             norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
             nbs = util.nbs(X[it], mod.S)
 
@@ -190,25 +215,23 @@ class BAER(exp.Model):
             self.metrics['median_mat_ham'].append(np.median(mat_ham))
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
-            self.metrics['mean_hamming'].append(np.mean(ham))
-            self.metrics['median_hamming'].append(np.median(ham))
 
 @dataclass
-class FFBAE(exp.Model):
+class SBMF(exp.Model):
 
     dim_hid: int = None
-    max_iter: int = 100
+    ortho: bool = True
     decay_rate: float = 0.8
     T0: float = 5
     period: int = 2
-    rank: int = None
-    penalty: float = 1
+    sparse_reg: float = 1e-2
+    tree_reg: float = 0
+    pr_reg: float = 1e-2
+    max_iter: int = None
 
     def fit(self, X, Strue):
 
         self.metrics = {'loss':[],
-                        'mean_hamming':[],
-                        'median_hamming':[],
                         'mean_mat_ham':[],
                         'median_mat_ham':[],
                         'mean_norm_ham': [],
@@ -219,46 +242,50 @@ class FFBAE(exp.Model):
 
             K = X[it]@X[it].T
 
-            if self.rank is None:
-                r = len(Strue[it].T)
-            else:
-                r = self.rank
             if self.dim_hid is None:
-                h = r
+                h = len(Strue[it].T)
             else:
                 h = self.dim_hid
 
-            mod = bae.BAE(X[it], h, rank=r, penalty=self.penalty)
+            if self.ortho:
+                mod = bae_models.BiPCA(h, 
+                        sparse_reg=self.sparse_reg, 
+                        tree_reg=self.tree_reg)
+            else:
+                mod = bae_models.SemiBMF(h, 
+                        tree_reg=self.tree_reg,
+                        weight_reg=self.pr_reg)
 
-            mod.init_optimizer(decay_rate=self.decay_rate,
-                period=self.period,
+            neal = bae_util.Neal(decay_rate=self.decay_rate, 
+                period=self.period, 
                 initial=self.T0)
 
+            # mod.init_optimizer(decay_rate=self.decay_rate,
+            #     period=self.period,
+            #     initial=self.T0)
+
             t0 = time()
-            for i in range(self.max_iter):
-                mod.grad_step()
+            en = neal.fit(mod, X[it], max_iter=self.max_iter)
 
             self.metrics['time'].append(time()-t0)
 
-            S = mod.S.todense()
+            S = mod.S
 
             # bestS, bestpi = df_util.mindistX(X[it], S)
 
             nrm = np.sum(util.center(K)**2)
             # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            ham = len(K) - (np.abs((2*S-1).T@(2*Strue[it]-1)).max(0))
+            # ham = len(K) - (np.abs((2*S-1).T@(2*Strue[it]-1)).max(0))
             cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
             nbs = util.nbs(S, Strue[it])
-            mat_ham = df_util.permham(2*Strue[it]-1, 2*S-1)
+            mat_ham = df_util.permham(Strue[it], S)
             norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
 
             self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
-            self.metrics['mean_mat_ham'].append(mat_ham)
+            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
             self.metrics['median_mat_ham'].append(np.median(mat_ham))
-            self.metrics['loss'].append(mod.energy())
+            self.metrics['loss'].append(mod.loss(X[it]))
             self.metrics['nbs'].append(nbs)
-            self.metrics['mean_hamming'].append(np.mean(ham))
-            self.metrics['median_hamming'].append(np.median(ham))
 
 
 @dataclass

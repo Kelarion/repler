@@ -91,10 +91,10 @@ def path2root(path, word):
     return path
 
 #%%
-maxwords = 5000
-# root = 'abstraction.n.06'
+maxwords = 10000
+root = 'abstraction.n.06'
 # root = 'group.n.01'
-root = 'person.n.01'
+# root = 'person.n.01'
 
 words = [getword(root)]
 isleaf = [False]
@@ -156,13 +156,26 @@ kqmw = [words.index('king'),
 # # S = np.unique(S*S[[0]], axis=1)
 # # S = S[:,np.abs(S.sum(0))<len(vecs)]
 
-mod2 = bae_models.BiPCA(300, center=False)
+S = []
+for _ in range(20):
+    mod2 = bae_models.BiPCA(300, center=False, sparse_reg=1e-2)
+    # mod = bae_models.KernelBMF(300, penalty=1e-2, scale_lr=1)
+    
+    neal = bae_util.Neal(decay_rate=0.95, period=5)
+    en = neal.fit(mod2, vecs)
+    
+    S.append(np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1))
+    # S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
+# S, pi = df_util.mindistX(vecs, S, beta=1e-6, nonzero=False)
 
-neal = bae_util.Neal(decay_rate=0.95, period=5)
-en = neal.fit(mod2, vecs)
+# mod = bae_models.BinaryAutoencoder(600, 300, 
+#                                    tree_reg=0, 
+#                                    sparse_reg=1e-2, 
+#                                    weight_reg=1e-3)
+# dl = pt_util.batch_data(torch.FloatTensor(vecs), batch_size=4096)
+# neal = bae_util.Neal(decay_rate=0.95, period=5)
 
-S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
-S, pi = df_util.mindistX(vecs, S, beta=1e-6, nonzero=False)
+# en = neal.fit(mod, dl, T_min=1e-6)
 
 #%% Local Structure
 

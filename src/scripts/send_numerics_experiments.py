@@ -19,9 +19,9 @@ import super_experiments as sxp
 import experiments as exp
 import server_utils as su
 
-import distance_factorization as df
-import df_util
-import df_models
+import bae
+import bae_util
+import bae_models
 
 
 ####################################
@@ -98,6 +98,7 @@ task_args = {'task': exp.SchurCategories,
              'orth': True,
              'scl': 1e-3
              }
+
 # N = su.Set(2**np.arange(4,11))
 # task_args = {'task': exp.HierarchicalCategories,
 #              'samps': 2,
@@ -121,51 +122,37 @@ task_args = {'task': exp.SchurCategories,
 #              'orth': True
 #              }
 
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 200,
-#             'decay_rate': 0.8,
-#             'T0': 5,
-#             'period': 2,
-#             'penalty': 1e-2,
-#             'dim_hid':su.Set([None, 3000])
-#             }
-# mod_args = {'model': exp.BernVAE,
-#             'dim_hid': su.Set([None, 3000]),
-#             'steps': 200,
-#             'temp': 2/3,
-#             'alpha': 1,
-#             'beta': su.Set([0,1]), 
-#             'period': 10,
-#             'scale': 0.5
+# mod_args = {'model': exp.SBMF,
+#             'ortho': True,
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter': (100, None),
+#             'sparse_reg': su.Set([0, 1e-2, 1e-1]),
+#             'tree_reg': su.Set([0, 1e-2]),
+#             # 'pr_reg': su.Set([0, 1e-2]),
+#             'period': 2
 #             }
 
-# task_args = {'task': exp.SchurCategories,
-#              'samps': 6,
-#              'seed': 1,
-#              'N': 16,
-#              'p':0.5,
-#              'snr': su.Set([30]),
-#              'dim': 200,
-#              'orth': True,
-#              'scl': 1e-3
-#              }
-
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 100,
-#             'decay_rate': 0.8,
-#             'T0': 10,
-#             'period': 5,
-#             'penalty':1e-2
+# mod_args = {'model': exp.KBMF,
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter': (100, None),
+#             'tree_reg': su.Set([0, 1e-2]),
+#             'period': 2
 #             }
 
-mod_args = {'model': exp.AsymBAE,
-            'max_iter':(50,100,500),
-            'decay_rate':(1, 0.8, 0.95),
-            'T0':(1e-6, 5, 5),
-            'period':1,
-            'penalty': su.Set([0,1]),
+mod_args = {'model': exp.BAE,
+            'search': su.Set([True, False]),
+            'decay_rate': (1, 0.9),
+            'T0': (1e-6, 5),
+            'max_iter':(100, None),
+            'pr_reg': su.Set([0, 1e-2]),
+            'tree_reg': 0,
+            'epochs': 10,
             }
 
 ### magic
 ##############################
 su.send_to_server(task_args, mod_args, send_remotely, verbose=True)
+
+

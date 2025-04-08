@@ -226,6 +226,7 @@ class SynProbe(sxp.Model):
                                                          mode='min', 
                                                          factor=0.1, 
                                                          patience=0)
+        
         for t in tqdm(range(self.max_iter)):
             ls = mod.grad_step(dl)
             self.metrics['loss'].append(ls)
