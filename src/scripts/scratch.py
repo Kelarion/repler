@@ -13,7 +13,7 @@ import torch.optim as optim
 
 # S = df_util.allpaths(df_util.randtree_feats(8,2,4))[1]
 # S = df_util.cyclecats(7)
-S = df_util.gridcats(5)
+S = df_util.gridcats(3, 3)
 
 k = S.shape[1]
 Sall = util.F2(k)
@@ -115,6 +115,39 @@ plt.scatter(xhat[0][deez], xhat[1][deez])
 plt.scatter(x[0], x[1],  s=500, marker='*')
 plt.scatter(np.cos(phi), np.sin(phi))
 tpl.square_axis()
+
+#%%
+
+theta = 0
+# noise_angle = np.pi/2
+noise_angle = -np.pi/4
+
+x = np.array([np.cos(theta),np.sin(theta)])
+eps = np.array([np.cos(noise_angle),np.sin(noise_angle)])
+
+these_rho = np.linspace(-10,10,100)
+
+xhats = []
+err = []
+for rho in these_rho:
+    xhat = (x+rho*eps)/la.norm(x+rho*eps)
+    thhat = np.arctan2(xhat[1], xhat[0])
+    # err.append(np.arccos(np.cos(thhat-theta))**2)
+    err.append(thhat**2)
+    xhats.append(xhat)
+xhats = np.array(xhats)
+err = np.array(err)
+
+plt.subplot(1,2,1)
+circ = np.linspace(-np.pi, np.pi, 100)
+plt.plot(np.sin(circ), np.cos(circ))
+plt.scatter(x[0], x[1], s=500, marker='*', zorder=10)
+plt.scatter(xhats[:,0],xhats[:,1])
+plt.plot(x[0] + np.linspace(-2,2,100)*eps[0], x[1]+ np.linspace(-2,2,100)*eps[1], 'k--')
+
+plt.subplot(1,2,2)
+plt.plot(these_rho,err)
+plt.plot(these_rho, np.arctan(these_rho*np.sin(noise_angle)/(1+these_rho*np.cos(noise_angle)))**2)
 
 #%%
 from scipy.optimize import root_scalar

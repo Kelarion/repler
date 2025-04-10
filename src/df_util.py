@@ -395,21 +395,21 @@ def cyclecats(N):
     """
     return np.array([np.roll(1*(np.arange(2*N) < N), i) for i in range(N)]).T
 
-def gridcats(N, M=None):
+def gridcats(N, d=2):
     """
-    Binary features of an NxN grid
+    Binary features of an NxNx...xN grid
     """
-    if M is None:
-        M = N
-    gr1 = np.arange(N)
-    gr2 = np.arange(M)
 
-    x,y = np.meshgrid(gr1,gr2)
-    x = x.flatten()
-    y = y.flatten()
-    Sx = np.stack([1*(x<=i) for i in range(N-1)])
-    Sy = np.stack([1*(y<=i) for i in range(M-1)])
-    return np.vstack([Sx, Sy]).T
+    gr1 = np.arange(N)
+
+    X = np.meshgrid(*((gr1,)*d))
+
+    return np.vstack([np.stack([1*(x.flatten()<=i) for i in range(N-1)]) for x in X]).T
+    # x = x.flatten()
+    # y = y.flatten()
+    # Sx = np.stack([1*(x<=i) for i in range(N-1)])
+    # Sy = np.stack([1*(y<=i) for i in range(M-1)])
+    # return np.vstack([Sx, Sy]).T
 
 def grid_feats(N, M=None):
     """

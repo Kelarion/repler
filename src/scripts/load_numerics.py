@@ -94,121 +94,67 @@ import df_models
 #              'orth': True,
 #              'scl': 1e-3
 #              }
-N = su.Set(2**np.arange(4,12))
-task_args = {'task': exp.SchurCategories,
-             'samps': 2,
-             'seed': su.Set([0,1,2]),
-             'N': N,
-             'p':0.5,
-             'snr': 0 << su.Real(num=6) << 30,
+# N = su.Set(2**np.arange(4,12))
+# task_args = {'task': exp.SchurCategories,
+#              'samps': 6,
+#              'seed': 1,
+#              'N': N,
+#              'p':0.5,
+#              'snr': 0 << su.Real(num=6) << 30,
+#              'dim': 200,
+#              'orth': True,
+#              'scl': 1e-3
+#              }
+
+# b = su.Set(np.arange(4,12))
+# task_args = {'task': exp.CubeCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'bits': b,
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': 200,
+#              'orth': True,
+#              }
+
+task_args = {'task': exp.GridCategories,
+             'samps': 12,
+             'seed': 0,
+             'bits': su.Set([2,3,4]),
+             'values': su.Set([3,4,5]),
+             'snr': 0 << su.Real(num=3) << 30,
              'dim': 200,
              'orth': True,
-             'scl': 1e-3
              }
 
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 200,
-#             'decay_rate': su.Set([0.8,0.9]),
-#             'T0': su.Set([5,10]),
-#             'period': su.Set([1,2]),
-#             'penalty': 1e-2
+
+# mod_args = {'model': exp.SBMF,
+#             'ortho': True,
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter': (100, None),
+#             'sparse_reg': su.Set([0, 1e-2, 1e-1]),
+#             'tree_reg': su.Set([0, 1e-2]),
+#             # 'pr_reg': su.Set([0, 1e-2]),
+#             'period': 2
 #             }
 
-# N = su.Set(2**np.arange(4,11))
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 1,
-#              'seed': su.Set([0,1,2,3,4,5,6]),
-#              'N': N,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 2000,
-#              'orth': True
-#              }
-# N = su.Set(2**np.arange(4,11))
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 2,
-#              'seed': su.Set([0,1,2]),
-#              'N': N,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 2000,
-#              'orth': True
-#              }
-# task_args = {'task': exp.SchurTreeCategories,
-#              'samps': 2,
-#              'seed': su.Set([0,1,2]),
-#              'N': N,
-#              'p': 0.1,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 2000,
-#              'orth': True
-#              }
-
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 250,
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'period': 2,
-#             'penalty': su.Set([1e-1, 1e-2]),
-#             'dim_hid':3000
-#             }
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 200,
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'period': 2,
-#             'penalty': 1e-2,
-#             'dim_hid':3000
-#             }
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 400,
-#             'decay_rate': 0.95,
-#             'T0': 10,
-#             'period': 2,
-#             'penalty': 1e-2,
-#             'dim_hid':3000
+# mod_args = {'model': exp.KBMF,
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter': (100, None),
+#             'tree_reg': su.Set([0, 1e-2]),
+#             'period': 2
 #             }
 
-# mod_args = {'model': exp.BAER,
-#             'max_iter': 200,
-#             'decay_rate': 0.8,
-#             'T0': 5,
-#             'period': 2,
-#             'penalty': 1e-2,
-#             'dim_hid':su.Set([None, 3000])
-#             }
-
-mod_args = {'model': exp.BernVAE,
-            'dim_hid': 3000,
-            'steps': 250,
-            'temp': 2/3,
-            'alpha': 1,
-            'beta': su.Set([0,1]), 
-            'period': 10,
-            'scale': 0.5
+mod_args = {'model': exp.BAE,
+            'search': su.Set([True, False]),
+            'decay_rate': (1, 0.9),
+            'T0': (1e-6, 5),
+            'max_iter':(100, None),
+            'pr_reg': su.Set([0, 1e-2]),
+            'tree_reg': 0,
+            'epochs': 10,
             }
-# mod_args = {'model': exp.BernVAE,
-#             # 'dim_hid': 3000,
-#             'steps': 200,
-#             'temp': 2/3,
-#             'alpha': 1,
-#             'beta': su.Set([0,1]), 
-#             'period': 10,
-#             'scale': 0.5
-            # }
-# mod_args = {'model': exp.BernVAE,
-#             'dim_hid': su.Set([None, 3000]),
-#             'steps': 200,
-#             'temp': 2/3,
-#             'alpha': 1,
-#             'beta': su.Set([0,1]), 
-#             'period': 10,
-#             'scale': 0.5
-#             }
 
 
 all_exp_args, prm = su.get_all_experiments(task_args, mod_args, bool_friendly=True)
@@ -234,40 +180,49 @@ for k,v in all_metrics.items():
 #%%
 
 # plot_this = 'time'
-plot_this = 'mean_hamming'
+# plot_this = 'mean_hamming'
 # plot_this = 'mean_mat_ham'
 # plot_this = 'mean_norm_ham'
 # plot_this = 'median_mat_ham'
-# plot_this = 'median_hamming'
+plot_this = 'median_hamming'
 # plot_this = 'weighted_hamming'
 # plot_this = 'loss'
 # plot_this = 'nbs'
+
+# plot_against = prm['N']
+plot_against = prm['values']**prm['bits']
+
 normalize = True
 # normalize = False
 
+# these = (prm['decay_rate']<1)&(prm['tree_reg']==0)
+# these = (prm['decay_rate']==1)&(prm['tree_reg']==0)&(prm['sparse_reg']>0)
+these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)
 # these = (prm['beta']==0)
-these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
+# these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)
 # these = prm['dim'] == 200
 # these = (prm['br']==2)
 # these = (prm['br']==2)&(prm['p']==0.1)
 
-these = these&np.isin(prm['snr'], [0,18,30])
+these = these&(prm['bits'] == 3)
 
-# style = '-'
+# these = these&np.isin(prm['snr'], [0,12,30])
+
+style = '-'
 # style = '--'
-style = ':'
+# style = ':'
 
-# marker = '.'
+marker = '.'
 # marker = 'd'
-marker = '^'
+# marker = '^'
 
 esenar = np.unique(prm['snr'][these])
 cols = cm.viridis(np.linspace(0,1,len(esenar)))
 for i,snr in enumerate(esenar):
     deez = these&(prm['snr'] == snr)
-    N = np.unique(prm['N'])
-    line = util.group_mean((all_metrics[plot_this].mean(1))[deez], prm['N'][deez])
+    N = np.unique(plot_against[these])
+    line = util.group_mean((all_metrics[plot_this].mean(1))[deez], plot_against[deez])
     if normalize:
         line = line/N
     plt.plot(N, line, style, marker=marker, color=cols[i], linewidth=2, markersize=10)

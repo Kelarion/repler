@@ -277,7 +277,7 @@ class SBMF(exp.Model):
             # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
             # ham = len(K) - (np.abs((2*S-1).T@(2*Strue[it]-1)).max(0))
             cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
-            nbs = util.nbs(S, Strue[it])
+            nbs = util.nbs(S, X[it])
             mat_ham = df_util.permham(Strue[it], S)
             norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
 
@@ -617,30 +617,53 @@ class CubeCategories(exp.Task):
     samps: int
     bits: int 
     snr: float
+    seed: int = 0
+    dim: int = 100
+    orth: bool = True
+    perturb: bool = False
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        N = 2**self.bits
+
+        S = util.F2(self.bits)
+        if self.perturb:
+            S = np.hstack([S, np.eye(2**self.bits)])
+
+        Xs = []
+        Strue = []
+        for it in range(self.samps):
+
+            Xs.append(df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-3))
+            Strue.append(S)
+
+        return {'X': Xs, 'Strue': Strue}
+
+@dataclass
+class GridCategories(exp.Task):
+
+    samps: int
+    bits: int 
+    values: int
+    snr: float
+    seed: int = 0
     dim: int = 100
     orth: bool = True
 
     def sample(self):
 
-        np.random.seed(0)
+        np.random.seed(self.seed)
 
-        N = 2**self.bits
+        N = self.values**self.bits
 
-        S = np.hstack([util.F2(self.bits), np.eye(2**self.bits)])
+        S = df_util.gridcats(self.values, self.bits)
 
         Xs = []
         Strue = []
         for it in range(self.samps):
-            if self.orth:
-                W = sts.ortho_group.rvs(self.dim)[:,:self.bits]
-            else:
-                W = np.random.randn(self.dim, self.bits)/np.sqrt(self.dim)
 
-            # noise = np.random.randn(self.dim, N)/np.sqrt(self.dim)
-            # a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
-
-            # X = S@W.T + a*noise.T
-            # Ks.append(X@X.T)
             Xs.append(df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-3))
             Strue.append(S)
 

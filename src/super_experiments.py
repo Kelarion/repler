@@ -10,6 +10,9 @@ import warnings
 import re
 from dataclasses import dataclass, fields, field
 
+if os.name == 'nt':
+    import win32api
+
 import torch
 # import torchvision
 import torch.optim as optim
@@ -181,10 +184,15 @@ class Experiment:
         params_fname = 'parameters_'+expinf  # extension may vary 
         metrics_fname = 'metrics_'+expinf+'.pkl'
         # args_fname = 'arguments_'+expinf+'.pkl'
-        
-        self.model.save(f'{SAVE_DIR}{FOLDERS}{params_fname}')
 
-        with open(SAVE_DIR+FOLDERS+metrics_fname, 'wb') as f:
+        stupidpath = os.path.abspath(SAVE_DIR+FOLDERS)
+        if os.name == 'nt': # deal with windows bullshit
+            stupidpath = win32api.GetShortPathName(stupidpath)
+            
+        path2file = os.path.normpath(os.path.join(stupidpath,metrics_fname))
+        
+        self.model.save(path2file)
+        with open(path2file, 'wb') as f:
             pickle.dump(self.model.metrics, f, -1)
 
         # with open(SAVE_DIR+FOLDERS+args_fname, 'wb') as f:
@@ -200,10 +208,13 @@ class Experiment:
         
         params_fname = 'parameters_'+expinf
         metrics_fname = 'metrics_'+expinf+'.pkl'
-        
-        self.model.load(f'{SAVE_DIR}{FOLDERS}{params_fname}')
 
-        path2file = os.path.normpath(SAVE_DIR+FOLDERS+metrics_fname)
+        stupidpath = os.path.abspath(SAVE_DIR+FOLDERS)
+        if os.name == 'nt': # deal with windows bullshit
+            stupidpath = win32api.GetShortPathName(stupidpath)
+        path2file = os.path.normpath(os.path.join(stupidpath,metrics_fname))
+
+        self.model.load(path2file)
         with open(path2file , 'rb') as f:
             self.model.metrics = pickle.load(f)
 

@@ -40,7 +40,7 @@ import experiments as exp
 import util
 import pt_util
 import tasks
-import plotting as dicplt
+import plotting as tpl
 import dichotomies as dics
 
 # import distance_factorization as df
@@ -253,18 +253,17 @@ class VMM:
             self.pic = np.mean(pc)
             self.pig = 1 - self.pic
             
-            lik.append(np.sum(np.log(self.p(err))))
+            lik.append(np.mean(np.log(self.p(err))))
         
         return lik
         
     def sample(self, n):
         c = np.random.choice([0,1], size=n, p=(self.pig, self.pic))
         guess = np.pi*(2*np.random.rand(n)-1)
-        corr = sts.vonmises(loc=0, kappa=self.k).rvs(n)
+        corr = sts.vonmises(loc=0, kappa=np.max([self.k, 1e-6])).rvs(n)
         return np.where(c>0, corr, guess)
     
     def pcorr(self, err):
-        
         return np.exp(self.k*np.cos(err))/(2*np.pi*spc.i0(self.k))
     
     def p(self, err):
@@ -407,57 +406,118 @@ def kuiper_FPP(D,N):
 
 #%%
 
-n_neur = 100
+# n_neur = 100
+# n_col = 1000
+# draws = 50
+
+# betas = np.linspace(0.01, 2.0, 20)
+# # betas = np.array([0.1, 0.5, 1.0, 2.0])
+# kaps = 1/np.linspace(0.01, 5, 10)
+# # kaps = 1/np.linspace(0.01, 5, 40)
+# # kaps = np.array([0.1, 1, 10, 100])
+
+# cols = (2*np.random.rand(n_col)-1)*np.pi
+
+# K = np.zeros((len(kaps), len(betas)))
+# Pi = np.zeros((len(kaps), len(betas)))
+# # logL = np.zeros((len(kaps), len(betas)))
+# KS = np.zeros((len(kaps), len(betas)))
+# FP = np.zeros((len(kaps), len(betas)))
+
+
+# for i,kap in tqdm(enumerate(kaps)):
+#     pop = RadialBoyfriend(1/kap)
+    
+#     for j,beta in enumerate(betas):
+        
+#         # pop = VMM(k=kap, pic=)
+        
+#         k = []
+#         p = []
+#         l = []
+#         f = []
+#         for it in range(draws):
+            
+#             X = pop.sample(cols, n_neur)
+            
+#             noise = np.random.randn(*X.shape)*beta
+#             idx = np.argmax((X+noise)@X.T, axis=1)
+#             err = util.circ_err(cols,cols[idx])
+            
+#             vmm = VMM(k=1,pic=0.1, kmax=300)
+#             lik = vmm.fit(err, iters=50)
+#             samps = vmm.sample(n_col)
+            
+#             k.append(vmm.k)
+#             p.append(vmm.pic)
+#             # l.append(lik[-1])
+#             kt = kuiper_two(err, samps)
+#             l.append(kt[0])
+#             f.append(kt[1])
+        
+#         K[i,j] = np.mean(k)
+#         Pi[i,j] = np.mean(p)
+#         KS[i,j] = np.mean(l)
+#         FP[i,j] = np.mean(f)
+
+#%%
+
 n_col = 1000
 draws = 50
 
-betas = np.linspace(0.01, 2.0, 20)
 # betas = np.array([0.1, 0.5, 1.0, 2.0])
-kaps = 1/np.linspace(0.01, 5, 10)
+# kaps = 1/np.linspace(0.01, 5, 10)
 # kaps = 1/np.linspace(0.01, 5, 40)
 # kaps = np.array([0.1, 1, 10, 100])
+# kaps = np.linspace(0, 10, 10)
+kaps = np.array([0, 1, 5])
+# betas = np.array([1])
+betas = np.array([0.1, 0.5, 1])
 
-cols = (2*np.random.rand(n_col)-1)*np.pi
+# cols = (2*np.random.rand(n_col)-1)*np.pi
+cols = np.linspace(-np.pi, np.pi, 100)
 
-K = np.zeros((len(kaps), len(betas)))
-Pi = np.zeros((len(kaps), len(betas)))
+K = np.zeros((draws,len(kaps), len(betas)))
+Pi = np.zeros((draws,len(kaps), len(betas)))
 # logL = np.zeros((len(kaps), len(betas)))
-KS = np.zeros((len(kaps), len(betas)))
-FP = np.zeros((len(kaps), len(betas)))
+# KS = np.zeros((len(kaps), len(betas)))
+# FP = np.zeros((len(kaps), len(betas)))
 
 
 for i,kap in tqdm(enumerate(kaps)):
-    pop = RadialBoyfriend(1/kap)
-    
-    for j,beta in enumerate(betas):
+    for j, beta in enumerate(betas):
+        pop = VMM(k=kap, pic=beta )
         
-        k = []
-        p = []
-        l = []
-        f = []
         for it in range(draws):
             
-            X = pop.sample(cols, n_neur)
-            
-            noise = np.random.randn(*X.shape)*beta
-            idx = np.argmax((X+noise)@X.T, axis=1)
-            err = util.circ_err(cols,cols[idx])
+            err = pop.sample(n_col)
             
             vmm = VMM(k=1,pic=0.1, kmax=300)
             lik = vmm.fit(err, iters=50)
             samps = vmm.sample(n_col)
             
-            k.append(vmm.k)
-            p.append(vmm.pic)
-            # l.append(lik[-1])
-            kt = kuiper_two(err, samps)
-            l.append(kt[0])
-            f.append(kt[1])
-        
-        K[i,j] = np.mean(k)
-        Pi[i,j] = np.mean(p)
-        KS[i,j] = np.mean(l)
-        FP[i,j] = np.mean(f)
+            K[it,i,j] = vmm.k
+            Pi[it,i,j] = vmm.pic
+
+cols = cm.Dark2(np.arange(len(kaps)))
+for i, kap in enumerate(kaps):
+    for j,beta in enumerate(betas):
+        plt.scatter(K[:,i,j], Pi[:,i,j], c=cols[i])
+        plt.scatter(kap, beta, s=100, marker='*', c=cols[i])
+
+#%%
+
+plt.subplot(1,2,1)
+for j,beta in enumerate(betas):
+    plt.scatter(kaps, K[:,j])
+plt.plot(plt.xlim(), plt.ylim(), 'k--')
+tpl.square_axis()
+
+plt.subplot(1,2,2)
+for j,beta in enumerate(betas):
+    plt.scatter(kaps, Pi[:,j])
+    plt.plot([kaps.min(), kaps.max()], [beta, beta], '--')
+
 
 #%%
 c = np.linspace(-np.pi, np.pi, 100)

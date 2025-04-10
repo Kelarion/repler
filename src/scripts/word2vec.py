@@ -92,9 +92,9 @@ def path2root(path, word):
 
 #%%
 maxwords = 10000
-root = 'abstraction.n.06'
+# root = 'abstraction.n.06'
 # root = 'group.n.01'
-# root = 'person.n.01'
+root = 'person.n.01'
 
 words = [getword(root)]
 isleaf = [False]
@@ -156,26 +156,31 @@ kqmw = [words.index('king'),
 # # S = np.unique(S*S[[0]], axis=1)
 # # S = S[:,np.abs(S.sum(0))<len(vecs)]
 
-S = []
-for _ in range(20):
-    mod2 = bae_models.BiPCA(300, center=False, sparse_reg=1e-2)
-    # mod = bae_models.KernelBMF(300, penalty=1e-2, scale_lr=1)
+# S = []
+# for _ in range(20):
+#     mod2 = bae_models.BiPCA(300, center=False, sparse_reg=1e-2)
+#     # mod = bae_models.KernelBMF(300, penalty=1e-2, scale_lr=1)
     
-    neal = bae_util.Neal(decay_rate=0.95, period=5)
-    en = neal.fit(mod2, vecs)
+#     neal = bae_util.Neal(decay_rate=0.95, period=5)
+#     en = neal.fit(mod2, vecs)
     
-    S.append(np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1))
-    # S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
+#     S.append(np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1))
+#     # S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
 # S, pi = df_util.mindistX(vecs, S, beta=1e-6, nonzero=False)
 
-# mod = bae_models.BinaryAutoencoder(600, 300, 
-#                                    tree_reg=0, 
-#                                    sparse_reg=1e-2, 
-#                                    weight_reg=1e-3)
-# dl = pt_util.batch_data(torch.FloatTensor(vecs), batch_size=4096)
-# neal = bae_util.Neal(decay_rate=0.95, period=5)
+mod = bae_models.BinaryAutoencoder(600, 300, 
+                                   tree_reg=0, 
+                                   sparse_reg=1e-2,
+                                   weight_reg=1e-2)
+dl = pt_util.batch_data(torch.FloatTensor(vecs), batch_size=512)
+neal = bae_util.Neal(decay_rate=0.95, period=5)
 
-# en = neal.fit(mod, dl, T_min=1e-6)
+en = neal.fit(mod, dl, T_min=1e-6)
+ls = [mod.grad_step(dl) for _ in range(100)] # train a bit at zero temperature
+
+S = mod.hidden(torch.FloatTensor(vecs)).detach().numpy()
+W = mod.p.weight.data.numpy()
+pi = np.diag(W.T@W)
 
 #%% Local Structure
 
@@ -193,7 +198,7 @@ pos3 = [words.index('worker')]
 pos5 = [words.index('girl'), words.index('princess'), words.index('redhead')]
 neg3 = [words.index('courtier'), words.index('vassal')]
 neg5 = [words.index('boy'), words.index('dunce'), words.index('prince')]
-cntr = [words.index('theorist'), words.index('eunuch')]
+cntr = [words.index('lord'), words.index('eunuch')]
 alleg = np.concatenate([pos3, pos5, neg3, neg5, cntr])
 
 # plt.plot([0,0,1,1,0],[0,1,1,0,0], 'k--')

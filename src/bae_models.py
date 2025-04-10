@@ -338,9 +338,10 @@ class KernelBMF(BMF):
         self.U = self.U[:,:r]
         
         ## Center the kernel of each item excluding that item
-        K = self.X@self.X.T
-        notI = (1 - np.eye(self.n))/(self.n-1) 
-        self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
+        # K = self.X@self.X.T
+        # notI = (1 - np.eye(self.n))/(self.n-1) 
+        # self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
+        self.data = self.X
 
         ## Initialize S
         coding_level = np.random.beta(alpha, beta, self.r)/2
@@ -935,20 +936,21 @@ def update_concepts_kernel(X: np.ndarray,
         Sk = (np.dot(StX, x) + St1*xtx/(N-1))/t
         k0 = xtx/(t**2)
 
-        ## Regularization (more verbose because of numba reasons)
-        D1 = StS
-        D2 = St1[None,:] - StS
-        D3 = St1[:,None] - StS
-        D4 = (N-1) - St1[None,:] - St1[:,None] + StS
+        if beta > 1e-6:
+            ## Regularization (more verbose because of numba reasons)
+            D1 = StS
+            D2 = St1[None,:] - StS
+            D3 = St1[:,None] - StS
+            D4 = (N-1) - St1[None,:] - St1[:,None] + StS
 
-        best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
-        best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
-        best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
-        best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+            best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+            best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+            best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+            best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
 
-        R = (best1 - best2 - best3 + best4)*1.0
-        r = (best2.sum(0) - best4.sum(0))*1.0
-        
+            R = (best1 - best2 - best3 + best4)*1.0
+            r = (best2.sum(0) - best4.sum(0))*1.0
+            
         ## Recurrence
         # Compute the rank-one terms
         s_ = St1/(N-1)
@@ -962,7 +964,7 @@ def update_concepts_kernel(X: np.ndarray,
         ux = 2*sx - s.sum() + s_.sum()
         
         # Form the threshold 
-        h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk - beta*(scl**2)*r
+        h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk 
         
         # Need to subtract the diagonal and add it back in
         Jii = 2*(N-1)*s_sc_ + t*u**2
@@ -980,7 +982,8 @@ def update_concepts_kernel(X: np.ndarray,
                 dot -= 2*(N-1)*s_[j]*sx
                 dot += t*u[j]*ux
                 dot -= Jii[j]*news[j]
-                dot += beta*np.dot(R[j], news)
+                if beta > 1e-6:
+                    dot += beta*(np.dot(R[j], news) + r[j])
 
                 ## Compute currents
                 curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp

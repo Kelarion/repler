@@ -16,3 +16,4 @@ pandas
 numba
 einops
 tqdm
+nltk
