@@ -263,6 +263,22 @@ class VMM:
         corr = sts.vonmises(loc=0, kappa=np.max([self.k, 1e-6])).rvs(n)
         return np.where(c>0, corr, guess)
     
+    def hess(self, n_samp=5000):
+        """
+        Monte carlo estimate of the likelihood Hessian 
+        """
+        
+        H = np.zeros((2,2))
+        for th in self.sample(n_samp):
+            p = self.pcorr(th)
+            foo = (np.cos(th) - spc.i1(self.k))
+            Hij = p*foo
+            Hjj = self.pic*p*(foo**2 + 0.5*(spc.i0(self.k) + spc.iv(2,self.k)))
+            
+            H += np.array([[0,Hij],[Hij,Hjj]])/n_samp
+        
+        return H
+    
     def pcorr(self, err):
         return np.exp(self.k*np.cos(err))/(2*np.pi*spc.i0(self.k))
     

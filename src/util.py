@@ -17,6 +17,7 @@ from scipy.optimize import linprog as lp
 from itertools import permutations, combinations
 import itertools as itt
 import networkx as nx
+from networkx.algorithms.flow import boykov_kolmogorov
 
 #################################################
 ######### Indexing ##############################
@@ -1358,9 +1359,9 @@ def rangediff(N, vals):
 
 def imf(A, b=None, s0=None, max_iter=20, tol=1e-3):
     """
-    Iterated Max Flow (Konar and Sidiropoulos 2019) to solve
+    Iterative Max Flow (Konar and Sidiropoulos 2019) to solve
 
-    min s'As - b's
+    min s'As + b's
     s.t. s in {0,1}^N
     
     starting from initial condition s0 (default random)
@@ -1370,32 +1371,45 @@ def imf(A, b=None, s0=None, max_iter=20, tol=1e-3):
 
     if b is None:
         b = np.zeros(n)
+
+    ## Remove diagonal and add it to linear term
+    this_A = 1*A
+    this_A[np.arange(n), np.arange(n)] = 0    
+    this_b = b + np.diag(A)
+
+    ## Initialization
     if s0 is None:
         s0 = np.random.choice([0,1], n)
 
-    if np.triu(A,1).max() <= -1e-12: # see if we're lucky
-        return mincut(A, b)
+    if this_A.max() <= -1e-12: # see if we're lucky
+        return mincut(this_A, this_b)
 
-    Am = A*(A<0)  # negative component
-    Ap = -A*(A>0)  # positive component
+    Am = this_A*(this_A<0)  # negative component
+    Ap = -this_A*(this_A>0)  # positive component
 
     it = 0
-    loss = [qform(A, s0) + b@s0]
+    s = 1*s0
+    alls = []
+    loss = []
     while (it < max_iter):
-        sig = np.random.permutation(np.where(s0)[0])
-        sig = np.concatenate([sig, np.random.permutation(np.where(1-s0)[0])])
+
+        loss.append(s@A@s + b@s)
+
+        sig = np.random.permutation(np.where(s)[0])
+        sig = np.concatenate([sig, np.random.permutation(np.where(1-s)[0])])
 
         Aps = Ap[sig,:][:,sig]
 
-        v = np.diag(Aps) + 2*np.sum(Aps*np.triu(np.ones((n,n)),1), 0)
+        v = np.diag(Aps) + np.triu(Aps, 1).sum(0) + np.tril(Aps, -1).sum(1)
         v = v[np.argsort(sig)]
 
-        s0 = mincut(Am, b-v)
+        news = mincut(Am, this_b-v)
+        alls.append(1*news)
+        s = news
 
         it += 1
-        loss.append(qform(A, s0) + b@s0)
 
-    return s0, loss
+    return alls, loss
 
 def mincut(A, b):
     """
@@ -1405,42 +1419,58 @@ def mincut(A, b):
 
     n = len(A)
 
-    bs = (b*(b>0))[:,None]
-    bt = -(b*(b<0))[:,None] - 2*A.sum(1, keepdims=True)
-    o = np.zeros((n,1))
-    W = np.block([[0, bs.T, 0], [o, -2*A, bt], [0, o.T, 0]])
+    ws = (b*(b>0))[:,None] 
+    wt = (-b*(b<0))[:,None] - A.sum(1, keepdims=True) #- A.sum(0,keepdims=True).T
+    o = np.zeros((n,1)) 
+    W = np.block([[0, ws.T, 0], [o, -A, wt], [0, o.T, 0]])
 
-    G = nx.from_numpy_array(W, edge_attr='capacity')
-    _, s = nx.minimum_cut(G, 0, n+1)
+    # return W
 
+    G = nx.from_numpy_array(W, edge_attr='capacity', create_using=nx.DiGraph)
+    
+    val, part = nx.minimum_cut(G, 0, n+1, flow_func=boykov_kolmogorov)
     sout = np.zeros(n+2)
-    sout[list(s[0])] = 1
+    sout[np.array(list(part[1]))] = 1
 
-    return sout[1:-1]
+    if np.abs((1-sout)@W@sout - val) > 1e-6:
+        print(((1-sout)@W@sout, val))
+        print(part[0])
+        raise Exception
 
-def hopcut(A, b, m=1000, max_iter=100, beta=1, alpha=0.88, period=10, sync=False):
+    sout = sout[1:-1]
+
+    # _, D = nx.maximum_flow(G, 0, n+1)
+    # s = rangediff(n, np.array(list(D[0].keys()))-1)
+    # sout = np.zeros(n)
+    # sout[s] = 1
+
+    return sout
+
+
+def hopcut(A, b=None, s0=None, max_iter=100, T0=1, alpha=0.88, period=10):
     """
-    Maximize x'Ax - b'x for x in {-1,1}^N using a hopfield network
+    Minimize x'Ax + b'x for x in {0,1}^N using a hopfield network
     """
 
     N = len(A)
-    s = np.random.choice([-1,1], size=(N, m))
+    if s0 is None:
+        s = np.random.choice([0,1], size=N)
+    else:
+        s = 1*s0
+
+    if b is None:
+        b = np.zeros(N)
+
     en = []
     for t in range(max_iter):
-        en.append(((-A@s + 2*b)*s).sum(0)) 
-        temp = beta/(alpha**(t//period))
-        if sync:
-            s = 2*np.random.binomial(1, spc.expit(temp*(A@s - b)))-1
-        else:
-            for i in range(N):
-                c = spc.expit(temp*(A[i]@s - b[i]))
-                s[i] = 2*np.random.binomial(1, c)-1
-
-    ## make unique
-    s = np.unique(s*s[[0]], axis=1)
-    # idx = np.argsort(-qform(A, s.T).squeeze())
+        en.append(s@A@s + b@s) 
+        temp = T0*(alpha**(t//period))
+        for i in range(N):
+            c = spc.expit((-A[i]@s - b[i] - 0.5)/temp)
+            s[i] = 1*(np.random.rand() <= c)
 
     return s, np.array(en)
+
 
 class BAE:
 
@@ -2096,7 +2126,7 @@ def random_centered_kernel(d, size=1, scale=1):
     lx = d*np.random.dirichlet(np.ones(d-1)/scale, size)
     X = (vx*lx[:,None,:])@np.swapaxes(vx, -1, -2)
 
-    return X
+    return lx, vx
 
 def random_psd(Y, c, size=1, scale=1, sym=True, zero=None, max_rank=None):
     """

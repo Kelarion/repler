@@ -187,8 +187,12 @@ class Experiment:
 
         stupidpath = os.path.abspath(SAVE_DIR+FOLDERS)
         if os.name == 'nt': # deal with windows bullshit
-            stupidpath = win32api.GetShortPathName(stupidpath)
-            
+            try:
+                stupidpath = win32api.GetShortPathName(stupidpath)
+            except:
+                print(stupidpath)
+                raise Exception
+
         path2file = os.path.normpath(os.path.join(stupidpath,metrics_fname))
         
         self.model.save(path2file)
@@ -211,7 +215,11 @@ class Experiment:
 
         stupidpath = os.path.abspath(SAVE_DIR+FOLDERS)
         if os.name == 'nt': # deal with windows bullshit
-            stupidpath = win32api.GetShortPathName(stupidpath)
+            try:
+                stupidpath = win32api.GetShortPathName(stupidpath)
+            except:
+                print(stupidpath)
+                raise Exception
         path2file = os.path.normpath(os.path.join(stupidpath,metrics_fname))
 
         self.model.load(path2file)

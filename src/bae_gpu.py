@@ -1,6 +1,3 @@
-CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
-# SAVE_DIR = 'C:/Users/mmall/Documents/uni/columbia/multiclassification/saves/'
-
 import os, sys, re
 import pickle
 from time import time
@@ -8,8 +5,7 @@ import copy
 from dataclasses import dataclass
 from typing import Optional
 
-sys.path.append(CODE_DIR)
-
+import jax
 import torch
 import torch.nn as nn
 import torchvision
@@ -38,6 +34,3 @@ import util
 import pt_util
 import bae_util
 import students
-
-#%%
-

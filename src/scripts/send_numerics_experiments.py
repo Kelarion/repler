@@ -99,25 +99,25 @@ send_remotely = True
 #              'scl': 1e-3
 #              }
 
-# b = su.Set(np.arange(4,12))
-# task_args = {'task': exp.CubeCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'bits': b,
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': 200,
-#              'orth': True,
-#              }
-
-task_args = {'task': exp.GridCategories,
+b = su.Set(np.arange(4,12))
+task_args = {'task': exp.CubeCategories,
              'samps': 12,
              'seed': 0,
-             'bits': su.Set([2,3,4]),
-             'values': su.Set([3,4,5]),
+             'bits': b,
              'snr': 0 << su.Real(num=3) << 30,
              'dim': 200,
              'orth': True,
              }
+
+# task_args = {'task': exp.GridCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'bits': su.Set([2,3,4]),
+#              'values': su.Set([3,4,5]),
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': 200,
+#              'orth': True,
+#              }
 
 # N = su.Set(2**np.arange(4,11))
 # task_args = {'task': exp.HierarchicalCategories,
@@ -153,6 +153,15 @@ task_args = {'task': exp.GridCategories,
 #             'period': 2
 #             }
 
+mod_args = {'model': exp.BiPCA,
+            # 'dim_hid': None,
+            'decay_rate': (1, 0.9),
+            'T0': (1e-6, 5),
+            'max_iter': (100, None),
+            'sparse_reg': su.Set([0, 1e-2]),
+            'period': 2
+            }
+
 # mod_args = {'model': exp.KBMF,
 #             'dim_hid': su.Set([None, 200]),
 #             'decay_rate': (1, 0.9),
@@ -162,15 +171,15 @@ task_args = {'task': exp.GridCategories,
 #             'period': 2
 #             }
 
-mod_args = {'model': exp.BAE,
-            'search': su.Set([True, False]),
-            'decay_rate': (1, 0.9),
-            'T0': (1e-6, 5),
-            'max_iter':(100, None),
-            'pr_reg': su.Set([0, 1e-2]),
-            'tree_reg': 0,
-            'epochs': 10,
-            }
+# mod_args = {'model': exp.BAE,
+#             'search': su.Set([True, False]),
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter':(100, None),
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             'epochs': 10,
+#             }
 
 ### magic
 ##############################

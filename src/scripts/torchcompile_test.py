@@ -30,6 +30,8 @@ from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
 from scipy.optimize import nnls
 
+import matplotlib.pyplot as plt
+
 from numba import njit
 import math
 
@@ -37,7 +39,26 @@ import math
 import util
 import pt_util
 import bae_util
+import bae_models
 import students
 
 #%%
+
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+
+
+#%%
+
+Strue = torch.FloatTensor(util.F2(4)).cuda()
+W = torch.FloatTensor(sts.ortho_group.rvs(4)).cuda()
+X = (Strue-Strue.mean(0))@W.T
+b = -Strue.mean(0)@W.T
+
+perturb = torch.FloatTensor(np.random.choice([0,1], Strue.shape, p=[0.9,0.1])).cuda()
+S = (Strue + perturb)%2 
+
+#%%
+
+Sest = bmf(X-b, 1*S, W, S.T@S, N=len(X), temp=1e-6)
 

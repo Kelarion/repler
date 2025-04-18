@@ -191,13 +191,14 @@ plot_this = 'median_hamming'
 
 # plot_against = prm['N']
 plot_against = prm['values']**prm['bits']
+# plot_against = 2**prm['bits']
 
 normalize = True
 # normalize = False
 
 # these = (prm['decay_rate']<1)&(prm['tree_reg']==0)
 # these = (prm['decay_rate']==1)&(prm['tree_reg']==0)&(prm['sparse_reg']>0)
-these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)
+these = (~prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)
 # these = (prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)
@@ -205,16 +206,16 @@ these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg'
 # these = (prm['br']==2)
 # these = (prm['br']==2)&(prm['p']==0.1)
 
-these = these&(prm['bits'] == 3)
+these = these&(prm['bits'] == 4)
 
 # these = these&np.isin(prm['snr'], [0,12,30])
 
-style = '-'
-# style = '--'
+# style = '-'
+style = '--'
 # style = ':'
 
-marker = '.'
-# marker = 'd'
+# marker = '.'
+marker = 'd'
 # marker = '^'
 
 esenar = np.unique(prm['snr'][these])

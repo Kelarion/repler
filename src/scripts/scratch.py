@@ -1,13 +1,46 @@
-import numpy as np
-import scipy.sparse as sprs
-import scipy.special as spc
-import util
-import df_util
-import distance_factorization as df
-import cvxpy as cvx
+CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
+SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/'
+ 
+import os, sys, re
+import pickle as pkl
+from time import time
+import math
+sys.path.append(CODE_DIR)
+
 import torch
 import torch.nn as nn
+import torchvision
 import torch.optim as optim
+import numpy as np
+import numpy.linalg as nla
+from itertools import permutations, combinations
+from tqdm import tqdm
+from dataclasses import dataclass
+import pickle as pkl
+
+from sklearn import svm, discriminant_analysis, manifold, linear_model
+import scipy.stats as sts
+import scipy.linalg as la
+import scipy.spatial as spt
+import scipy.sparse as sprs
+import scipy.special as spc
+from scipy.optimize import linear_sum_assignment as lsa
+from scipy.optimize import linprog as lp
+from scipy.optimize import nnls
+
+import matplotlib.pyplot as plt
+
+import networkx as nx
+import cvxpy as cvx
+
+# my code
+import util
+import df_util
+import bae
+import bae_models
+import bae_util
+import bae_search
+import plotting as tpl
 
 #%%
 
@@ -32,6 +65,68 @@ for s in Sall[~is_attr]:
     dA.append(df_util.minham(S.T, samps.T))
     plt.plot(dA[-1])
     plt.xticks(ticks=np.arange(len(samps)-1,step=k),labels=np.arange(len(samps)//k))
+
+#%%
+
+dims = list(range(10,110,10))
+draws = 50
+gap = 1.5   # max = gap*(top eigenvalue)
+
+algo = util.imf
+# algo = util.hopcut
+
+err = np.zeros((draws, len(dims)))
+ham = np.zeros((draws, len(dims)))
+runtime = np.zeros((draws, len(dims)))
+monotone = np.zeros((draws, len(dims)))
+for j,dim in enumerate(dims):
+    for i in tqdm(range(draws)):
+        
+        smax = np.random.choice([0,1], dim)
+        
+        ## Scipy won't let you sample from a Wishart with singular scale
+        sst = util.center(np.outer(smax-smax.mean(), smax-smax.mean()))
+        Q = np.eye(dim) - 1/dim - sst/np.sqrt(np.sum(sst**2))
+        X = np.random.multivariate_normal(np.zeros(dim), Q, size=dim)
+        K = X.T@X/dim
+       
+        ## Set the desired vector to be top eigenvector
+        l,V = la.eigh(K)
+        f_max = gap*l.max()
+        K += f_max*sst/np.sqrt(np.sum(sst**2))
+        
+        t0 = time()
+        s, ls = algo(-K)
+        runtime[i,j] = time()-t0
+        
+        err[i,j] = (s@K@s)/(smax@K@smax)
+        ham[i,j] = dim - np.abs((2*s,s-1)@(2*smax-1))
+    
+        monotone[i,j] = np.max()
+    
+    
+#%%
+
+A = -K
+n = len(A)
+
+this_A = 1*A
+this_A[np.arange(n), np.arange(n)] = 0
+
+this_b = np.diag(A)
+
+Am = this_A*(this_A<0)  # negative component
+Ap = -this_A*(this_A>0)  # positive component
+
+s = 1*s_max
+
+sig = np.random.permutation(np.where(s)[0])
+sig = np.concatenate([sig, np.random.permutation(np.where(1-s)[0])])
+
+Aps = Ap[sig,:][:,sig]
+
+v = np.diag(Aps) + np.triu(Aps, 1).sum(0) + np.tril(Aps, -1).sum(1)
+v = v[np.argsort(sig)]
 
 
 #%%
@@ -208,6 +303,161 @@ plt.legend(['Actual', 'Von Mises approximation'])
 n = 20
 m = 10
 
+S = np.random.choice([0,1], (n,m))
+
+St1 = S.sum(0)
+StS = S.T@S
+
+ABCD = np.stack([StS,
+                 St1[:,None] - StS,
+                 St1[None,:] - StS,
+                 n - St1[None,:] - St1[:,None] + StS,
+                 ]).transpose((1,2,0))
+
+deez = np.zeros((n,m,m))
+doze = np.zeros((n,m,m))
+truth = np.zeros((n,m))
+troof = np.zeros((n,m))
+for i in range(n):
+    d = np.array([S[i], 1-S[i], -S[i], -(1-S[i])]).T
+    
+    R,r = df_util.dH(S[util.rangediff(n, [i])])
+    
+    for j in range(m):
+        # diff = 0
+        for k in range(m):
+            
+            ## non-stacked version
+            A = StS[j,k] - S[i,j]*S[i,k]
+            B = StS[j,j] - A - S[i,j] 
+            C = StS[k,k] - A
+            D = n - A - B - C
+
+            # if S[i,k]: 
+            #     if A < np.min([B,C-1,D]):
+            #         deez[i,j,k] += 1 
+            #     elif C <= np.min([A,B,D]):
+            #         deez[i,j,k] -= 1
+            # else:
+            #     if B < np.min([A,C,D-1]):
+            #         deez[i,j,k] += 1 
+            #     elif D <= np.min([A,B,C]):
+            #         deez[i,j,k] -= 1
+            if A < min(B,C-1,D):
+                deez[i,j,k] += S[i,k]
+            if B < min(A,C,D-1):
+                deez[i,j,k] += (1 - S[i,k] )
+            if C <= min(A,B,D):
+                deez[i,j,k] -= S[i,k]
+            if D <= min(A,B,C):
+                deez[i,j,k] -= (1 - S[i,k])
+            
+            ## stacked version
+            doze[i,j,k] += np.min(ABCD[j,k] + d[k]*(1-S[i,j])) 
+            doze[i,j,k] -= np.min(ABCD[j,k] - d[k]*S[i,j]) 
+
+        troof[i,j] = R[j]@S[i] + r[j]
+
+        ## ground truth
+        thisS = 1*S
+        thisS[i,j] = 1
+        truth[i,j] += df_util.treecorr(thisS).sum()/2
+        thisS[i,j] = 0
+        truth[i,j] -= df_util.treecorr(thisS).sum()/2
+    
+# plt.scatter(deez, doze)
+
+#%%
+
+bits = 6
+beta = 1e-3
+
+# S = util.F2(bits)
+Strue = df_util.btree_feats(bits).T
+W = sts.ortho_group.rvs(Strue.shape[1])
+X = (Strue-Strue.mean(0))@W.T
+b = -Strue.mean(0)@W.T
+
+S = (Strue + np.random.choice([0,1], Strue.shape, p=[0.9,0.1]))%2
+
+# ba = bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# ba = bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
+#                                      temp=1e-6, STS=S.T@S, N=len(S))
+# wa = bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
+#                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+ba = bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
+                                       beta=beta, temp=1e-6)
+# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
+#                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+wa = bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
+                       StS=1.0*(S.T@S), N=len(S), beta=beta, temp=1e-6)
+
+t0 = time()
+# wa = bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# wa = bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
+#                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# ba = bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
+#                                      temp=1e-6, STS=S.T@S, N=len(S))
+# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
+#                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1, temp=1e-6, beta=beta)
+wa = bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
+                       StS=1.0*(S.T@S), N=len(S), beta=beta, temp=1e-6)
+# ba = bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
+#                                        beta=beta, temp=1e-6)
+# C = 2*(X-b)@W - 1
+# newS = 1*(np.random.rand(*S.shape) > spc.expit(C/1e-6))
+print(time() - t0)
+
+#%%
+
+n,m = S.shape
+StS = S.T@S
+
+deez = np.zeros((n,m))
+truth = np.zeros((n,m))
+troof = np.zeros((n,m))
+for i in tqdm(range(n)):
+    d = np.array([S[i], 1-S[i], -S[i], -(1-S[i])]).T
+    
+    R,r = df_util.dH(S[util.rangediff(n, [i])])
+    
+    for j in range(m):
+        # diff = 0
+        inhib = 0
+        for k in range(m):
+            
+            ## non-stacked version
+            A = StS[j,k] - S[i,j]*S[i,k]
+            B = StS[j,j] - A - S[i,j] 
+            C = StS[k,k] - A
+            D = n - A - B - C
+            
+            if A < min(B,C-1,D):
+                inhib += S[i,k]
+            if B < min(A,C,D-1):
+                inhib += (1 - S[i,k] )
+            if C <= min(A,B,D):
+                inhib -= S[i,k]
+            if D <= min(A,B,C):
+                inhib -= (1 - S[i,k])
+                
+        deez[i,j] = inhib
+            
+        troof[i,j] = R[j]@S[i] + r[j]
+
+        ## ground truth
+        thisS = 1*S
+        thisS[i,j] = 1
+        truth[i,j] += df_util.treecorr(thisS).sum()/2
+        thisS[i,j] = 0
+        truth[i,j] -= df_util.treecorr(thisS).sum()/2
+
+#%%
+
+n = 20
+m = 10
+
 F = np.random.choice([0,1], (n,m))
 Fsum = F.sum(0)
 # F = np.mod(F+(Fsum>n/2),2)
@@ -248,8 +498,12 @@ deez = np.array([D1,D2,D3,D4])
 best = 1*(deez == deez.min(0))
 best *= (best.sum(0)==1)
 
-Q = best[0] - best[1] - best[2] + best[3]
-p = 2*(best[1].sum(0) - best[3].sum(0))
+# Q = best[0] - best[1] - best[2] + best[3]
+# p = 2*(best[1].sum(0) - best[3].sum(0))
+
+R,r = df_util.dH(F)
+Q = R
+p = 2*r
 
 # I1 = np.sign(2*FF - Fsum[None,:]) # si'sj - (1-si)'sj
 # I2 = np.sign(2*FF - Fsum[:,None]) # si'sj - si'(1-sj)
@@ -269,8 +523,9 @@ for f in util.F2(m):
     
     doze.append(f@Q@f + f@p)
     
-    newD = np.min([newF.T@newF, (1-newF).T@newF, newF.T@(1-newF), (1-newF).T@(1-newF)],0)
-    deez.append(newD.sum() - oldD.sum())
+    # newD = np.min([newF.T@newF, (1-newF).T@newF, newF.T@(1-newF), (1-newF).T@(1-newF)],0)
+    # deez.append(newD.sum() - oldD.sum())
+    deez.append(df_util.treecorr(F).sum() - df_util.treecorr(newF).sum())
     
 plt.scatter(deez, doze)
 

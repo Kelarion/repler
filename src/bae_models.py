@@ -11,6 +11,7 @@ import torchvision
 import torch.optim as optim
 import torch.distributions as dis
 import torch.linalg as tla
+import torch._dynamo
 import numpy as np
 from itertools import permutations, combinations
 # from tqdm import tqdm
@@ -25,6 +26,8 @@ from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
 from scipy.optimize import nnls
 
+torch._dynamo.config.suppress_errors = True 
+
 from numba import njit
 import math
 
@@ -32,6 +35,7 @@ import math
 import util
 import pt_util
 import bae_util
+import bae_search
 import students
 
 ####################################################################
@@ -139,17 +143,31 @@ class BiPCA(BMF):
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
+        # XW = self.data@self.W - self.b@self.W
+        # if (self.beta > 1e-6) or self.center:
+        #     if self.center:
+        #         newS = update_concepts_asym_cntr(XW, 1.0*self.S, self.scl, 
+        #                 alpha=self.alpha, beta=self.beta, temp=self.temp)
+        #     else:
+        #         newS = update_concepts_asym(XW, 1.0*self.S, self.scl, 
+        #             alpha=self.alpha, beta=self.beta, temp=self.temp)
+        # else:
+        #     C = 2*XW - self.scl*(1 + self.alpha)
+        #     newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/self.temp))
+
         XW = self.data@self.W - self.b@self.W
-        if (self.beta > 1e-6) or self.center:
-            if self.center:
-                newS = update_concepts_asym_cntr(XW, 1.0*self.S, self.scl, 
-                        alpha=self.alpha, beta=self.beta, temp=self.temp)
-            else:
-                newS = update_concepts_asym(XW, 1.0*self.S, self.scl, 
-                    beta=self.beta, temp=self.temp)
+        # if self.center:
+        #     newS = update_concepts_asym_cntr(XW, 1.0*self.S, self.scl, 
+        #             alpha=self.alpha, beta=self.beta, temp=self.temp)
+        # else:
+        if self.beta > 1e-6:
+            StS = 1.0*self.S.T@self.S
+            newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
+                StS=StS, N=self.n,
+                alpha=self.alpha, beta=self.beta, temp=self.temp)
         else:
-            C = 2*XW - self.scl - self.alpha
-            newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/self.temp))
+            newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
+                alpha=self.alpha, beta=self.beta, temp=self.temp)
 
         self.S = newS
 
@@ -421,9 +439,9 @@ class BAE(students.NeuralNet):
 
         self.q = nn.Linear(self.dim_inp, self.dim_hid) # x -> s
         self.p = nn.Linear(self.dim_hid, self.dim_inp) # s -> x'
-        
-        ## Recurrent weights
-        self.StS = np.eye(self.dim_hid)
+
+        self.StS = torch.eye(self.dim_hid)
+        # self.StS = np.eye(self.dim_hid)
 
         ## Prior distribution
         p0 = np.random.rand(self.dim_hid)*0.4 + 1e-3 # uniformly distributed coding level
@@ -529,18 +547,63 @@ class BinaryAutoencoder(BAE):
 
     def EStep(self, S, X):
 
-        ## Convert to numpy since that's what Numba accepts
-        W = self.p.weight.data.numpy().astype(float)
-        b = self.p.bias.data.numpy().astype(float)
-        Snp = 1.0*(S.data.numpy() > 0.5) # convert from sigmoid to
-        Xnp = X.data.numpy().astype(float)
+        # ## Convert to numpy since that's what Numba accepts
+        # W = self.p.weight.data.numpy().astype(float)
+        # b = self.p.bias.data.numpy().astype(float)
+        # Snp = 1.0*(S.data.numpy() > 0.5) # convert from sigmoid 
+        # Xnp = X.data.numpy().astype(float)
 
-        newS = bmf(Xnp - b, Snp, W, StS=self.StS, N=self.N,
-            alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
+        # newS = bmf(Xnp - b, Snp, W, StS=self.StS, N=self.N,
+        #     alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
 
-        self.StS += (newS.T@newS - Snp.T@Snp)
+        # self.StS += (newS.T@newS - Snp.T@Snp)
 
-        return torch.FloatTensor(newS)
+        # return torch.FloatTensor(newS)
+
+        with torch.no_grad():
+
+            if self.StS.device.type != S.device.type:
+                self.StS = self.StS.to(S.device)
+
+            if S.device.type == 'cpu':
+            # Convert to numpy since that's what Numba accepts
+                Xnp = X.detach().numpy().astype(float)
+                W = self.p.weight.data.detach().numpy().astype(float)
+                b = self.p.bias.data.detach().numpy().astype(float)
+                Snp = 1.0*(S > 0.5).data.detach().numpy().astype(float) # convert from sigmoid
+                StS = self.StS.numpy().astype(float)
+            else:
+                Xnp = X.cpu().numpy().astype(float)
+                W = self.p.weight.data.cpu().numpy().astype(float)
+                b = self.p.bias.data.cpu().numpy().astype(float)
+                Snp = 1.0*(S > 0.5).data.cpu().numpy().astype(float) # convert from sigmoid
+                StS = self.StS.cpu().numpy().astype(float)
+
+            newS = bae_search.sbmf(
+                XW=(Xnp - b)@W, S=Snp, WtW=W.T@W,           # inputs
+                StS=StS, N=self.N,                          # batching
+                alpha=self.sparse_reg, beta=self.tree_reg,  # regualarization
+                temp=self.temp)                             # temperature
+
+            newS = torch.tensor(newS, dtype=S.dtype, device=S.device)
+            # newS = torch.FloatTensor(newS)
+
+            self.StS += (newS.T@newS - S.T@S)
+
+            # else:
+
+            #     W = self.p.weight
+            #     b = self.p.bias
+            #     Snp = 1.0*(S > 0.5) # convert from sigmoid to
+
+            #     newS = ptbmf(X - b, Snp, W, StS=self.StS, N=self.N,
+            #         alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
+
+            #     self.StS = self.StS + (newS.T@newS - Snp.T@Snp)
+            # return newS
+
+        return newS
+        # return torch.FloatTensor(newS)
 
     def MStep(self, S, X):
 
@@ -551,7 +614,7 @@ class BinaryAutoencoder(BAE):
             WtW = W.T@W
             loss -= self.weight_reg*(torch.sum(W**2)**2)/torch.sum(WtW**2)
             
-        return loss
+        return loss 
 
 @dataclass(eq=False)
 class BernVAE(BAE):
@@ -580,29 +643,205 @@ class BernVAE(BAE):
 ######### Jitted update of S ###############################
 ############################################################
 
+# @njit
+# def binary_glm(X, S, W, b, temp, alpha=0, beta=0, steps=1, STS=None, N=None, lognorm=bae_util.gaussian):
+#     """
+#     One gradient step on S
+
+#     lognorm should always be gaussian, the others are all worse for some reason
+
+#     TODO: figure out a good sparse implementation?
+#     """
+
+#     n, m = S.shape
+
+#     if (STS is None) or (N is None):
+#         StS = np.dot(S.T, S)
+#         N = n 
+#     else:
+#         StS = 1*STS
+#         N = 1*N
+#     St1 = np.diag(StS)
+
+#     ## Initial values
+#     E = np.dot(S,W.T) + b  # Natural parameters
+#     C = np.dot(X,W)        # Constant term
+
+#     for step in range(steps):
+#         # for i in np.random.permutation(np.arange(n)):
+#         # en = np.zeros((n,m))
+#         for i in np.arange(n): 
+
+#             if beta > 1e-6:
+#                 ## Organize states
+#                 s = S[i]
+#                 St1 -= s
+#                 StS -= np.outer(s,s)
+
+#                 ## Regularization (more verbose because of numba reasons)
+#                 D1 = StS
+#                 D2 = St1[None,:] - StS
+#                 D3 = St1[:,None] - StS
+#                 D4 = (N-1) - St1[None,:] - St1[:,None] + StS
+
+#                 best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+#                 best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+#                 best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+#                 best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+#                 R = (best1 - best2 - best3 + best4)*1.0
+#                 r = (best2.sum(0) - best4.sum(0))*1.0
+
+#             ## Hopfield update of s
+#             # for j in np.random.permutation(np.arange(m)): # concept
+#             for j in np.arange(m): 
+
+#                 ## Compute linear terms
+#                 dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
+#                 dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
+#                 if beta > 1e-6:
+#                     inhib = np.dot(R[j], S[i]) + r[j]
+#                 else:
+#                     inhib = 0
+
+#                 ## Compute currents
+#                 curr = (C[i,j] - beta*inhib - dot - alpha)/temp
+
+#                 ## Apply sigmoid (overflow robust)
+#                 if curr < -100:
+#                     prob = 0.0
+#                 elif curr > 100:
+#                     prob = 1.0
+#                 else:
+#                     prob = 1.0 / (1.0 + math.exp(-curr))
+
+#                 ## Update outputs
+#                 sj = 1*(np.random.rand() < prob)
+#                 ds = sj - S[i,j]
+#                 S[i,j] = sj
+                
+#                 ## Update dot products
+#                 E[i] += ds*W[:,j]
+
+#                 # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
+
+#             ## Update 
+#             # S[i] = news
+#             St1 += S[i]
+#             StS += np.outer(S[i], S[i]) 
+
+#     return S #, en
+
+# @njit
+# def bmf(X: np.ndarray, 
+#         S: np.ndarray, 
+#         W: np.ndarray, 
+#         StS: np.ndarray, 
+#         N: int, 
+#         temp: float,
+#         beta: float = 0.0,
+#         alpha: float = 0.0):
+    
+#     n,m = S.shape
+
+#     WtW = np.dot(W.T, W)
+#     XW = np.dot(X, W)
+
+#     St1 = np.diag(StS)
+#     # if beta > 1e-6:
+#     #     A = StS
+#     #     B = np.diag(StS)[:,None] - StS
+#     #     C = B.T
+#     #     D = N - A - B - C
+
+#     # for i in np.random.permutation(np.arange(n)):
+#     # en = np.zeros((n,m))
+#     for i in np.arange(n): 
+
+#         ## Organize states
+#         # if beta > 1e-6:
+#             # r = np.stack([S[i], 1-S[i], -S[i], S[i]-1]).T
+#         # if beta > 1e-6:
+#         #     A = StS - np.outer(S[i],S[i])
+#         #     B = np.diag(A)[:,None] - A
+#         #     C = B.T
+#         #     D = N-1 - A - B - C
+
+#         if beta > 1e-6:
+#             St1 -= S[i]
+#             StS -= np.outer(S[i],S[i])
+#             ## Regularization (more verbose because of numba reasons)
+#             D1 = StS
+#             D2 = St1[None,:] - StS
+#             D3 = St1[:,None] - StS
+#             D4 = (N-1) - St1[None,:] - St1[:,None] + StS
+            
+#             best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
+#             best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
+#             best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
+#             best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
+
+#             R = (best1 - best2 - best3 + best4)*1.0
+#             r = (best2.sum(0) - best4.sum(0))*1.0
+
+#         ## Hopfield update of s
+#         # for j in np.random.permutation(np.arange(m)): # concept
+#         for j in np.arange(m): 
+
+#             ## Compute linear terms
+#             dot = np.dot(WtW[j],S[i]) + (0.5 - S[i,j])*WtW[j,j]
+
+#             if beta > 1e-6:
+#                 inhib = np.dot(R[j],S[i]) + r[j] 
+
+#             else:
+#                 inhib = 0
+
+#             ## Compute currents
+#             curr = (XW[i,j] - beta*inhib - dot - alpha)/temp
+#             # en[i,j] = curr
+
+#             ## Apply sigmoid (overflow robust)
+#             if curr < -100:
+#                 prob = 0.0
+#             elif curr > 100:
+#                 prob = 1.0
+#             else:
+#                 prob = 1.0 / (1.0 + math.exp(-curr))
+
+#             # news = 1*(np.random.rand() < prob)
+#             # ds = (np.random.rand() < prob) - S[i,j]
+#             ## Update concepts
+#             S[i,j] = (np.random.rand() < prob) 
+
+#         ## Update overlaps
+#         if beta > 1e-6:
+#             # St1 += ds
+#             # StS[j] += S[i]*ds
+#             St1 += S[i]
+#             StS += np.outer(S[i], S[i]) 
+        
+#     return S #, en
+
+
 @njit
-def binary_glm(X, S, W, b, temp, alpha=0, beta=0, steps=1, STS=None, N=None, lognorm=bae_util.gaussian):
+def update_concepts_asym(XW, S, scl, beta, temp, STS=None, N=None, steps=1):
     """
     One gradient step on S
 
-    lognorm should always be gaussian, the others are all worse for some reason
-
-    TODO: figure out a good sparse implementation?
+    TODO: figure out a good sparse implementation!
     """
 
     n, m = S.shape
 
-    if (STS is None) or (N is None):
-        StS = np.dot(S.T, S)
-        N = n 
-    else:
-        StS = 1*STS
-        N = 1*N
-    St1 = np.diag(StS)
-
-    ## Initial values
-    E = np.dot(S,W.T) + b  # Natural parameters
-    C = np.dot(X,W)        # Constant term
+    if beta > 1e-6:
+        if (STS is None) or (N is None):
+            StS = np.dot(S.T, S)
+            N = n 
+        else:
+            StS = 1*STS
+            N = 1*N
+        St1 = np.diag(StS)
 
     for step in range(steps):
         # for i in np.random.permutation(np.arange(n)):
@@ -611,9 +850,8 @@ def binary_glm(X, S, W, b, temp, alpha=0, beta=0, steps=1, STS=None, N=None, log
 
             if beta > 1e-6:
                 ## Organize states
-                s = S[i]
-                St1 -= s
-                StS -= np.outer(s,s)
+                St1 -= S[i]
+                StS -= np.outer(S[i],S[i])
 
                 ## Regularization (more verbose because of numba reasons)
                 D1 = StS
@@ -631,162 +869,12 @@ def binary_glm(X, S, W, b, temp, alpha=0, beta=0, steps=1, STS=None, N=None, log
 
             ## Hopfield update of s
             # for j in np.random.permutation(np.arange(m)): # concept
-            for j in np.arange(m): 
+            for j in np.arange(m):
 
                 ## Compute linear terms
-                dot = np.sum(lognorm(E[i] + (1-S[i,j])*W[:,j])) 
-                dot -= np.sum(lognorm(E[i] - S[i,j]*W[:,j]))
                 if beta > 1e-6:
                     inhib = np.dot(R[j], S[i]) + r[j]
-                else:
-                    inhib = 0
-
-                ## Compute currents
-                curr = (C[i,j] - beta*inhib - dot - alpha)/temp
-
-                ## Apply sigmoid (overflow robust)
-                if curr < -100:
-                    prob = 0.0
-                elif curr > 100:
-                    prob = 1.0
-                else:
-                    prob = 1.0 / (1.0 + math.exp(-curr))
-
-                ## Update outputs
-                sj = 1*(np.random.rand() < prob)
-                ds = sj - S[i,j]
-                S[i,j] = sj
-                
-                ## Update dot products
-                E[i] += ds*W[:,j]
-
-                # en[i,j] = np.sum(lognorm(E)) - 2*np.sum(C*S)
-
-            ## Update 
-            # S[i] = news
-            St1 += S[i]
-            StS += np.outer(S[i], S[i]) 
-
-    return S #, en
-
-@njit
-def bmf(X: np.ndarray, 
-        S: np.ndarray, 
-        W: np.ndarray, 
-        StS: np.ndarray, 
-        N: int, 
-        temp: float,
-        beta: float = 0.0,
-        alpha: float = 0.0):
-    
-    n,m = S.shape
-    St1 = np.diag(StS)
-
-    WtW = np.dot(W.T, W)
-    C = np.dot(X, W)
-
-    for i in np.random.permutation(np.arange(n)):
-    # en = np.zeros((n,m))
-    # for i in np.arange(n): 
-
-        ## Organize states
-        if beta > 1e-6:
-            St1 -= S[i]
-            StS -= np.outer(S[i],S[i])
-            ## Regularization (more verbose because of numba reasons)
-            D1 = StS
-            D2 = St1[None,:] - StS
-            D3 = St1[:,None] - StS
-            D4 = (N-1) - St1[None,:] - St1[:,None] + StS
-            
-            best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
-            best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
-            best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
-            best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
-
-            R = (best1 - best2 - best3 + best4)*1.0
-            r = (best2.sum(0) - best4.sum(0))*1.0
-
-        ## Hopfield update of s
-        for j in np.random.permutation(np.arange(m)): # concept
-        # for j in np.arange(m): 
-
-            ## Compute linear terms
-            dot = np.dot(WtW[j],S[i]) + (0.5 - S[i,j])*WtW[j,j]
-
-            if beta > 1e-6:
-                inhib = np.dot(R[j],S[i]) + r[j]
-            else:
-                inhib = 0
-
-            ## Compute currents
-            curr = (C[i,j] - beta*inhib - dot - alpha)/temp
-
-            ## Apply sigmoid (overflow robust)
-            if curr < -100:
-                prob = 0.0
-            elif curr > 100:
-                prob = 1.0
-            else:
-                prob = 1.0 / (1.0 + math.exp(-curr))
-
-            ## Update outputs
-            S[i,j] = 1*(np.random.rand() < prob)
-
-        ## Update 
-        if beta > 1e-6:
-            St1 += S[i]
-            StS += np.outer(S[i], S[i]) 
-        
-    return S
-
-@njit
-def update_concepts_asym(XW, S, scl, beta, temp, STS=None, N=None, steps=1):
-    """
-    One gradient step on S
-
-    TODO: figure out a good sparse implementation!
-    """
-
-    n, m = S.shape
-
-    if (STS is None) or (N is None):
-        StS = np.dot(S.T, S)
-        N = n 
-    else:
-        StS = 1*STS
-        N = 1*N
-    St1 = np.diag(StS)
-
-    for step in range(steps):
-        for i in np.random.permutation(np.arange(n)):
-        # en = np.zeros((n,m))
-        # for i in np.arange(n): 
-
-            ## Organize states
-            St1 -= S[i]
-            StS -= np.outer(S[i],S[i])
-
-            ## Regularization (more verbose because of numba reasons)
-            D1 = StS
-            D2 = St1[None,:] - StS
-            D3 = St1[:,None] - StS
-            D4 = (N-1) - St1[None,:] - St1[:,None] + StS
-
-            best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
-            best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
-            best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
-            best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
-
-            R = (best1 - best2 - best3 + best4)*1.0
-            r = (best2.sum(0) - best4.sum(0))*1.0
-
-            ## Hopfield update of s
-            for j in np.random.permutation(np.arange(m)): # concept
-
-                ## Compute linear terms
-                inhib = np.dot(R[j], S[i]) + r[j]
-
+                # en[i,j] = inhib
                 ## Compute currents
                 curr = (2*XW[i,j] - beta*scl*inhib - scl)/temp
 
@@ -807,8 +895,9 @@ def update_concepts_asym(XW, S, scl, beta, temp, STS=None, N=None, steps=1):
 
             ## Update 
             # S[i] = news
-            St1 += S[i]
-            StS += np.outer(S[i], S[i]) 
+            if beta > 1e-6:
+                St1 += S[i]
+                StS += np.outer(S[i], S[i]) 
 
     return S #, en
 
@@ -885,7 +974,7 @@ def update_concepts_asym_cntr(XW, S, scl, alpha, beta, temp, STS=None, N=None, s
 
     return S #, en
 
-@njit(cache=True)
+@njit
 def update_concepts_kernel(X: np.ndarray, 
                            S: np.ndarray, 
                            scl: float, 
@@ -894,7 +983,7 @@ def update_concepts_kernel(X: np.ndarray,
                            STS: Optional[np.ndarray]=None,
                            STX: Optional[np.ndarray]=None, 
                            N: Optional[int]=None, 
-                           steps: Optional[int]=1) -> np.ndarray:
+                           steps: Optional[int]=1):
     """
     One batch gradient step on S
 
@@ -916,9 +1005,9 @@ def update_concepts_kernel(X: np.ndarray,
         N = 1*N
 
     St1 = np.diag(StS)
-
-    for i in np.random.permutation(np.arange(n)):
-    # for i in np.arange(n):
+    en = np.zeros(S.shape)
+    # for i in np.random.permutation(np.arange(n)):
+    for i in np.arange(n):
 
         ## Pick current item
         t = (N-1)/N
@@ -931,9 +1020,15 @@ def update_concepts_kernel(X: np.ndarray,
         StS -= np.outer(s,s)
         StX -= np.outer(s,x)
 
+        # Compute the rank-one terms
+        s_ = St1/(N-1)
+        u = 2*s_ - 1
+
+        s_sc_ = s_*(1-s_)
+
         ## Organize states
         xtx = np.sum(x**2)
-        Sk = (np.dot(StX, x) + St1*xtx/(N-1))/t
+        Sk = (np.dot(StX, x) + s_*xtx)/t
         k0 = xtx/(t**2)
 
         if beta > 1e-6:
@@ -952,11 +1047,7 @@ def update_concepts_kernel(X: np.ndarray,
             r = (best2.sum(0) - best4.sum(0))*1.0
             
         ## Recurrence
-        # Compute the rank-one terms
-        s_ = St1/(N-1)
-        u = 2*s_ - 1
-
-        s_sc_ = s_*(1-s_)
+        
 
         ## Constants
         # sx = Sx.sum()
@@ -972,9 +1063,10 @@ def update_concepts_kernel(X: np.ndarray,
         ## Hopfield update of s
         news = 1*s
         for step in range(steps):
-            for j in np.random.permutation(np.arange(m)):
-            # for j in range(m): # concept
+            # for j in np.random.permutation(np.arange(m)):
+            for j in range(m): # concept
 
+                # en[i,j] = 2*Sk[j] - t*k0*u[j]
                 # rows = ridx[rptr[j]:rptr[j+1]]
 
                 # Compute sparse dot product
@@ -984,9 +1076,12 @@ def update_concepts_kernel(X: np.ndarray,
                 dot -= Jii[j]*news[j]
                 if beta > 1e-6:
                     dot += beta*(np.dot(R[j], news) + r[j])
+                    en[i,j] = np.dot(R[j], news) + r[j]
 
                 ## Compute currents
                 curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
+
+                # en[i,j] = curr
 
                 ## Apply sigmoid (overflow robust)
                 if curr < -100:
@@ -1019,7 +1114,7 @@ def update_concepts_kernel(X: np.ndarray,
         # St1[flip] = n - St1[flip]
         # StS[:,flip] = St1[:,None] - StS[:,flip]
     
-    return S
+    return S , en
 
 
 
