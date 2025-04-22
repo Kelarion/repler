@@ -187,23 +187,32 @@ vecs = whgamma[np.array(toks)]
 
 #%%
 
-neal = bae_util.Neal(decay_rate=0.95, period=5)
+neal = bae_util.Neal(decay_rate=0.95, period=2)
 
 # mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
-#                                    tree_reg=0, 
-#                                    sparse_reg=1e-1,
+#                                    tree_reg=1e-1, 
+#                                    sparse_reg=1e-3,
 #                                    weight_reg=1e-2)
 # dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
 # mod.cuda()
-# # dl = pt_util.batch_data(vecs, batch_size=512)
+# dl = pt_util.batch_data(vecs, batch_size=512)
 
 # en = neal.fit(mod, dl, T_min=1e-6)
 
-mod = bae_models.BiPCA(600, sparse_reg=1e-1)
-en = neal.fit(mod, vecs.numpy())
+# mod = bae_models.BiPCA(600, sparse_reg=1e-2, tree_reg=0.1)
+# en = neal.fit(mod, vecs.numpy())
 
-S = mod.S
-W = mod.W*mod.scl
+# S = mod.S
+# W = mod.W*mod.scl
+
+mod2 = bae_models.KernelBMF(600, penalty=0.1)
+en = neal.fit(mod2, vecs.numpy(), pvar=0.95)
+
+# mod3 = bae_models.BernVAE(600, vecs.shape[1], weight_reg=1e-2)
+# dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
+# mod3.cuda()
+# # dl = pt_util.batch_data(vecs, batch_size=512)
+# en = neal.fit(mod3, dl, T_min=1e-6)
 
 #%%
 # ls = [mod.grad_step(dl) for _ in range(100)] # train a bit at zero temperature
@@ -211,4 +220,92 @@ S = mod.hidden(vecs.cuda()).cpu().detach().numpy()
 W = mod.p.weight.data.cpu().numpy()
 pi = np.diag(W.T@W)
 
+#%%
+kqmw = [words.index('king'),
+        words.index('queen'),
+        words.index('man'),
+        words.index('woman')]
 
+#%%
+
+S_cntr = np.mod(S+S[kqmw[0]],2)
+Z,grp = np.unique(S_cntr[kqmw], axis=1, return_inverse=True)
+
+piw = pi/(util.group_sum(pi,grp)[grp])
+P = util.group_sum(S_cntr@np.diag(piw), grp, axis=1)
+
+#%%
+
+cl = 3 # the "class" dimension
+gn = 5 # the "gender" dimension
+
+pos3 = [words.index('worker')]
+pos5 = [words.index('girl'), words.index('princess'), words.index('redhead')]
+neg3 = [words.index('courtier'), words.index('vassal')]
+neg5 = [words.index('boy'), words.index('reptile'), words.index('prince')]
+cntr = [words.index('dog'), words.index('mammal')]
+alleg = np.concatenate([pos3, pos5, neg3, neg5, cntr])
+
+# plt.plot([0,0,1,1,0],[0,1,1,0,0], 'k--')
+plt.plot([0,0],[0,1], 'k--')
+plt.plot([0,1],[1,1], 'k--')
+plt.plot([1,1],[1,0], 'k--')
+plt.plot([1,0],[0,0], 'k--')
+
+plt.scatter(P[:,cl], P[:,gn], color=(0.7,0.7,0.7), alpha=0.4, s=5)
+plt.scatter(P[kqmw,cl], P[kqmw,gn], c=[0,1,2,3], s=100, marker='*', cmap='Set2', zorder=10)
+
+plt.scatter(P[alleg,cl], P[alleg,gn], c='k')
+for this in alleg:
+    if P[this,cl] > 0.8:
+        dx = -3e-2
+        ha = 'right'
+    elif P[this,cl] < 0.4:
+        dx = -3e-2
+        ha = 'right'
+    else:
+        dx = 1e-2
+        ha = 'left'
+    if P[this,gn] > 0.8:
+        dy = -3e-2
+        va = 'top'
+        ha = 'right'
+    elif P[this,gn] < 0.4:
+        dy = -3e-2
+        va = 'top'
+        # ha = 'right'
+    else:
+        dy = 3e-2
+        va = 'bottom'
+    plt.text(P[this,cl]+dx,P[this,gn]+dy,words[this],
+             horizontalalignment = ha,
+             verticalalignment = va,
+             bbox={'facecolor':'white',
+                   'edgecolor': 'black',
+                   'alpha': 0.8,
+                   'boxstyle': 'round'})
+
+for this in kqmw:
+    if P[this,cl] < 0.4:
+        dx = -3e-2
+        ha = 'right'
+    else:
+        dx = 1e-2
+        ha = 'left'
+    if P[this,gn] < 0.4:
+        dy = -3e-2
+        va = 'top'
+        # ha = 'right'
+    else:
+        dy = 3e-2
+        va = 'bottom'
+    plt.text(P[this,cl]+dx,P[this,gn]+dy,words[this],
+              horizontalalignment = ha,
+              verticalalignment = va,
+              bbox={'facecolor':'white',
+                    'edgecolor': 'black',
+                    'alpha': 0.8,
+                    'boxstyle': 'round'})
+
+tpl.square_axis()
+plt.axis(False)

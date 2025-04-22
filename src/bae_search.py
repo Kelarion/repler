@@ -64,27 +64,27 @@ def sbmf(XW: np.ndarray,
         StS = np.eye(1) # need to do this for it to compile
         N = 1
 
-    en = np.zeros(S.shape)
-    # for i in np.random.permutation(np.arange(n)):
-    for i in range(n):
+    for i in np.random.permutation(np.arange(n)):
+    # for i in range(n):
 
-        # for j in np.random.permutation(np.arange(m)):
-        for j in range(m):
+        for j in np.random.permutation(np.arange(m)):
+        # for j in range(m):
             
             Sij = S[i,j]
             
-            dot = (0.5 - Sij)*WtW[j,j]
+            dot = 0.5*WtW[j,j]
             inhib = 0
             for k in range(m):
                 Sik = S[i,k]
                 
-                dot += WtW[j,k] * Sik
+                if k != j:
+                    dot += WtW[j,k] * Sik
                 
                 if regularize:
                     A = StS[j,k] - Sij*Sik
-                    B = StS[k,k] - A - Sij
-                    C = StS[j,j] - A
-                    D = n - A - B - C
+                    B = StS[j,j] - A - Sij
+                    C = StS[k,k] - A
+                    D = N - A - B - C
                     
                     # Simple conditional assignment
                     if A < min(B,C-1,D):
@@ -96,7 +96,6 @@ def sbmf(XW: np.ndarray,
                     if D <= min(A,B,C):
                         inhib -= 1 - Sik
 
-            en[i,j] = inhib    
             curr = (XW[i,j] - beta*inhib - dot - alpha)/temp
 
             if curr < -100:
@@ -117,7 +116,7 @@ def sbmf(XW: np.ndarray,
 
             S[i,j] += ds
         
-    return S, en
+    return S
 
 
 @njit
@@ -143,11 +142,11 @@ def bpca(XW: np.ndarray,
         StS = np.eye(1) # need to do this for it to compile
         N = 1
 
-    # for i in np.random.permutation(np.arange(n)):
-    for i in range(n):
+    for i in np.random.permutation(np.arange(n)):
+    # for i in range(n):
 
-        # for j in np.random.permutation(np.arange(m)):
-        for j in range(m):
+        for j in np.random.permutation(np.arange(m)):
+        # for j in range(m):
             
             Sij = S[i,j]
             
@@ -155,11 +154,11 @@ def bpca(XW: np.ndarray,
             if regularize:
                 for k in range(m):
                     Sik = S[i,k]
-                
+                    
                     A = StS[j,k] - Sij*Sik
-                    B = StS[k,k] - A - Sij
-                    C = StS[j,j] - A
-                    D = n - A - B - C
+                    B = StS[j,j] - A - Sij
+                    C = StS[k,k] - A
+                    D = N - A - B - C
                     
                     ## Simple conditional assignment
                     if A < min(B,C-1,D):
@@ -220,12 +219,11 @@ def kerbmf(X: np.ndarray,
     assert n == n2
     t = (N-1)/N
 
-    en = np.zeros(S.shape)
-    # for i in np.random.permutation(np.arange(n)):
-    for i in np.arange(n):
+    for i in np.random.permutation(np.arange(n)):
+    # for i in np.arange(n):
 
-        # for j in np.random.permutation(np.arange(m)):
-        for j in range(m): # concept
+        for j in np.random.permutation(np.arange(m)):
+        # for j in range(m): # concept
             Sij = S[i,j]
             S_j = (StS[j,j] - Sij)/(N-1)
 
@@ -233,11 +231,10 @@ def kerbmf(X: np.ndarray,
             inp = 0    
             for k in range(d):
                 inp += (2*StX[j,k]*X[i,k] + (1-2*Sij)*X[i,k]**2)/t
-            # en[i,j] = inp
 
             ## Recurrence
             dot = t*(2*(N-2)*S_j*(1-S_j) + 1)*(1/2 - Sij)
-            inhib = 0
+            inhib = 0.0
             for k in range(m):                        
                 Sik = S[i,k] 
                 S_k = (StS[k,k]-Sik)/(N-1)
@@ -248,8 +245,8 @@ def kerbmf(X: np.ndarray,
 
                 if regularize:
                     A = StS[j,k] - Sij*Sik
-                    B = StS[k,k] - A - Sij
-                    C = StS[j,j] - A
+                    B = StS[j,j] - A - Sij
+                    C = StS[k,k] - A
                     D = N - A - B - C
                     
                     # Simple conditional assignment
@@ -262,11 +259,8 @@ def kerbmf(X: np.ndarray,
                     if D <= min(A,B,C):
                         inhib -= (1 - Sik)
 
-            en[i,j] = 1*inhib
-
             ## Compute currents
             curr = (scl*inp - (scl**2)*(dot + beta*inhib))/temp
-            # en[i,j] = curr
 
             ## Apply sigmoid (overflow robust)
             if curr < -100:
@@ -289,7 +283,7 @@ def kerbmf(X: np.ndarray,
             for k in range(d):
                 StX[j,k] += X[i,k]*ds
     
-    return S, en
+    return S
 
 
 # @njit(cache=True)

@@ -46,7 +46,7 @@ import plotting as tpl
 
 # S = df_util.allpaths(df_util.randtree_feats(8,2,4))[1]
 # S = df_util.cyclecats(7)
-S = df_util.gridcats(3, 3)
+S = df_util.gridcats(4, 3)
 
 k = S.shape[1]
 Sall = util.F2(k)
@@ -57,14 +57,24 @@ I = 1.0*df_util.inc(S)
 R = -I.T@I
 R /= (-R[0,0]/2)
 
-r = R@S.mean(0)
+r = -R@S.mean(0)
+
+A = R+np.eye(k)
+b = 2*r-1
 
 dA = []
 for s in Sall[~is_attr]:
-    samps = df_util.walk(2*(R+np.eye(k)), -2*r-1, s)
-    dA.append(df_util.minham(S.T, samps.T))
+    # samps = df_util.walk((R+np.eye(k)), 2*r-1, s)
+    # samps = df_util.walk(R, -r, s)
+    samps = df_util.walk(A*(1-np.eye(k)), (b+np.diag(A))/2, s, temp=1e-12)
+    
+    dH = k - (2*samps-1)@(2*S-1).T
+    
+    dA.append(dH.min(1))
+    
     plt.plot(dA[-1])
     plt.xticks(ticks=np.arange(len(samps)-1,step=k),labels=np.arange(len(samps)//k))
+    
 
 #%%
 
@@ -333,16 +343,6 @@ for i in range(n):
             C = StS[k,k] - A
             D = n - A - B - C
 
-            # if S[i,k]: 
-            #     if A < np.min([B,C-1,D]):
-            #         deez[i,j,k] += 1 
-            #     elif C <= np.min([A,B,D]):
-            #         deez[i,j,k] -= 1
-            # else:
-            #     if B < np.min([A,C,D-1]):
-            #         deez[i,j,k] += 1 
-            #     elif D <= np.min([A,B,C]):
-            #         deez[i,j,k] -= 1
             if A < min(B,C-1,D):
                 deez[i,j,k] += S[i,k]
             if B < min(A,C,D-1):
@@ -379,6 +379,7 @@ X = (Strue-Strue.mean(0))@W.T
 b = -Strue.mean(0)@W.T
 
 S = (Strue + np.random.choice([0,1], Strue.shape, p=[0.9,0.1]))%2
+N = len(S)
 
 # ba = bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
 # ba = bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
@@ -436,7 +437,7 @@ for i in tqdm(range(n)):
             if A < min(B,C-1,D):
                 inhib += S[i,k]
             if B < min(A,C,D-1):
-                inhib += (1 - S[i,k] )
+                inhib += (1 - S[i,k])
             if C <= min(A,B,D):
                 inhib -= S[i,k]
             if D <= min(A,B,C):

@@ -327,7 +327,7 @@ class SemiBMF(BMF):
 
 class KernelBMF(BMF):
     
-    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, scale_lr=0.9):
+    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, scale_lr=1):
         
         super().__init__()
 
@@ -359,7 +359,8 @@ class KernelBMF(BMF):
         # K = self.X@self.X.T
         # notI = (1 - np.eye(self.n))/(self.n-1) 
         # self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
-        self.data = self.X
+        # self.data = self.X
+        self.data = U[:,:r]@np.diag(s[:r])
 
         ## Initialize S
         coding_level = np.random.beta(alpha, beta, self.r)/2
@@ -392,8 +393,11 @@ class KernelBMF(BMF):
     
     def EStep(self):
 
-        newS = update_concepts_kernel(self.data, 1.0*self.S, 
-            scl=self.scl, beta=self.beta, temp=self.temp, steps=self.steps)
+        # newS = update_concepts_kernel(self.data, 1.0*self.S, 
+        #     scl=self.scl, beta=self.beta, temp=self.temp, steps=self.steps)
+        newS = bae_search.kerbmf(self.data, 1.0*self.S, scl=self.scl, 
+            StS=self.S.T@self.S, StX = self.S.T@self.data, N=self.n,
+            beta=self.beta, temp=self.temp)
 
         self.S = newS
 
@@ -494,7 +498,7 @@ class BAE(students.NeuralNet):
         qls = nn.BCEWithLogitsLoss()(C0, S)
         pls = self.MStep(S, batch[0])
 
-        return qls + pls
+        return pls + self.beta*qls 
 
 # @dataclass
 # class OrthoBAE(BAE):
@@ -635,7 +639,7 @@ class BernVAE(BAE):
         if self.weight_reg > 0:
             W = self.p.weight
             WtW = W.T@W
-            loss += self.weight_reg*(torch.sum(W**2)**2)/torch.sum(WtW**2)
+            loss -= self.weight_reg*(torch.sum(W**2)**2)/torch.sum(WtW**2)
             
         return loss
 
@@ -1005,7 +1009,7 @@ def update_concepts_kernel(X: np.ndarray,
         N = 1*N
 
     St1 = np.diag(StS)
-    en = np.zeros(S.shape)
+
     # for i in np.random.permutation(np.arange(n)):
     for i in np.arange(n):
 
@@ -1045,9 +1049,7 @@ def update_concepts_kernel(X: np.ndarray,
 
             R = (best1 - best2 - best3 + best4)*1.0
             r = (best2.sum(0) - best4.sum(0))*1.0
-            
-        ## Recurrence
-        
+                            
 
         ## Constants
         # sx = Sx.sum()
@@ -1066,7 +1068,6 @@ def update_concepts_kernel(X: np.ndarray,
             # for j in np.random.permutation(np.arange(m)):
             for j in range(m): # concept
 
-                # en[i,j] = 2*Sk[j] - t*k0*u[j]
                 # rows = ridx[rptr[j]:rptr[j+1]]
 
                 # Compute sparse dot product
@@ -1076,12 +1077,9 @@ def update_concepts_kernel(X: np.ndarray,
                 dot -= Jii[j]*news[j]
                 if beta > 1e-6:
                     dot += beta*(np.dot(R[j], news) + r[j])
-                    en[i,j] = np.dot(R[j], news) + r[j]
 
                 ## Compute currents
                 curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
-
-                # en[i,j] = curr
 
                 ## Apply sigmoid (overflow robust)
                 if curr < -100:
@@ -1114,7 +1112,7 @@ def update_concepts_kernel(X: np.ndarray,
         # St1[flip] = n - St1[flip]
         # StS[:,flip] = St1[:,None] - StS[:,flip]
     
-    return S , en
+    return S 
 
 
 

@@ -92,6 +92,7 @@ class BAE(exp.Model):
     search: bool = True     # whether to include discrete search
     tree_reg: float = 0
     sparse_reg: float = 1e-2
+    beta: float = 1.0
     pr_reg: float = 1e-2
     max_iter: int = None
     epochs: int = 10
@@ -121,12 +122,14 @@ class BAE(exp.Model):
                             tree_reg=self.tree_reg, 
                             sparse_reg=self.sparse_reg, 
                             weight_reg=self.pr_reg,
+                            beta=self.beta
                             )
             else:
                 mod = bae_models.BernVAE(
                             dim_inp=X[it].shape[1], 
                             dim_hid=h,
-                            weight_reg=self.pr_reg
+                            weight_reg=self.pr_reg,
+                            beta=self.beta
                             )
 
             neal = bae_util.Neal(decay_rate=self.decay_rate, 
@@ -136,13 +139,14 @@ class BAE(exp.Model):
             dl = pt_util.batch_data(torch.FloatTensor(X[it]))
 
             t0 = time()
-            en = neal.fit(mod, dl, max_iter=self.max_iter)
+            en = neal.fit(mod, dl, max_iter=self.max_iter, T_min=1e-6)
             self.metrics['time'].append(time()-t0)
 
             S = mod.hidden(torch.FloatTensor(X[it])).detach().numpy()
 
             nrm = np.sum(util.center(K)**2)
-            ls = util.centered_kernel_alignment(K, S@S.T)
+            # ls = util.centered_kernel_alignment(K, S@S.T)
+            ls = util.nbs(X[it], S)
             mat_ham = df_util.permham(Strue[it], S)
 
             self.metrics['loss'].append(ls)
@@ -440,6 +444,15 @@ class BernVAE(exp.Model):
 ################## Tasks for server interface ###############################
 #############################################################################
 
+# @dataclass
+# class CatTask(exp.Task):
+#     samps: int
+#     snr: float
+#     dim: int = None
+#     orth: bool = True
+#     seed: int = 0
+
+
 @dataclass
 class SparseFeatures(exp.Task):
 
@@ -489,7 +502,7 @@ class SchurCategories(exp.Task):
     samps: int
     N: int
     snr: float
-    dim: int = 1000
+    dim: int = None
     p: float = 0.5
     scl: float = 0.1
     orth: bool = True
@@ -517,7 +530,12 @@ class SchurCategories(exp.Task):
                 if it > 100:
                     break
             
-            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, self.scl)
+            if self.dim is None:
+                dim = S.shape[1]
+            else:
+                dim = self.dim
+
+            X = df_util.noisyembed(S, dim, self.snr, self.orth, self.scl)
 
             Xs.append(X)
             Strues.append(S)
@@ -533,9 +551,9 @@ class HierarchicalCategories(exp.Task):
     bmin: int 
     bmax: int 
     snr: float
-    dim: int = 1000
+    dim: int = None
     orth: bool = True
-    seed: int=0
+    seed: int = 0
 
     def sample(self):
 
@@ -545,20 +563,18 @@ class HierarchicalCategories(exp.Task):
         Strues = []
         for it in range(self.samps):
             S = df_util.randtree_feats(self.N, self.bmin, self.bmax)
-            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-4)
-            # r = len(S.T)
-            # W = np.random.randn(self.dim,r)/np.sqrt(self.dim)
-            # if self.orth:
-            #     W = la.qr(W, mode='economic')[0]
 
-            # noise = np.random.randn(self.dim, self.N)/np.sqrt(self.dim)
-            # a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-self.snr/20)
+            if self.dim is None:
+                dim = S.shape[1]
+            else:
+                dim = self.dim
 
-            # X = S@W.T + a*noise.T
+            X = df_util.noisyembed(S, dim, self.snr, self.orth, scl=1e-4)
+
             Xs.append(X)
-            Strues.append(2*S-1) # sign version
+            Strues.append(S) 
 
-        return {'X': np.array(Xs), 'Strue': Strues}
+        return {'X': Xs, 'Strue': Strues}
 
 @dataclass
 class SchurTreeCategories(exp.Task):
@@ -568,12 +584,12 @@ class SchurTreeCategories(exp.Task):
     snr: float
     bmin: int 
     bmax: int 
-    dim: int = 1000
+    dim: int = None
     p: float = 0.5
     scl: float = 1e-3
     orth: bool = True
     r: int = None
-    seed: int=0
+    seed: int = 0
 
     def sample(self):
 
@@ -604,7 +620,12 @@ class SchurTreeCategories(exp.Task):
             
             S = np.hstack([Sschur, Stree])
 
-            X = df_util.noisyembed(S, self.dim, self.snr, self.orth, self.scl)
+            if self.dim is None:
+                dim = S.shape[1]
+            else:
+                dim = self.dim
+
+            X = df_util.noisyembed(S, dim, self.snr, self.orth, self.scl)
 
             Xs.append(X)
             Strues.append(S)
@@ -618,7 +639,7 @@ class CubeCategories(exp.Task):
     bits: int 
     snr: float
     seed: int = 0
-    dim: int = 100
+    dim: int = None
     orth: bool = True
     perturb: bool = False
 
@@ -632,11 +653,16 @@ class CubeCategories(exp.Task):
         if self.perturb:
             S = np.hstack([S, np.eye(2**self.bits)])
 
+        if self.dim is None:
+            dim = S.shape[1]
+        else:
+            dim = self.dim
+
         Xs = []
         Strue = []
         for it in range(self.samps):
 
-            Xs.append(df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-3))
+            Xs.append(df_util.noisyembed(S, dim, self.snr, self.orth, scl=1e-3))
             Strue.append(S)
 
         return {'X': Xs, 'Strue': Strue}
@@ -649,7 +675,8 @@ class GridCategories(exp.Task):
     values: int
     snr: float
     seed: int = 0
-    dim: int = 100
+    dim: int = None
+    isometric: bool = True
     orth: bool = True
 
     def sample(self):
@@ -659,12 +686,21 @@ class GridCategories(exp.Task):
         N = self.values**self.bits
 
         S = df_util.gridcats(self.values, self.bits)
+        if self.isometric:
+            Srep = df_util.gridcats(self.values, self.bits)
+        else:
+            Srep = df_util.grid_feats(self.values, self.bits)
+
+        if self.dim is None:
+            dim = Srep.shape[1]
+        else:
+            dim = self.dim
 
         Xs = []
         Strue = []
         for it in range(self.samps):
 
-            Xs.append(df_util.noisyembed(S, self.dim, self.snr, self.orth, scl=1e-3))
+            Xs.append(df_util.noisyembed(Srep, dim, self.snr, self.orth, scl=1e-3))
             Strue.append(S)
 
         return {'X': Xs, 'Strue': Strue}

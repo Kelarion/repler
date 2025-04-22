@@ -137,7 +137,7 @@ def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, W_lr=1e-2, b_lr=1e-2):
 
     return W, b
 
-def minham(S, Z):
+def minham(S, Z, sym=False):
     """
     Compute the hamming distance between S and Z
 
@@ -155,6 +155,8 @@ def minham(S, Z):
         Z = 2*Z-1
 
     dH = S.T@Z
+    if sym:
+        dH = np.abs(dH)
 
     return len(S) - dH.max(0)
 
@@ -411,20 +413,15 @@ def gridcats(N, d=2):
     # Sy = np.stack([1*(y<=i) for i in range(M-1)])
     # return np.vstack([Sx, Sy]).T
 
-def grid_feats(N, M=None):
+def grid_feats(N, d=2):
     """
     N x N grid
     """
 
-    if M is None:
-        M = N
-    gr1 = np.linspace(-1,1,N)
-    gr2 = np.linspace(-1,1,M)
-    x,y = np.meshgrid(gr1, gr2)
-    x = x.flatten()
-    y = y.flatten()
+    gr = np.linspace(-1,1,N)
+    X = np.meshgrid(*((gr,)*d))
 
-    return np.stack([x,y]).T
+    return np.stack([x.flatten() for x in X]).T
 
 def grid(N, M=None):
 
@@ -1528,20 +1525,35 @@ def adj(S):
     return (np.abs(dif).sum(-1)==1)*1
 
 
-def walk(A, a, s, steps=10, only_unique=False):
+def walk(A, a, s0, steps=10, temp=1e-3, only_unique=False):
 
     K = len(A)
 
-    samps = [1*s]
+    s = 1*s0
+    samps = [1*s0]
     for it in range(steps):
         for k in np.random.permutation(range(K)):
-            newsk = (np.sign(A[k]@s + a[k])+1)//2
+            # newsk = (np.sign(A[k]@s + a[k])+1)//2
+            newsk = 1*(np.random.rand() < spc.expit((A[k]@s + a[k])/temp))
             if (newsk != s[k]) or (not only_unique):
                 s[k] = newsk
                 samps.append(1*s)
 
     return np.array(samps)
 
+def signwalk(A, a, s, steps=10, temp=1e-3, only_unique=False):
+
+    K = len(A)
+
+    samps = [1*s]
+    for it in range(steps):
+        for k in np.random.permutation(range(K)):
+            newsk = np.sign(A[k]@s + a[k])
+            if (newsk != s[k]) or (not only_unique):
+                s[k] = newsk
+                samps.append(1*s)
+
+    return np.array(samps)
 
 def path(S, i, j):
 

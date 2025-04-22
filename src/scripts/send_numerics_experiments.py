@@ -99,15 +99,15 @@ send_remotely = True
 #              'scl': 1e-3
 #              }
 
-b = su.Set(np.arange(4,12))
-task_args = {'task': exp.CubeCategories,
-             'samps': 12,
-             'seed': 0,
-             'bits': b,
-             'snr': 0 << su.Real(num=3) << 30,
-             'dim': 200,
-             'orth': True,
-             }
+# b = su.Set(np.arange(4,12))
+# task_args = {'task': exp.CubeCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'bits': b,
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': None,
+#              'orth': True,
+#              }
 
 # task_args = {'task': exp.GridCategories,
 #              'samps': 12,
@@ -115,21 +115,23 @@ task_args = {'task': exp.CubeCategories,
 #              'bits': su.Set([2,3,4]),
 #              'values': su.Set([3,4,5]),
 #              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': 200,
+#              'dim': None,
 #              'orth': True,
+#              'isometric': su.Set([True, False])
 #              }
 
-# N = su.Set(2**np.arange(4,11))
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 2,
-#              'seed': su.Set([0,1,2]),
-#              'N': N,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 2000,
-#              'orth': True
-#              }
+N = su.Set(2**np.arange(4,10))
+task_args = {'task': exp.HierarchicalCategories,
+             'samps': 6,
+             'seed': su.Set([0,1]),
+             'N': N,
+             'bmin':2,
+             'bmax': 4,
+             'snr': 0 << su.Real(num=3) << 30,
+             'dim': None,
+             'orth': True
+             }
+
 # task_args = {'task': exp.SchurTreeCategories,
 #              'samps': 2,
 #              'seed': su.Set([0,1,2]),
@@ -147,29 +149,20 @@ task_args = {'task': exp.CubeCategories,
 #             'decay_rate': (1, 0.9),
 #             'T0': (1e-6, 5),
 #             'max_iter': (100, None),
-#             'sparse_reg': su.Set([0, 1e-2, 1e-1]),
-#             'tree_reg': su.Set([0, 1e-2]),
+#             'sparse_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
 #             # 'pr_reg': su.Set([0, 1e-2]),
 #             'period': 2
 #             }
 
-mod_args = {'model': exp.BiPCA,
-            # 'dim_hid': None,
-            'decay_rate': (1, 0.9),
-            'T0': (1e-6, 5),
-            'max_iter': (100, None),
-            'sparse_reg': su.Set([0, 1e-2]),
+mod_args = {'model': exp.KBMF,
+            'dim_hid': None,
+            'decay_rate': 0.95,
+            'T0': 5,
+            'max_iter': None,
+            'tree_reg': su.Set([0, 1e-1, 1]),
             'period': 2
             }
-
-# mod_args = {'model': exp.KBMF,
-#             'dim_hid': su.Set([None, 200]),
-#             'decay_rate': (1, 0.9),
-#             'T0': (1e-6, 5),
-#             'max_iter': (100, None),
-#             'tree_reg': su.Set([0, 1e-2]),
-#             'period': 2
-#             }
 
 # mod_args = {'model': exp.BAE,
 #             'search': su.Set([True, False]),
@@ -179,6 +172,17 @@ mod_args = {'model': exp.BiPCA,
 #             'pr_reg': su.Set([0, 1e-2]),
 #             'tree_reg': 0,
 #             'epochs': 10,
+#             }
+
+# mod_args = {'model': exp.BAE,
+#             'search': (True, False),
+#             'beta': (1.0, 0.0),
+#             'decay_rate': 0.9,
+#             'T0': 5,
+#             'max_iter':None,
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': su.Set([0, 1]),
+#             'epochs': 20,
 #             }
 
 ### magic

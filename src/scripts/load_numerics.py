@@ -112,7 +112,7 @@ import df_models
 #              'seed': 0,
 #              'bits': b,
 #              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': 200,
+#              'dim': None,
 #              'orth': True,
 #              }
 
@@ -122,35 +122,37 @@ task_args = {'task': exp.GridCategories,
              'bits': su.Set([2,3,4]),
              'values': su.Set([3,4,5]),
              'snr': 0 << su.Real(num=3) << 30,
-             'dim': 200,
+             'dim': None,
              'orth': True,
+             'isometric': su.Set([True, False])
              }
-
 
 # mod_args = {'model': exp.SBMF,
 #             'ortho': True,
 #             'decay_rate': (1, 0.9),
 #             'T0': (1e-6, 5),
 #             'max_iter': (100, None),
-#             'sparse_reg': su.Set([0, 1e-2, 1e-1]),
-#             'tree_reg': su.Set([0, 1e-2]),
+#             'sparse_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
 #             # 'pr_reg': su.Set([0, 1e-2]),
 #             'period': 2
 #             }
 
 # mod_args = {'model': exp.KBMF,
-#             'decay_rate': (1, 0.9),
-#             'T0': (1e-6, 5),
-#             'max_iter': (100, None),
-#             'tree_reg': su.Set([0, 1e-2]),
+#             'dim_hid': su.Set([None, 200]),
+#             'decay_rate': 0.9,
+#             'T0': 5,
+#             'max_iter': None,
+#             'tree_reg': su.Set([0, 1e-1]),
 #             'period': 2
 #             }
 
 mod_args = {'model': exp.BAE,
-            'search': su.Set([True, False]),
-            'decay_rate': (1, 0.9),
-            'T0': (1e-6, 5),
-            'max_iter':(100, None),
+            'search': (True, False),
+            'beta': (1.0, 0.0),
+            'decay_rate': 0.9,
+            'T0': 5,
+            'max_iter':None,
             'pr_reg': su.Set([0, 1e-2]),
             'tree_reg': 0,
             'epochs': 10,
@@ -180,11 +182,11 @@ for k,v in all_metrics.items():
 #%%
 
 # plot_this = 'time'
-# plot_this = 'mean_hamming'
+plot_this = 'mean_hamming'
 # plot_this = 'mean_mat_ham'
 # plot_this = 'mean_norm_ham'
 # plot_this = 'median_mat_ham'
-plot_this = 'median_hamming'
+# plot_this = 'median_hamming'
 # plot_this = 'weighted_hamming'
 # plot_this = 'loss'
 # plot_this = 'nbs'
@@ -195,10 +197,9 @@ plot_against = prm['values']**prm['bits']
 
 normalize = True
 # normalize = False
-
-# these = (prm['decay_rate']<1)&(prm['tree_reg']==0)
+# these = (prm['decay_rate']<1)&(prm['tree_reg']>0)&(prm['isometric'])&(prm['dim_hid'] == 200)
 # these = (prm['decay_rate']==1)&(prm['tree_reg']==0)&(prm['sparse_reg']>0)
-these = (~prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)
+these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)&(prm['isometric'])
 # these = (prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)
@@ -206,16 +207,16 @@ these = (~prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg
 # these = (prm['br']==2)
 # these = (prm['br']==2)&(prm['p']==0.1)
 
-these = these&(prm['bits'] == 4)
+# these = these&(prm['values'] == 5)
 
 # these = these&np.isin(prm['snr'], [0,12,30])
 
-# style = '-'
-style = '--'
+style = '-'
+# style = '--'
 # style = ':'
 
-# marker = '.'
-marker = 'd'
+marker = '.'
+# marker = 'd'
 # marker = '^'
 
 esenar = np.unique(prm['snr'][these])
