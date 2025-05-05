@@ -44,9 +44,9 @@ import plotting as tpl
 
 #%%
 
-# S = df_util.allpaths(df_util.randtree_feats(8,2,4))[1]
+S = df_util.allpaths(df_util.randtree_feats(8,2,4))[1]
 # S = df_util.cyclecats(7)
-S = df_util.gridcats(4, 3)
+# S = df_util.gridcats(4, 3)
 
 k = S.shape[1]
 Sall = util.F2(k)
@@ -63,7 +63,7 @@ A = R+np.eye(k)
 b = 2*r-1
 
 dA = []
-for s in Sall[~is_attr]:
+for s in Sall[is_attr]:
     # samps = df_util.walk((R+np.eye(k)), 2*r-1, s)
     # samps = df_util.walk(R, -r, s)
     samps = df_util.walk(A*(1-np.eye(k)), (b+np.diag(A))/2, s, temp=1e-12)
@@ -74,7 +74,63 @@ for s in Sall[~is_attr]:
     
     plt.plot(dA[-1])
     plt.xticks(ticks=np.arange(len(samps)-1,step=k),labels=np.arange(len(samps)//k))
+
+#%%
+
+N = [2**3, 2**4, 2**5, 2**6]
+betas = 10**np.linspace(-2, -1, 10)
+draws = 20
+
+neal = bae_util.Neal(0.9, period=2)
+ham = []
+tree = []
+for n in N:
+    disham = []
+    distree = []
+    for beta in tqdm(betas):
+        
+        wa = []
+        ba = []
+        for draw in range(draws):
+        
+            S = df_util.randtree_feats(n, 2,4)
+            X = df_util.noisyembed(S, S.shape[1], 30, scl=1e-4)
+            
+            # mod = bae_models.KernelBMF(S.shape[1], tree_reg=beta, scale_lr=1)
+            mod = bae_models.BiPCA(S.shape[1], tree_reg=1, sparse_reg=0)
+            en = neal.fit(mod, X, verbose=False)
+            
+            wa.append(df_util.permham(S, mod.S, norm=True).mean())
+            ba.append(df_util.treecorr(mod.S).mean())
+        
+        disham.append(np.mean(wa, 0))
+        distree.append(np.mean(ba, 0))
     
+    ham.append(disham)
+    tree.append(distree)
+
+#%%
+
+nodes = np.arange(len(S))
+P, npath = df_util.isometrichull(G, nodes )
+
+npath = npath[:,None]
+
+ij = [(aye==i)|(jay==i) for i in range(M)]
+
+A = P[:,aye==jay]
+
+removed = []
+while np.min(npath) > 0:
+    
+    thisone = np.argmin(A.sum(0))
+    
+    if np.min(npath-A[:,[thisone]]) > 0:
+        removed.append(thisone)
+        npath -= A[:,[thisone]]
+        A -= P[:,ij[thisone]]
+    else:
+        break
 
 #%%
 
@@ -531,97 +587,6 @@ for f in util.F2(m):
 plt.scatter(deez, doze)
 
 #%%
-
-for f,l in tqdm(zip(frms, lids[ids])):
-    
-    c = cgid[cogs['Form_ID'].tolist().index(f)]
-    cogmat[l,c] = 1
-
-#%%
-
-these_langs = ['Latin',
-               'Brazilian Portuguese',
-               'Hindi',
-               'Urdu',
-               'Italian',
-               'English',
-               'Sinhala',
-               'Hittite',
-               'Gothic',
-               'Kamviri',
-               'Transalpine Gaulish',
-               'Polish',
-               'Bengali',
-               'Eastern Pahari',
-               'Scottish Gaelic',
-               'Northern Welsh',
-               # 'Slovenian',
-               'Slovak',
-               'Western Farsi',
-               'Modern Greek',
-               'Early Irish',
-               'Icelandic',
-               'Catalan',
-               'Southern Kurdish',
-               'Kumzari',
-               'Elfdalian',
-               # 'Danish',
-               'Western Flemish',
-               'German',
-               'Takestani',
-               # 'Hawraman-I Taxt',
-               'Macedonian',
-               'Bakhtiari',
-               'Romanian',
-               'Francoprovencalic',
-               'Khwarezmian',
-               'Ukrainian',
-               'Eastern Armenian']
-
-
-plt_these = np.isin(Gtree.nodes,range(160))
-nx.draw(Gtree,pos=pos, node_size=10*plt_these, 
-        node_color=cmap(grp[np.where(plt_these, Gtree.nodes, 0)]))
-
-
-cmap = cm.tab10
-
-for this_lang in these_langs:
-    this = lan['Glottolog_Name'].tolist().index(this_lang)
-    
-    if pos[this][0] > p_cntr[0]:
-        dx = 5
-        ha = 'left'
-    elif pos[this][0] < p_cntr[0]:
-        dx = -5
-        ha = 'right'
-    else:
-        dx = 1e-2
-        ha = 'left'
-    if pos[this][1] > p_cntr[1]:
-        dy = 5
-        va = 'bottom'
-        # ha = 'right'
-    if pos[this][1] < p_cntr[1]:
-        dy = -5
-        va = 'top'
-        # ha = 'right'
-    else:
-        dy = 5e-2
-        va = 'bottom'
-    plt.scatter(pos[this][0], pos[this][1], color=cmap(grp[this]), zorder=10)
-    plt.text(pos[this][0]+dx,pos[this][1]+dy, this_lang,
-             horizontalalignment = ha,
-             verticalalignment = va,
-             color=cmap(grp[this]),
-             bbox={'facecolor':'white', 
-                   'edgecolor': cmap(grp[this]), 
-                   'alpha': 0.8,
-                   'boxstyle': 'round'})
-
-dicplt.square_axis()
-
-#%%
 import pypoman as ppm
 from tqdm import tqdm
 from itertools import combinations
@@ -647,6 +612,7 @@ for n in range(5,6):
         verts = ppm.compute_polytope_vertices(A, b)
 
         sols.append([np.diag(v[v>1e-6])@all_cats[v>1e-6] for v in verts])
+        
 #%%
 
 def plot_graph(S):

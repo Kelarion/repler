@@ -109,28 +109,28 @@ send_remotely = True
 #              'orth': True,
 #              }
 
-# task_args = {'task': exp.GridCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'bits': su.Set([2,3,4]),
-#              'values': su.Set([3,4,5]),
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': None,
-#              'orth': True,
-#              'isometric': su.Set([True, False])
-#              }
-
-N = su.Set(2**np.arange(4,10))
-task_args = {'task': exp.HierarchicalCategories,
-             'samps': 6,
-             'seed': su.Set([0,1]),
-             'N': N,
-             'bmin':2,
-             'bmax': 4,
+task_args = {'task': exp.GridCategories,
+             'samps': 12,
+             'seed': 0,
+             'bits': su.Set([2,3,4]),
+             'values': su.Set([3,4,5]),
              'snr': 0 << su.Real(num=3) << 30,
              'dim': None,
-             'orth': True
+             'orth': True,
+             'isometric': su.Set([True, False])
              }
+
+# N = su.Set(2**np.arange(4,10))
+# task_args = {'task': exp.HierarchicalCategories,
+#              'samps': 6,
+#              'seed': su.Set([0,1]),
+#              'N': N,
+#              'bmin':2,
+#              'bmax': 4,
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': None,
+#              'orth': True
+#              }
 
 # task_args = {'task': exp.SchurTreeCategories,
 #              'samps': 2,
@@ -157,11 +157,11 @@ task_args = {'task': exp.HierarchicalCategories,
 
 mod_args = {'model': exp.KBMF,
             'dim_hid': None,
-            'decay_rate': 0.95,
-            'T0': 5,
-            'max_iter': None,
+            'decay_rate': (0.95, 1),
+            'T0': (5, 1e-5),
+            'max_iter': (None, 10),
             'tree_reg': su.Set([0, 1e-1, 1]),
-            'period': 2
+            'period': 5
             }
 
 # mod_args = {'model': exp.BAE,
@@ -175,14 +175,14 @@ mod_args = {'model': exp.KBMF,
 #             }
 
 # mod_args = {'model': exp.BAE,
-#             'search': (True, False),
-#             'beta': (1.0, 0.0),
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'max_iter':None,
+#             'search': (True, True, False),
+#             'beta': (1.0, 1.0, 0.0),
+#             'decay_rate': (0.9, 1, 1),
+#             'T0': (5, 1e-5, 1e-5),
+#             'max_iter': (None, 1000, 1000),
 #             'pr_reg': su.Set([0, 1e-2]),
 #             'tree_reg': su.Set([0, 1]),
-#             'epochs': 20,
+#             'epochs': 10,
 #             }
 
 ### magic

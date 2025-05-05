@@ -88,11 +88,23 @@ for f,l in tqdm(zip(fid, lid)):
 
 #%%
 
-mod = bae_models.KernelBAE(300, penalty=2)
+mod = bae_models.KernelBMF(300, tree_reg=1, scale_lr=0.9)
 
-neal = bae_util.Neal(decay_rate=0.98, period=2, initial=10)
+neal = bae_util.Neal(decay_rate=0.95, period=2, initial=5)
 
 en = neal.fit(mod, cogmat)
+
+# neal = bae_util.Neal(decay_rate=0.95, period=2)
+
+# mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
+#                                    tree_reg=1e-1, 
+#                                    sparse_reg=1e-3,
+#                                    weight_reg=1e-2)
+# # dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
+# # mod.cuda()
+# dl = pt_util.batch_data(vecs, batch_size=512)
+
+# en = neal.fit(mod, dl, T_min=1e-6)
 
 # cv = []
 # neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
@@ -109,57 +121,112 @@ E,H = df_util.allpaths(mod.S)
 G = nx.Graph()
 G.add_edges_from(E)
 
-pos = graphviz_layout(G, prog='neato')
+# G = nx.maximum_spanning_tree(G)
+
+pos = graphviz_layout(G, prog='twopi')
 
 #%%
 
 cmap = cm.tab10
 
+fig,ax = plt.subplots()
+plt_these = np.isin(G.nodes,range(160))
+nx.draw(G, pos=pos, node_size=10*plt_these, 
+        node_color=cmap(grp[np.where(plt_these, G.nodes, 0)]))
+
+p_cntr = np.mean([p for p in pos.values()],0)
+X = np.array([pos[i] for i in range(160)])
+
+names = lang['Glottolog_Name'].tolist()
+
+dicplt.hovertext(X[:,0], X[:,1], labels=names, c=grp)
+
+dicplt.square_axis()
+
+#%%
+
 these_langs = ['Latin',
-               # 'Brazilian Portuguese',
-               'Hindi',
-               'Urdu',
+               'Old Breton',
+               'Tregorrois',
                'Italian',
-               'English',
-               'Sinhala',
-               'Hittite',
                'Gothic',
-               'Kamviri',
-               'Transalpine Gaulish',
-               'Polish',
-               'Bengali',
-               'Eastern Pahari',
-               'Scottish Gaelic',
-               'Northern Welsh',
-               'Barbaricino',
-               'Slovenian',
-               # 'Slovak',
-               'Western Farsi',
-               'Modern Greek',
-               'Early Irish',
-               'Icelandic',
-               'Catalan',
-               'Southern Kurdish',
-               'Kumzari',
                'Elfdalian',
                'Danish',
-               'Western Flemish',
-               # 'German',
-               'Takestani',
-               # 'Hawraman-I Taxt',
-               'Tokharian A',
-               'Macedonian',
-               'Bakhtiari',
-               'Romanian',
+               'Dutch',
                'Central Alemannic',
-               'Francoprovencalic',
+               'Irish',
+               'Bakhtiari',
+               'Southern Kurdish',
+               'Sogdian',
+               'Parthian',
+               'Albanian',
+               'Achaean Greek',
+               'Modern Greek',
                'Oscan',
+               'Urdu',
+               # 'Hindi',
+               'Kashmiri',
+               'Bengali',
+               'Vedic Sanskrit',
                'Latvian',
-               # 'Dalmatian',
-               'Khwarezmian',
+               'Macedonian',
+               'Polish',
+               'Slovenian',
+               'Slovak',
                'Ukrainian',
-               'Eastern Armenian']
+               'Walloon',
+               'Barbaricino',
+               'Romanian',
+               'Catalan']
 
+# these_langs = ['Latin',
+#                # 'Brazilian Portuguese',
+#                # 'Portuguese',
+#                'Hindi',
+#                'Urdu',
+#                'Italian',
+#                'English',
+#                'Sinhala',
+#                'Hittite',
+#                'Gothic',
+#                'Kamviri',
+#                'Transalpine Gaulish',
+#                'Polish',
+#                'Bengali',
+#                'Eastern Pahari',
+#                'Scottish Gaelic',
+#                'Northern Welsh',
+#                'Barbaricino',
+#                'Slovenian',
+#                # 'Slovak',
+#                # 'Umbrian',
+#                'Western Farsi',
+#                'Modern Greek',
+#                'Early Irish',
+#                'Icelandic',
+#                'Catalan',
+#                'Southern Kurdish',
+#                'Kumzari',
+#                'Elfdalian',
+#                'Danish',
+#                'Western Flemish',
+#                # 'German',
+#                'Takestani',
+#                # 'Hawraman-I Taxt',
+#                'Tokharian A',
+#                'Macedonian',
+#                'Bakhtiari',
+#                'Romanian',
+#                'Central Alemannic',
+#                'Francoprovencalic',
+#                'Oscan',
+#                'Latvian',
+#                # 'Dalmatian',
+#                'Khwarezmian',
+#                'Ukrainian',
+#                'Eastern Armenian']
+
+plt.figure()
 plt_these = np.isin(G.nodes,range(160))
 nx.draw(G, pos=pos, node_size=10*plt_these, 
         node_color=cmap(grp[np.where(plt_these, G.nodes, 0)]))
@@ -198,7 +265,5 @@ for this_lang in these_langs:
                    'edgecolor': cmap(grp[this]), 
                    'alpha': 0.8,
                    'boxstyle': 'round'})
-
+    
 dicplt.square_axis()
-
-

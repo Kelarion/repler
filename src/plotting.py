@@ -875,3 +875,91 @@ def matshow(X, ax=None,
     ax.axis(False)
 
     return im
+
+def hovertext(x, y, labels, offset=1, c=None, cmap=cm.tab10, 
+    ax=None, max_ind=10, **scat_args):
+    """
+    Scatter plot of x and y, with labels when you hover over the points
+    """    
+
+    if c is None:
+        c = np.zeros(len(x))
+
+    if ax is None:
+        ax = plt.gca()
+        fig = ax.get_figure()
+
+    scat = plt.scatter(x, y, c=c, **scat_args)
+
+    annot = ax.annotate("", xy=(0,0), xytext=(5,5), textcoords="offset points", 
+                        bbox={'facecolor':'white', 
+                              'alpha': 0.8,
+                              'boxstyle': 'round'})
+
+    norm = plt.Normalize(1,len(np.unique(c)))
+    def update_annot(ind):
+        
+        pos = scat.get_offsets()[ind["ind"][0]]
+        annot.xy = pos
+        labs = [labels[n] for n in ind["ind"]]
+        text = "{}, {}".format(" ".join(list(map(str,ind["ind"][:max_ind]))), 
+                               " ".join([labels[n] for n in ind["ind"][:max_ind]]))
+        if len(ind["ind"]) > max_ind:
+            text += ' ...'
+        annot.set_text(text)
+        annot.get_bbox_patch().set_edgecolor(cmap(norm(c[ind["ind"][0]])))
+        annot.get_bbox_patch().set_alpha(0.4)
+
+    def hover(event):
+        vis = annot.get_visible()
+        if event.inaxes == ax:
+            cont, ind = scat.contains(event)
+            if cont:
+                update_annot(ind)
+                annot.set_visible(True)
+                fig.canvas.draw_idle()
+            else:
+                if vis:
+                    annot.set_visible(False)
+                    fig.canvas.draw_idle()
+
+    fig.canvas.mpl_connect("motion_notify_event", hover)
+
+def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, **scat_args):
+    """
+    Scatter plot of x and y, with labels when you hover over the points
+    """    
+
+    if c is None:
+        c = 'k'
+
+    if ax is None:
+        ax = plt.gca()
+        fig = ax.get_figure()
+
+    scat = plt.scatter(x, y, c=c, **scat_args)
+
+    xbar = [x.mean(), y.mean()]
+
+    for n,l in enumerate(labels):
+        if x[n] > xbar[0]:
+            dx = -3e-2
+            ha = 'right'
+        else:
+            dx = 1e-2 
+            ha = 'left'
+        if y[n] > xbar[1]:
+            dy = -3e-2
+            va = 'top'
+            ha = 'right'
+        else:
+            dy = 3e-2
+            va = 'bottom'
+
+        plt.text(x[n]+dx, y[n]+dy, l,
+             horizontalalignment = ha,
+             verticalalignment = va,
+             bbox={'facecolor':'white', 
+                   'edgecolor': 'black', 
+                   'alpha': 0.8,
+                   'boxstyle': 'round'})

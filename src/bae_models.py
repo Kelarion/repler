@@ -89,16 +89,19 @@ class BiPCA(BMF):
     on non-identifiable instances. 
     """
 
-    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, center=False, chains=1):
+    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, center=False,
+        alpha_pr=2, beta_pr=5):
 
         super().__init__()
 
         self.r = dim_hid
-        self.k = chains
 
         self.alpha = sparse_reg
         self.beta = tree_reg 
         self.center = center
+
+        coding_level = np.random.beta(alpha_pr, beta_pr, self.r)/2
+        self.prior_logits = -np.log(coding_level/(1-coding_level))
 
     def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1, W_init='pca'):
 
@@ -109,7 +112,8 @@ class BiPCA(BMF):
         else:
             X_ = X - X.mean(0)
 
-        self.data = X_
+        ## Standardize data to O(1) fluctuations
+        self.data = X_/np.sqrt(np.mean(X_**2))
 
         ## Initialise b
         if self.center:
@@ -129,8 +133,6 @@ class BiPCA(BMF):
 
         ## Initialize S
         self.S = 1*(self.data@self.W - self.b@self.W > 0.5)
-        # coding_level = np.random.beta(alpha, beta, self.r)/2
-        # num_active = np.floor(coding_level*self.n).astype(int)
 
         # Mx = self.data@self.W
         # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
@@ -143,31 +145,18 @@ class BiPCA(BMF):
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
-        # XW = self.data@self.W - self.b@self.W
-        # if (self.beta > 1e-6) or self.center:
-        #     if self.center:
-        #         newS = update_concepts_asym_cntr(XW, 1.0*self.S, self.scl, 
-        #                 alpha=self.alpha, beta=self.beta, temp=self.temp)
-        #     else:
-        #         newS = update_concepts_asym(XW, 1.0*self.S, self.scl, 
-        #             alpha=self.alpha, beta=self.beta, temp=self.temp)
-        # else:
-        #     C = 2*XW - self.scl*(1 + self.alpha)
-        #     newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/self.temp))
+        XW = (self.data@self.W - self.b@self.W)
 
-        XW = self.data@self.W - self.b@self.W
-        # if self.center:
-        #     newS = update_concepts_asym_cntr(XW, 1.0*self.S, self.scl, 
-        #             alpha=self.alpha, beta=self.beta, temp=self.temp)
-        # else:
         if self.beta > 1e-6:
             StS = 1.0*self.S.T@self.S
             newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
-                StS=StS, N=self.n,
-                alpha=self.alpha, beta=self.beta, temp=self.temp)
+                StS=StS, N=self.n, 
+                alpha=self.alpha, beta=self.beta, temp=self.temp,
+                prior_logits=self.prior_logits)
         else:
             newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
-                alpha=self.alpha, beta=self.beta, temp=self.temp)
+                alpha=self.alpha, beta=self.beta, temp=self.temp,
+                prior_logits=self.prior_logits)
 
         self.S = newS
 
@@ -327,7 +316,7 @@ class SemiBMF(BMF):
 
 class KernelBMF(BMF):
     
-    def __init__(self, dim_hid, penalty=1e-2, steps=1, max_ctx=None, scale_lr=1):
+    def __init__(self, dim_hid, tree_reg=1e-2, steps=1, scale_lr=1):
         
         super().__init__()
 
@@ -335,8 +324,8 @@ class KernelBMF(BMF):
         self.initialized = False
 
         self.steps = steps
-        self.beta = penalty
-        self.max_ctx = max_ctx
+        self.beta = tree_reg
+        # self.gamma = svd_reg
         self.scl_lr = scale_lr
 
     def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1):
@@ -359,7 +348,9 @@ class KernelBMF(BMF):
         # K = self.X@self.X.T
         # notI = (1 - np.eye(self.n))/(self.n-1) 
         # self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
-        # self.data = self.X
+
+        # scale = (self.n*self.r) # prior coding level
+        # self.data = U[:,:r]@np.diag(s[:r])*np.sqrt(scale/np.sum(s[:r]**2))
         self.data = U[:,:r]@np.diag(s[:r])
 
         ## Initialize S
@@ -444,7 +435,7 @@ class BAE(students.NeuralNet):
         self.q = nn.Linear(self.dim_inp, self.dim_hid) # x -> s
         self.p = nn.Linear(self.dim_hid, self.dim_inp) # s -> x'
 
-        self.StS = torch.eye(self.dim_hid)
+        # self.StS = torch.eye(self.dim_hid)
         # self.StS = np.eye(self.dim_hid)
 
         ## Prior distribution
@@ -460,6 +451,9 @@ class BAE(students.NeuralNet):
         """
         self.N = len(dl.dataset)
         self.init_optimizer(**opt_args)
+
+        Sall = self.hidden(dl.dataset.tensors[0])
+        self.StS = Sall.T@Sall
 
     def forward(self, X):
         return self.p((torch.sign(self.q(X))+1)/2)
@@ -500,36 +494,6 @@ class BAE(students.NeuralNet):
 
         return pls + self.beta*qls 
 
-# @dataclass
-# class OrthoBAE(BAE):
-
-#     tree_reg: float = 0.1
-#     center: bool = False
-#     kernelised: bool = False
-
-#     def EStep(self, S, X):
-
-#         W = self.p.weight.data
-#         b = self.p.bias.data
-
-#         if (self.tree_reg > 1e-6) or self.center:
-#             if self.center:
-#                 newS = update_concepts_asym_cntr(X, S, W, self.scl, 
-#                     beta=self.tree_reg, temp=temp)
-#             else:
-#                 newS = update_concepts_asym(X-b, S, W, self.scl, 
-#                     beta=self.tree_reg, temp=temp)
-#         else:
-#             C = 2*(X-self.b)@self.W - self.scl
-#             newS = 1*(np.random.rand(self.n, self.r) > spc.expit(C/temp))
-
-#         return newS
-
-#     def MStep(self, S, X):
-
-#         ls = nn.BCEWithLogitsLoss()(S, S)
-
-
 @dataclass(eq=False)
 class BinaryAutoencoder(BAE):
     """
@@ -540,50 +504,30 @@ class BinaryAutoencoder(BAE):
     sparse_reg: float = 1e-2
     weight_reg: float = 1e-2
 
-    def metrics(self, dl):
-
-        active = []
-        for batch in dl:
-            Sb = 1*(self.hidden(batch[0])>0.5).data.numpy()
-            active.append(Sb.sum(0))
-
-        return np.sum(active, axis=0)
-
     def EStep(self, S, X):
-
-        # ## Convert to numpy since that's what Numba accepts
-        # W = self.p.weight.data.numpy().astype(float)
-        # b = self.p.bias.data.numpy().astype(float)
-        # Snp = 1.0*(S.data.numpy() > 0.5) # convert from sigmoid 
-        # Xnp = X.data.numpy().astype(float)
-
-        # newS = bmf(Xnp - b, Snp, W, StS=self.StS, N=self.N,
-        #     alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
-
-        # self.StS += (newS.T@newS - Snp.T@Snp)
-
-        # return torch.FloatTensor(newS)
 
         with torch.no_grad():
 
             if self.StS.device.type != S.device.type:
                 self.StS = self.StS.to(S.device)
+            Sbin = 1.0*(S > 0.5)
 
             if S.device.type == 'cpu':
             # Convert to numpy since that's what Numba accepts
                 Xnp = X.detach().numpy().astype(float)
                 W = self.p.weight.data.detach().numpy().astype(float)
                 b = self.p.bias.data.detach().numpy().astype(float)
-                Snp = 1.0*(S > 0.5).data.detach().numpy().astype(float) # convert from sigmoid
+                Snp = Sbin.data.detach().numpy().astype(float) # convert from sigmoid
                 StS = self.StS.numpy().astype(float)
             else:
                 Xnp = X.cpu().numpy().astype(float)
                 W = self.p.weight.data.cpu().numpy().astype(float)
                 b = self.p.bias.data.cpu().numpy().astype(float)
-                Snp = 1.0*(S > 0.5).data.cpu().numpy().astype(float) # convert from sigmoid
+                Snp = Sbin.data.cpu().numpy().astype(float) # convert from sigmoid
                 StS = self.StS.cpu().numpy().astype(float)
+                # StS = Snp.T@Snp
 
-            newS = bae_search.sbmf(
+            newS, newStS = bae_search.sbmf(
                 XW=(Xnp - b)@W, S=Snp, WtW=W.T@W,           # inputs
                 StS=StS, N=self.N,                          # batching
                 alpha=self.sparse_reg, beta=self.tree_reg,  # regualarization
@@ -591,23 +535,12 @@ class BinaryAutoencoder(BAE):
 
             newS = torch.tensor(newS, dtype=S.dtype, device=S.device)
             # newS = torch.FloatTensor(newS)
-
-            self.StS += (newS.T@newS - S.T@S)
-
-            # else:
-
-            #     W = self.p.weight
-            #     b = self.p.bias
-            #     Snp = 1.0*(S > 0.5) # convert from sigmoid to
-
-            #     newS = ptbmf(X - b, Snp, W, StS=self.StS, N=self.N,
-            #         alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
-
-            #     self.StS = self.StS + (newS.T@newS - Snp.T@Snp)
-            # return newS
+            self.StS = torch.tensor(newStS, 
+                dtype=self.StS.dtype, 
+                device=self.StS.device)
+            # self.StS += (newS.T@newS - Sbin.T@Sbin)
 
         return newS
-        # return torch.FloatTensor(newS)
 
     def MStep(self, S, X):
 
@@ -627,6 +560,7 @@ class BernVAE(BAE):
     """
 
     weight_reg: float = 0.1
+    sparse_reg: float = 0.0
 
     def EStep(self, S, X):
 
@@ -635,6 +569,7 @@ class BernVAE(BAE):
     def MStep(self, S, X):
 
         loss = nn.MSELoss()(self.p(S), X) 
+        loss += self.sparse_reg*torch.mean(S)
 
         if self.weight_reg > 0:
             W = self.p.weight

@@ -139,7 +139,7 @@ def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, W_lr=1e-2, b_lr=1e-2):
 
 def minham(S, Z, sym=False):
     """
-    Compute the hamming distance between S and Z
+    Compute the hamming distance between columns of S and Z
 
     Assumes that S and Z are sign matrices, i.e. +/- 1
 
@@ -160,11 +160,9 @@ def minham(S, Z, sym=False):
 
     return len(S) - dH.max(0)
 
-def permham(S, Z):
+def permham(S, Z, norm=False):
     """
     Compute the permutation-invariant hamming distance between S and Z
-
-    Assumes that S and Z are sign matrices, i.e. +/- 1
 
     S is (num_item, num_S_features)
     Z is (num_item, num_Z_features)
@@ -173,14 +171,62 @@ def permham(S, Z):
     """
 
     if np.all(np.abs(S**2 - S) < 1e-6):
-        S = 2*S-1
+        S_ = 2*S-1
+    else:
+        S_ = S
     if np.all(np.abs(Z**2 - Z) < 1e-6):
-        Z = 2*Z-1
+        Z_ = 2*Z-1
+    else:
+        Z_ = Z
 
-    dH = len(S) - np.abs(S.T@Z)
+    dH = len(S) - np.abs(S_.T@Z_)
+    if norm:
+        dH = dH/(np.sum(S>0,axis=0)[:,None])
     aye,jay = util.unbalanced_assignment(dH, one_sided=True)
 
-    return dH[aye,jay]
+    return (dH[aye,jay])[np.argsort(aye)]
+
+def porder(S):
+    """
+    Compute partial order of the columns of S under subset relation
+    """
+
+    Sunq, idx = np.unique(S, axis=1, return_inverse=True)
+
+    k = Sunq.shape[1]
+    ovlp = Sunq.T@Sunq
+    issubset = (ovlp/np.diag(ovlp)[None] - np.eye(k) == 1)
+    aye, jay = np.where(issubset)
+
+    ## Get 
+    graph = {i:jay[aye==i] for i in range(k)}
+    depth = util.depth(graph)
+
+    return depth[idx]
+
+# def conceptdepth(S):
+#     """
+#     Not super sure what this does, I think it takes a binary matrix
+#     whose rows are clusters (a "hypergraph" incidence matrix) and 
+#     assigns to each one a depth.
+
+#     Dependency on networkx package
+#     """
+
+#     k = S.shape[1]
+
+#     issubset = ((S.T@S)/S.sum(0,keepdims=True) - np.eye(k) == 1)
+#     aye, jay = np.where(issubset)
+#     porder = util.topsort(aye, jay)
+    
+#     depth = np.zeros(k)
+#     for i in nx.topological_sort(G):
+#         anc = 
+#         if len(anc)>0:
+#             depth[i] = np.max(depth[anc])+1
+
+#     return depth
+
 
 def treecorr(S):
     return np.min([S.T@S, (1-S).T@S, S.T@(1-S), (1-S).T@(1-S)], axis=0)
@@ -528,11 +574,11 @@ class NMF:
 
         else: ## gradient descent
             WTW = self.W.T@self.W
-            dXhat = (X - Z@self.W.T)
+            dXhat = (X - self.Z@self.W.T)
             # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
             dReg = self.wpr*self.W@(np.eye(self.r) - WTW*np.trace(WTW)/np.sum(WTW**2))
 
-            dW = dXhat.T@Z/self.n
+            dW = dXhat.T@self.Z/self.n
             db = dXhat.sum(0)/self.n
 
             self.W += 1e-2*(dW + dReg)
@@ -1408,7 +1454,7 @@ def dH(S):
 
     return R, r
 
-def allpaths(S, verbose=False):
+def allpaths(S, verbose=False, separate_duplicates=True):
     """
     Paths of the graph of S
     """
@@ -1609,7 +1655,7 @@ def path(S, i, j):
     return np.array(edges).T, np.array(H[N:])
 
 
-def plotgraph(S, type='neato', **scat_args):
+def plotgraph(S, type='neato', labels=None, **scat_args):
 
     E,H = allpaths(np.mod(S+S[[0]],2))
     G = nx.Graph()
@@ -1625,6 +1671,92 @@ def plotgraph(S, type='neato', **scat_args):
     nx.draw(G, pos, node_size=0)
 
     plt.scatter(xy[deez,0], xy[deez,1], **scat_args)
+
+    if labels is not None:
+        bbox={'facecolor':'white', 
+                   'edgecolor': 'k', 
+                   'alpha': 0.8,
+                   'boxstyle': 'round'}
+        for i in np.where(deez)[0]:
+            plt.text(xy[i,0]+2, xy[i,1]+2, labels[i], bbox=bbox)
+
+def isometrichull(S, nodes):
+    """
+    Remove as as many nodes from `G` as we cal while maintaining 
+    shortest path length between all pairs in `nodes`
+
+    IMPORTANT: the nodes of G should be integers from 1,...,N 
+    WITHOUT ANY GAPS ... so if there is a node labelled 5, then
+    there had better be nodes 1-4 ... I don't want to deal with
+    weird node labels 
+
+    Brute force approach
+    """
+
+    E,H = allpaths(S)
+    G = nx.Graph()
+    G.add_edges_from(E)
+
+    N = len(nodes)
+    M = len(G.nodes)-N
+    
+    ishid = ~np.isin(G.nodes, nodes)
+    hid = list(np.array(G.nodes)[ishid])
+
+    num_paths = np.zeros(int(spc.binom(N,2))) 
+    path_incidence = np.zeros((int(spc.binom(N,2)), N+M))
+
+    G_ = G.copy()
+
+    removed = []
+    for _ in range(M):
+
+        ## We want to select nodes to remove somewhat intelligently
+        k = 0
+        for i in range(N):
+            for j in range(i+1,N):
+                paths = list(nx.all_shortest_paths(G_, nodes[i], nodes[j]))
+                idx, cnt = np.unique(paths, return_counts=True)
+                num_paths[k] = len(paths)
+                path_incidence[k, idx] = cnt
+                k += 1
+
+        remainder = (num_paths[:,None] - path_incidence)
+        allowed = remainder.min(0) > 0
+        score = ishid*allowed*(remainder.sum(0))
+        thisone = np.argmax(score)
+
+        if allowed[thisone] > 0:
+            G_.remove_edges_from(G.edges(thisone))
+            removed.append(thisone)
+            ishid[thisone] = False
+            hid.remove(thisone)
+        else:
+            break
+
+    these_nodes = np.concatenate([nodes, hid])
+    these_edges = np.isin(E[:,0], these_nodes)*np.isin(E[:,1], these_nodes)
+
+    return E[these_edges], H[these_nodes]
+
+
+def pinc(G, nodes):
+
+    N = len(nodes)
+    M = len(G.nodes)-N
+
+    num_paths = np.zeros(int(spc.binom(N,2))) 
+    path_incidence = np.zeros((int(spc.binom(N,2)), N+M))
+
+    k = 0
+    for i in range(N):
+        for j in range(i+1,N):
+            paths = list(nx.all_shortest_paths(G, nodes[i], nodes[j]))
+            idx, cnt = np.unique(paths, return_counts=True)
+            num_paths[k] = len(paths)
+            path_incidence[k, idx] = cnt
+            k += 1
+    return path_incidence, num_paths
 
 
 def ancestors(S):

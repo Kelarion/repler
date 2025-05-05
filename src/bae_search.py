@@ -116,7 +116,7 @@ def sbmf(XW: np.ndarray,
 
             S[i,j] += ds
         
-    return S
+    return S, StS
 
 
 @njit
@@ -126,8 +126,9 @@ def bpca(XW: np.ndarray,
          temp: float,
          StS: Optional[np.ndarray]=None, 
          N: Optional[int]=None,
-         alpha: float = 1e-2,
+         alpha: float = 0.0,
          beta: float = 0.0, 
+         prior_logits: Optional[np.ndarray]=None,
          steps=1):
     """
     One gradient step on S
@@ -141,6 +142,9 @@ def bpca(XW: np.ndarray,
     if not regularize:
         StS = np.eye(1) # need to do this for it to compile
         N = 1
+
+    if prior_logits is None:    
+        prior_logits = np.ones(m)
 
     for i in np.random.permutation(np.arange(n)):
     # for i in range(n):
@@ -170,17 +174,18 @@ def bpca(XW: np.ndarray,
                     if D <= min(A,B,C):
                         inhib -= 1 - Sik
                     
-            curr = (2*XW[i,j] - beta*inhib - scl - alpha)/temp
-
+            # curr = (scl*(2*XW[i,j] - scl) - alpha*prior_logits[j] - beta*inhib)/temp
+            curr = (2*XW[i,j]/scl - 1 - alpha*prior_logits[j] - beta*inhib)/temp
+            
             if curr < -100:
                 prob = 0.0
             elif curr > 100:
                 prob = 1.0
             else:
                 prob = 1.0 / (1.0 + math.exp(-curr))
-
+                
             ds = (np.random.rand() < prob) - Sij
-
+            
             if regularize:
                 StS[j,j] += ds
                 for k in range(m):
@@ -260,8 +265,10 @@ def kerbmf(X: np.ndarray,
                         inhib -= (1 - Sik)
 
             ## Compute currents
-            curr = (scl*inp - (scl**2)*(dot + beta*inhib))/temp
-
+            # curr = (scl*inp - (scl**2)*dot - beta*inhib)/temp
+            curr = (scl*(inp - scl*dot)/N - beta*inhib)/temp
+            # curr = ((inp/scl - dot) - beta*inhib)/temp
+            
             ## Apply sigmoid (overflow robust)
             if curr < -100:
                 prob = 0.0
@@ -285,121 +292,3 @@ def kerbmf(X: np.ndarray,
     
     return S
 
-
-# @njit(cache=True)
-# def kerbmf(S: np.ndarray, 
-#          S: np.ndarray,
-#          StX: np.ndarray, 
-#          StS: np.ndarray,
-#            N: Optional[int]=None,
-#            scl: float, 
-#            beta: float, 
-#            temp: float, 
-#            steps: Optional[int]=1) -> np.ndarray:
-#     """
-#     One batch gradient step on S
-
-#     Assumes that X is centered *with respect to the full dataset* and that, 
-#     if supplied, StS and StX are also computed for the full dataset. 
-
-#     TODO: figure out a good sparse implementation?
-#     """
-
-#     n, m = S.shape
-
-#     for i in np.random.permutation(np.arange(n)):
-#     # for i in np.arange(n):
-
-#         ## Pick current item
-#         t = (N-1)/N
-
-#         x = X[i]
-#         s = S[i]
-
-#         ## Subtract current item
-#         St1 -= s
-#         StS -= np.outer(s,s)
-#         StX -= np.outer(s,x)
-
-#         ## Organize states
-#         xtx = np.sum(x**2)
-#         Sk = (np.dot(StX, x) + St1*xtx/(N-1))/t
-#         k0 = xtx/(t**2)
-
-#         ## Recurrence
-#         # Compute the rank-one terms
-#         s_ = St1/(N-1)
-#         u = 2*s_ - 1
-
-#         s_sc_ = s_*(1-s_)
-
-#         ## Constants
-#         # sx = Sx.sum()
-#         sx = np.dot(s_, s - s_)
-#         ux = 2*sx - s.sum() + s_.sum()
-        
-#         # Form the threshold 
-#         h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk 
-        
-#         # Need to subtract the diagonal and add it back in
-#         Jii = 2*(N-1)*s_sc_ + t*u**2
-
-#         ## Hopfield update of s
-#         for j in np.random.permutation(np.arange(m)):
-#         # for j in range(m): # concept
-#           Sij = S[i,j]
-
-#             dot = t*u[j]*ux - 2*s_[j]*sx - Jii[j]*Sij
-#             for k in range(m):
-#                 Sik = S[i,k]
-                
-#                 dot += 2 * StS[j,k] * (Sik - s_[k])
-                
-#                 if regularize:
-#                     A = StS[j,k] - Sij*Sik
-#                     B = StS[k,k] - A - Sij
-#                     C = StS[j,j] - A
-#                     D = n - A - B - C
-                    
-#                     # Simple conditional assignment
-#                     if (A < min(B, C, D)) or (D < min(A,B,C)):
-#                         inhib += Sik
-#                     elif (B < min(A,B,D)):
-#                         inhib += 1 - Sik
-#                     elif C < min(A,B,D):
-#                         inhib -= 1 + Sik
-
-#             # Compute sparse dot product
-#             dot = 2*np.dot(StS[j], news - s_)
-#             dot -= 2*(N-1)*s_[j]*sx
-#             dot += t*u[j]*ux
-#             dot -= Jii[j]*news[j]
-
-#             ## Compute currents
-#             curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
-
-#             ## Apply sigmoid (overflow robust)
-#             if curr < -100:
-#                 prob = 0.0
-#             elif curr > 100:
-#                 prob = 1.0
-#             else:
-#                 prob = 1.0 / (1.0 + math.exp(-curr))
-            
-#             ## Update outputs
-#             sj = 1*(np.random.rand() < prob)
-#             ds = sj - news[j]
-#             news[j] = sj
-            
-#             ## Update dot products
-#             if np.abs(ds) > 0:
-#                 sx += ds*s_[j]
-#                 ux += ds*u[j]
-
-#         ## Update 
-#         S[i] = news
-#         St1 += news
-#         StS += np.outer(news, news)
-#         StX += np.outer(news, x)
-    
-#     return S

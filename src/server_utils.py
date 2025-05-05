@@ -437,7 +437,7 @@ class ParamIter:
         if util.is_cyclic(self.couplings):
             raise Exception("Parameters have cyclic dependencies, that's bad (`^`)")
 
-        self.order = util.recursive_topological_sort(self.couplings)
+        self.order = util.topsort(self.couplings)
         self.inv_ord = np.argsort(self.order)
 
         ## Initialize iterators following the partial order

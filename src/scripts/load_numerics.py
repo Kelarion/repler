@@ -116,15 +116,28 @@ import df_models
 #              'orth': True,
 #              }
 
-task_args = {'task': exp.GridCategories,
-             'samps': 12,
-             'seed': 0,
-             'bits': su.Set([2,3,4]),
-             'values': su.Set([3,4,5]),
+# task_args = {'task': exp.GridCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'bits': su.Set([2,3,4]),
+#              'values': su.Set([3,4,5]),
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': None,
+#              'orth': True,
+#              'isometric': su.Set([True, False])
+#              }
+
+
+N = su.Set(2**np.arange(4,10))
+task_args = {'task': exp.HierarchicalCategories,
+             'samps': 6,
+             'seed': su.Set([0,1]),
+             'N': N,
+             'bmin':2,
+             'bmax': 4,
              'snr': 0 << su.Real(num=3) << 30,
              'dim': None,
-             'orth': True,
-             'isometric': su.Set([True, False])
+             'orth': True
              }
 
 # mod_args = {'model': exp.SBMF,
@@ -147,17 +160,36 @@ task_args = {'task': exp.GridCategories,
 #             'period': 2
 #             }
 
-mod_args = {'model': exp.BAE,
-            'search': (True, False),
-            'beta': (1.0, 0.0),
-            'decay_rate': 0.9,
-            'T0': 5,
-            'max_iter':None,
-            'pr_reg': su.Set([0, 1e-2]),
-            'tree_reg': 0,
-            'epochs': 10,
+mod_args = {'model': exp.KBMF,
+            'dim_hid': None,
+            'decay_rate': (0.95, 1),
+            'T0': (5, 1e-5),
+            'max_iter': (None, 10),
+            'tree_reg': su.Set([0, 1e-1, 1]),
+            'period': 5
             }
 
+# mod_args = {'model': exp.BAE,
+#             'search': (True, False),
+#             'beta': (1.0, 0.0),
+#             'decay_rate': 0.9,
+#             'T0': 5,
+#             'max_iter':None,
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             'epochs': 10,
+#             }
+
+# mod_args = {'model': exp.BAE,
+#             'search': (True, False),
+#             'beta': (1.0, 0.0),
+#             'decay_rate': 0.9,
+#             'T0': 5,
+#             'max_iter':None,
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': su.Set([0, 1]),
+#             'epochs': 20,
+#             }
 
 all_exp_args, prm = su.get_all_experiments(task_args, mod_args, bool_friendly=True)
 
@@ -172,8 +204,10 @@ for exp_args in tqdm(all_exp_args):
     if len(all_metrics) == 0:
         all_metrics = {k:[] for k,v in this_exp.model.metrics.items()}
     for k in all_metrics.keys():
-        all_metrics[k].append(np.array(this_exp.model.metrics[k]))
-
+        if type(this_exp.model.metrics[k][0]) is np.ndarray:
+            all_metrics[k].append(su.pad_to_dense(this_exp.model.metrics[k]))
+        else:
+            all_metrics[k].append(np.array(this_exp.model.metrics[k]))
 
 for k,v in all_metrics.items():
     all_metrics[k] = su.pad_to_dense(v)
@@ -182,24 +216,27 @@ for k,v in all_metrics.items():
 #%%
 
 # plot_this = 'time'
-plot_this = 'mean_hamming'
+# plot_this = 'hamming'
+plot_this = 'norm_hamming'
+# plot_this = 'cond_hamming'
+# plot_this = 'norm_cond_hamming'
 # plot_this = 'mean_mat_ham'
-# plot_this = 'mean_norm_ham'
+# plot_this = 'mean_norm_hamming'
 # plot_this = 'median_mat_ham'
 # plot_this = 'median_hamming'
 # plot_this = 'weighted_hamming'
 # plot_this = 'loss'
 # plot_this = 'nbs'
 
-# plot_against = prm['N']
-plot_against = prm['values']**prm['bits']
+plot_against = prm['N']
+# plot_against = prm['values']**prm['bits']
 # plot_against = 2**prm['bits']
 
-normalize = True
-# normalize = False
-# these = (prm['decay_rate']<1)&(prm['tree_reg']>0)&(prm['isometric'])&(prm['dim_hid'] == 200)
-# these = (prm['decay_rate']==1)&(prm['tree_reg']==0)&(prm['sparse_reg']>0)
-these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg']>0)&(prm['isometric'])
+# normalize = True
+normalize = False
+# these = (prm['decay_rate']<1)&(prm['tree_reg']==0)&(~prm['isometric'])
+these = (prm['decay_rate']<1)&(prm['tree_reg']==1)
+# these = (prm['search'])&(prm['decay_rate']<1)&(prm['pr_reg']>0)&(prm['tree_reg']==0)
 # these = (prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
 # these = (prm['dim_hid'] == 3000)
@@ -209,7 +246,7 @@ these = (prm['search'])&(prm['decay_rate']<1)&(prm['tree_reg']==0)&(prm['pr_reg'
 
 # these = these&(prm['values'] == 5)
 
-# these = these&np.isin(prm['snr'], [0,12,30])
+# these = these&np.isin(prm['snr'], [30])
 
 style = '-'
 # style = '--'
@@ -224,7 +261,8 @@ cols = cm.viridis(np.linspace(0,1,len(esenar)))
 for i,snr in enumerate(esenar):
     deez = these&(prm['snr'] == snr)
     N = np.unique(plot_against[these])
-    line = util.group_mean((all_metrics[plot_this].mean(1))[deez], plot_against[deez])
+    vals = np.nanmean(all_metrics[plot_this], axis=-1)[deez]
+    line = util.group_mean(vals, plot_against[deez], axis=0)
     if normalize:
         line = line/N
     plt.plot(N, line, style, marker=marker, color=cols[i], linewidth=2, markersize=10)

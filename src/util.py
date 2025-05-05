@@ -23,6 +23,44 @@ from networkx.algorithms.flow import boykov_kolmogorov
 ######### Indexing ##############################
 #################################################
 
+# @dataclass
+# class LexOrder:
+#     """
+#     Lexicographic order of symmetric pairs, (i,j), j < i
+    
+#     j = __|_0_1_2_3_
+#     i = 0 | - - - -
+#         1 | 0 - - -
+#         2 | 1 2 - -
+#         3 | 3 4 5 -
+        
+#     """
+#     diag: bool = False
+    
+#     def __call__(self,i,j):
+#         """
+#         (i,j) -> n
+#         n = i*(i-1)/2 + j
+#         """
+
+#         if self.diag:
+#             i1 = i - 1*(i>=j)
+#             i2 = j - 1*(i<j)
+
+#         n = np.where(i>j, i*(i-1)/2 + j, j*(j-1)/2 + i)
+#         return np.where(i==j, -1, n).astype(int)
+    
+#     def inv(self, n):
+#         """
+#         n -> (i,j)
+#         i = floor( (1 + sqrt(1 + 8n))/2 )
+#         j = n - (i*(i-1)/2)
+#         """
+#         i = np.floor((1 + np.sqrt(1+8*n))/2).astype(int)
+#         j = (n - i*(i-1)//2).astype(int)
+#         return i, j
+
+@dataclass
 class LexOrder:
     """
     Lexicographic order of symmetric pairs, (i,j), j < i
@@ -34,16 +72,24 @@ class LexOrder:
         3 | 3 4 5 -
         
     """
-    def __init__(self):
-        return 
+    diag: bool = False
     
     def __call__(self,i,j):
         """
         (i,j) -> n
         n = i*(i-1)/2 + j
         """
-        n = np.where(i>j, i*(i-1)/2 + j, j*(j-1)/2 + i)
-        return np.where(i==j, -1, n).astype(int)
+
+        i1 = np.where(i>=j, i, j)
+        i2 = np.where(i<j, i, j)
+        if self.diag:
+            i1 += 1
+
+        n = i1*(i1-1)/2 + i2
+        if not self.diag:
+            return np.where(i==j, -1, n).astype(int)
+        else:
+            return n
     
     def inv(self, n):
         """
@@ -51,10 +97,11 @@ class LexOrder:
         i = floor( (1 + sqrt(1 + 8n))/2 )
         j = n - (i*(i-1)/2)
         """
-        i = np.floor((1 + np.sqrt(1+8*n))/2).astype(int)
-        j = (n - i*(i-1)//2).astype(int)
+        i = np.floor((1 - 2*self.diag + np.sqrt(1+8*n))/2).astype(int) 
+        j = (n - (i+self.diag)*(i-1+self.diag)//2).astype(int)
         return i, j
 
+    ## 0 = (i+1)*(i) - 2n 
 
 class LexOrderK:
     """
@@ -686,6 +733,17 @@ def nbs(X, Y):
 
     return np.sum(s)/np.sqrt(np.sum(X_**2)*np.sum(Y_**2))
 
+def cka(K1,K2):
+    """
+    Just a shorter name, keeping old one for compatibility
+    """
+
+    K1_ = K1 - np.nanmean(K1,-2,keepdims=True) - np.nanmean(K1,-1,keepdims=True) + np.nanmean(K1,(-1,-2),keepdims=True)
+    K2_ = K2 - np.nanmean(K2,-2,keepdims=True) - np.nanmean(K2,-1,keepdims=True) + np.nanmean(K2,(-1,-2),keepdims=True)
+    denom = np.sqrt(np.nansum((K1_**2),(-1,-2))*np.nansum((K2_**2),(-1,-2)))
+
+    return np.nansum((K1_*K2_),(-1,-2))/np.where(denom, denom, 1e-12)
+
 def centered_kernel_alignment(K1,K2):
 
     K1_ = K1 - np.nanmean(K1,-2,keepdims=True) - np.nanmean(K1,-1,keepdims=True) + np.nanmean(K1,(-1,-2),keepdims=True)
@@ -823,7 +881,7 @@ def outers(V):
     """
     return np.einsum('...ik,...jk->...kij', V, V)
 
-def const(v, d=None):
+def const(v, axis=-1, d=None):
     """
     Return a matrix with d columns that are all v 
 
@@ -833,7 +891,7 @@ def const(v, d=None):
     """
     if d is None:
         d = len(v)
-    return v[:,None]*np.ones((1,d)) 
+    return np.repeat(np.expand_dims(v, axis), d, axis=axis)
 
 
 def spouters(i, j, v=None, incl_diag=True, shape=None):
@@ -1236,30 +1294,68 @@ def is_cyclic(graph):
             stack.pop()
     return False
 
-def recursive_topological_sort(graph):
+def topsort(graph):
     """
     Returns a the topological sort of graph, a partial ordering. 
-    Must be a DAG
-
-    By Blckknght on stack exchange
-    (stackoverflow.com/questions/47192626/)
+    Graph is represented by a dictionary giving the neighbors 
+    of each node (i.e. `graph[i]` are the neighbors of `i`)
+    Must be a DAG, otherwise returns an error
     """
 
-    result = []
+    nodes = []
+    depths = np.zeros(len(graph))
     seen = set()
 
-    def recursive_helper(node):
+    def visit(visited, node):
+
+        if node in seen:
+            return
+        if node in visited:
+            raise Exception(
+                'Check your graph, it has a cycle!'
+                f'Specifically, this one: {visited+[node]}'
+                )
+
+        visited.append(node)
+
         for neighbor in graph[node]:
             if neighbor not in seen:
                 seen.add(neighbor)
-                recursive_helper(neighbor)
-        result.insert(0, node)              # this line replaces the result.append line
+                visit(visited, neighbor)
+
+        nodes.insert(0, node)
 
     for node in graph.keys():
         if node not in seen:
-            recursive_helper(node)
+            visit([], node)
 
-    return result
+    return nodes
+
+
+def depth(graph):
+    """
+    Depth of each node in the transitive reduction of `graph`
+    """
+
+    depths = np.zeros(len(graph))
+
+    for node in topsort(graph):
+        for neighbor in graph[node]:
+            depths[neighbor] = max(depths[neighbor], depths[node]+1)
+
+    return depths
+
+# def transitive_reduction(graph):
+#     """
+#     Remove edges between nodes that aren't direct descendants
+#     """
+
+#     order = topsort(graph)
+
+#     for node in range(len(order)):
+#         reachable = set([order[-(1+node)]])
+
+
 
 ##############################################
 ############# Binary variables ###############
@@ -1696,6 +1792,7 @@ def get_depths(clus):
 
     return depth
 
+
 def find_clique(A, first=0):
     """
     Find a single maximal clique in A
@@ -1776,6 +1873,20 @@ def yuke(X, Y=None):
     XYdot = np.einsum('...ik,...jk->...ij',X,Y)
 
     return Xnrm + Ynrm - 2*XYdot
+
+def jack(X, Y=None):
+    """
+    Jaccard "distance" between X and Y
+    """
+
+    if Y is None:
+        Y = X
+
+    top = np.min([const(X,1), const(Y,0)], axis=0)
+    bottom = np.max([const(X,1), const(Y,0)], axis=0)
+
+    return 1 - top.sum(-1)/bottom.sum(-1)
+
 
 def cosdist(X, Y=None):
 

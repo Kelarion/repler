@@ -99,8 +99,8 @@ device = tfl_utils.get_device()
 
 #%% 
 
-model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device='cpu')
-# model = HookedTransformer.from_pretrained('gpt2-medium', device=device)
+# model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device='cpu')
+model = HookedTransformer.from_pretrained('gpt2-medium', device='cpu')
 
 # vocab = []
 # tokens = []
@@ -119,9 +119,10 @@ model = HookedTransformer.from_pretrained('meta-llama/Llama-3.2-1B', device='cpu
 gamma = model.W_U.T.detach()
 W, d = gamma.shape
 gam_ = gamma.mean(0)
-Covg = (gamma.T @ gamma - len(gamma)*torch.outer(gam_,gam_)) / W
+Covg = (gamma-gam_).T@(gamma-gam_) / W
+# Covg = (gamma.T @ gamma - len(gamma)*torch.outer(gam_,gam_)) / W
 l, V = torch.linalg.eigh(Covg)
-inv_sqrt_Cov = V @ torch.diag(1/torch.sqrt(l)) @ V.T
+inv_sqrt_Cov = V @ torch.diag(1/torch.sqrt(l + 1e-6)) @ V.T
 whgamma = gamma @ inv_sqrt_Cov # the "causal" representation
 
 #%%
@@ -187,26 +188,27 @@ vecs = whgamma[np.array(toks)]
 
 #%%
 
-neal = bae_util.Neal(decay_rate=0.95, period=2)
+neal = bae_util.Neal(decay_rate=0.9, period=2, initial=5)
 
 # mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
 #                                    tree_reg=1e-1, 
 #                                    sparse_reg=1e-3,
 #                                    weight_reg=1e-2)
-# dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
-# mod.cuda()
+# # dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
+# # mod.cuda()
 # dl = pt_util.batch_data(vecs, batch_size=512)
 
 # en = neal.fit(mod, dl, T_min=1e-6)
 
-# mod = bae_models.BiPCA(600, sparse_reg=1e-2, tree_reg=0.1)
-# en = neal.fit(mod, vecs.numpy())
+mod = bae_models.BiPCA(vecs.shape[1], sparse_reg=0, tree_reg=1e-1)
+en = neal.fit(mod, vecs.numpy(), T_min=1e-4)
 
-# S = mod.S
-# W = mod.W*mod.scl
+S = mod.S
+W = mod.W*mod.scl
+pi = np.ones(mod.S.shape[1])
 
-mod2 = bae_models.KernelBMF(600, penalty=0.1)
-en = neal.fit(mod2, vecs.numpy(), pvar=0.95)
+# mod = bae_models.KernelBMF(600, tree_reg=1e-1, scale_lr=0.9)
+# en = neal.fit(mod, vecs.numpy(), pvar=0.95)
 
 # mod3 = bae_models.BernVAE(600, vecs.shape[1], weight_reg=1e-2)
 # dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
@@ -216,7 +218,7 @@ en = neal.fit(mod2, vecs.numpy(), pvar=0.95)
 
 #%%
 # ls = [mod.grad_step(dl) for _ in range(100)] # train a bit at zero temperature
-S = mod.hidden(vecs.cuda()).cpu().detach().numpy()
+S = mod.hidden(vecs).detach().numpy()
 W = mod.p.weight.data.cpu().numpy()
 pi = np.diag(W.T@W)
 
@@ -239,73 +241,53 @@ P = util.group_sum(S_cntr@np.diag(piw), grp, axis=1)
 cl = 3 # the "class" dimension
 gn = 5 # the "gender" dimension
 
-pos3 = [words.index('worker')]
-pos5 = [words.index('girl'), words.index('princess'), words.index('redhead')]
-neg3 = [words.index('courtier'), words.index('vassal')]
-neg5 = [words.index('boy'), words.index('reptile'), words.index('prince')]
-cntr = [words.index('dog'), words.index('mammal')]
-alleg = np.concatenate([pos3, pos5, neg3, neg5, cntr])
-
-# plt.plot([0,0,1,1,0],[0,1,1,0,0], 'k--')
 plt.plot([0,0],[0,1], 'k--')
 plt.plot([0,1],[1,1], 'k--')
 plt.plot([1,1],[1,0], 'k--')
 plt.plot([1,0],[0,0], 'k--')
 
-plt.scatter(P[:,cl], P[:,gn], color=(0.7,0.7,0.7), alpha=0.4, s=5)
 plt.scatter(P[kqmw,cl], P[kqmw,gn], c=[0,1,2,3], s=100, marker='*', cmap='Set2', zorder=10)
 
-plt.scatter(P[alleg,cl], P[alleg,gn], c='k')
-for this in alleg:
-    if P[this,cl] > 0.8:
-        dx = -3e-2
-        ha = 'right'
-    elif P[this,cl] < 0.4:
-        dx = -3e-2
-        ha = 'right'
-    else:
-        dx = 1e-2
-        ha = 'left'
-    if P[this,gn] > 0.8:
-        dy = -3e-2
-        va = 'top'
-        ha = 'right'
-    elif P[this,gn] < 0.4:
-        dy = -3e-2
-        va = 'top'
-        # ha = 'right'
-    else:
-        dy = 3e-2
-        va = 'bottom'
-    plt.text(P[this,cl]+dx,P[this,gn]+dy,words[this],
-             horizontalalignment = ha,
-             verticalalignment = va,
-             bbox={'facecolor':'white',
-                   'edgecolor': 'black',
-                   'alpha': 0.8,
-                   'boxstyle': 'round'})
-
-for this in kqmw:
-    if P[this,cl] < 0.4:
-        dx = -3e-2
-        ha = 'right'
-    else:
-        dx = 1e-2
-        ha = 'left'
-    if P[this,gn] < 0.4:
-        dy = -3e-2
-        va = 'top'
-        # ha = 'right'
-    else:
-        dy = 3e-2
-        va = 'bottom'
-    plt.text(P[this,cl]+dx,P[this,gn]+dy,words[this],
-              horizontalalignment = ha,
-              verticalalignment = va,
-              bbox={'facecolor':'white',
-                    'edgecolor': 'black',
-                    'alpha': 0.8,
-                    'boxstyle': 'round'})
+tpl.hovertext(P[:,cl], P[:,gn], labels=words)
 
 tpl.square_axis()
 plt.axis(False)
+
+#%%
+
+these_words = ['monarch', 
+               'male', 
+               'female', 
+               'person', 
+               'guy', 
+               'pope', 
+               'princess', 
+               'girl',
+               'organism']
+deez = [words.index(n) for n in these_words]
+
+plt.plot([0,0],[0,1], 'k--')
+plt.plot([0,1],[1,1], 'k--')
+plt.plot([1,1],[1,0], 'k--')
+plt.plot([1,0],[0,0], 'k--')
+
+plt.scatter(P[kqmw,cl], P[kqmw,gn], c=[0,1,2,3], s=100, marker='*', cmap='Set2', zorder=10)
+plt.scatter(P[:,cl], P[:,gn], c=(0.7,0.7,0.7), alpha=0.5)
+
+tpl.scatterlabel(P[deez,cl], P[deez,gn], these_words)
+
+
+tpl.square_axis()
+plt.axis(False)
+
+#%%
+
+thiscl = 533
+thisgn = 60
+
+XW = (mod.data - mod.b)@mod.W/mod.scl
+
+plt.scatter(XW[:,thiscl], XW[:,thisgn], c=(0.7,0.7,0.7), alpha=0.5)
+tpl.scatterlabel(XW[kqmw,thiscl], XW[kqmw,thisgn], ['king', 'queen', 'man', 'woman'])
+
+tpl.hovertext(XW[:,thiscl], XW[:,thisgn], s=1, labels=words)
