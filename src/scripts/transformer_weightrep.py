@@ -184,11 +184,11 @@ while (len(words) < maxwords) and (len(leaves) > 0):
     it += 1
 
 isleaf = np.array(isleaf)
-vecs = whgamma[np.array(toks)]
+vecs = whgamma[np.array(toks)].numpy()
 
 #%%
 
-neal = bae_util.Neal(decay_rate=0.9, period=2, initial=5)
+neal = bae_util.Neal(decay_rate=0.9, period=2, initial=10)
 
 # mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
 #                                    tree_reg=1e-1, 
@@ -200,11 +200,12 @@ neal = bae_util.Neal(decay_rate=0.9, period=2, initial=5)
 
 # en = neal.fit(mod, dl, T_min=1e-6)
 
-mod = bae_models.BiPCA(vecs.shape[1], sparse_reg=0, tree_reg=1e-1)
-en = neal.fit(mod, vecs.numpy(), T_min=1e-4)
+mod = bae_models.KernelBMF(vecs.shape[1], tree_reg=0.2, scale_lr=1)
+# mod = bae_models.BiPCA(vecs.shape[1], sparse_reg=0, tree_reg=1)
+en = neal.fit(mod, vecs, T_min=1e-5)
 
 S = mod.S
-W = mod.W*mod.scl
+# W = mod.W*mod.scl
 pi = np.ones(mod.S.shape[1])
 
 # mod = bae_models.KernelBMF(600, tree_reg=1e-1, scale_lr=0.9)
@@ -223,10 +224,17 @@ W = mod.p.weight.data.cpu().numpy()
 pi = np.diag(W.T@W)
 
 #%%
+# kqmw = [words.index('king'),
+#         words.index('queen'),
+#         words.index('man'),
+#         words.index('woman'),
+#         words.index('uncle'),
+#         words.index('aunt')]
 kqmw = [words.index('king'),
         words.index('queen'),
         words.index('man'),
         words.index('woman')]
+
 
 #%%
 
@@ -238,8 +246,8 @@ P = util.group_sum(S_cntr@np.diag(piw), grp, axis=1)
 
 #%%
 
-cl = 3 # the "class" dimension
-gn = 5 # the "gender" dimension
+cl = 2 # the "class" dimension
+gn = 3 # the "gender" dimension
 
 plt.plot([0,0],[0,1], 'k--')
 plt.plot([0,1],[1,1], 'k--')
@@ -252,6 +260,10 @@ tpl.hovertext(P[:,cl], P[:,gn], labels=words)
 
 tpl.square_axis()
 plt.axis(False)
+
+#%%
+
+
 
 #%%
 
@@ -291,3 +303,4 @@ plt.scatter(XW[:,thiscl], XW[:,thisgn], c=(0.7,0.7,0.7), alpha=0.5)
 tpl.scatterlabel(XW[kqmw,thiscl], XW[kqmw,thisgn], ['king', 'queen', 'man', 'woman'])
 
 tpl.hovertext(XW[:,thiscl], XW[:,thisgn], s=1, labels=words)
+

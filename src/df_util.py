@@ -158,7 +158,7 @@ def minham(S, Z, sym=False):
     if sym:
         dH = np.abs(dH)
 
-    return len(S) - dH.max(0)
+    return len(S) - dH.max(1)
 
 def permham(S, Z, norm=False):
     """

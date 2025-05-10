@@ -1887,6 +1887,35 @@ def jack(X, Y=None):
 
     return 1 - top.sum(-1)/bottom.sum(-1)
 
+def pairpar(X, Y=None, return_indices=False):
+    """
+    Parallelism between all disjoint pairs of vectors in X and Y
+
+    
+    """
+
+    if Y is None:
+        Y= X
+
+    i,j = np.triu_indices(n=len(X), m=len(Y), k=1)
+    ij,kl = np.triu_indices(len(i), k=1)
+    ijkl = np.array([i[ij], j[ij], i[kl], j[kl]])
+    # deez = (i[ij] != i[kl])*(j[ij] != i[kl])*(i[kay]!=j[kl])*(j[kay]!=j[kl])
+    deez = np.diff(np.sort(ijkl,0), axis=0).min(0) > 0
+    ij = ij[deez]
+    kl = kl[deez]
+
+    diffs = (X[i]-Y[j])
+    dot = (diffs[ij]*diffs[kl]).sum(1)
+    nrmx = (diffs[ij]**2).sum(1)
+    nrmy = (diffs[kl]**2).sum(1)
+
+    out = [dot/np.sqrt(nrmx*nrmy)]
+
+    if return_indices:
+        return dot/np.sqrt(nrmx*nrmy), ijkl[:,deez]  
+    else:
+        return dot/np.sqrt(nrmx*nrmy)
 
 def cosdist(X, Y=None):
 
@@ -2508,3 +2537,4 @@ def grid_vecs(N,d,minx=-1,maxx=1):
 
     X = np.meshgrid(*((np.linspace(minx,maxx,N),)*d))
     return np.array(X).reshape((d,-1))
+

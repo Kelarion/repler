@@ -98,7 +98,7 @@ class BAE(exp.Model):
     epochs: int = 10
     decay_rate: float = 0.88
     T0: float = 5
-    batch_size: int = 64
+    batch_size: int = 1
 
     def fit(self, X, Strue):
 
@@ -157,8 +157,9 @@ class BAE(exp.Model):
             nbs = util.nbs(X[it], S)
 
             depth = df_util.porder(Strue[it])
-            cham = util.group_mean(mat_ham, depth)
-            ncham = util.group_mean(norm_ham, depth)
+            minham = df_util.minham(Strue[it], S, sym=True)
+            cham = util.group_mean(minham, depth)
+            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
 
             self.metrics['norm_hamming'].append(np.mean(norm_ham))
             self.metrics['hamming'].append(np.mean(mat_ham))
@@ -229,8 +230,9 @@ class KBMF(exp.Model):
             nbs = util.nbs(X[it], S)
 
             depth = df_util.porder(Strue[it])
-            cham = util.group_mean(mat_ham, depth)
-            ncham = util.group_mean(norm_ham, depth)
+            minham = df_util.minham(Strue[it], S, sym=True)
+            cham = util.group_mean(minham, depth)
+            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
 
             self.metrics['norm_hamming'].append(np.mean(norm_ham))
             self.metrics['hamming'].append(np.mean(mat_ham))
@@ -255,10 +257,11 @@ class SBMF(exp.Model):
     def fit(self, X, Strue):
 
         self.metrics = {'loss':[],
-                        'mean_mat_ham':[],
-                        'median_mat_ham':[],
-                        'mean_norm_ham': [],
-                        'nbs': [],
+                        'nbs':[],
+                        'hamming':[],
+                        'norm_hamming': [],
+                        'cond_hamming': [],
+                        'norm_cond_hamming': [],
                         'time':[]}
 
         for it in range(len(X)):
@@ -294,20 +297,21 @@ class SBMF(exp.Model):
 
             S = mod.S
 
-            # bestS, bestpi = df_util.mindistX(X[it], S)
-
-            nrm = np.sum(util.center(K)**2)
-            # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            # ham = len(K) - (np.abs((2*S-1).T@(2*Strue[it]-1)).max(0))
-            cka = util.centered_kernel_alignment(Strue[it]@Strue[it].T, S@S.T)
-            nbs = util.nbs(S, X[it])
+            cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
             mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0),(Strue[it]<=0).sum(0)],0)
+            norm_ham = df_util.permham(Strue[it], S, norm=True)
+            nbs = util.nbs(X[it], S)
 
-            self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
-            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
-            self.metrics['median_mat_ham'].append(np.median(mat_ham))
-            self.metrics['loss'].append(mod.loss(X[it]))
+            depth = df_util.porder(Strue[it])
+            minham = df_util.minham(Strue[it], S, sym=True)
+            cham = util.group_mean(minham, depth)
+            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
+
+            self.metrics['norm_hamming'].append(np.mean(norm_ham))
+            self.metrics['hamming'].append(np.mean(mat_ham))
+            self.metrics['cond_hamming'].append(cham)
+            self.metrics['norm_cond_hamming'].append(ncham)
+            self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
 
 
@@ -557,7 +561,7 @@ class SchurCategories(exp.Task):
             X = df_util.noisyembed(S, dim, self.snr, self.orth, self.scl)
 
             Xs.append(X)
-            Strues.append(S)
+            Strues.append((1+S)//2)
 
         return {'X': Xs, 'Strue': Strues}
 

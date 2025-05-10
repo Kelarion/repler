@@ -116,22 +116,55 @@ import df_models
 #              'orth': True,
 #              }
 
-# task_args = {'task': exp.GridCategories,
+# N = su.Set(2**np.arange(4,12))
+# task_args = {'task': exp.SchurCategories,
 #              'samps': 12,
 #              'seed': 0,
-#              'bits': su.Set([2,3,4]),
-#              'values': su.Set([3,4,5]),
+#              'N': N,
+#              'p':0.5,
 #              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': None,
+#              'dim': su.Set([None, 200]),
 #              'orth': True,
-#              'isometric': su.Set([True, False])
+#              'scl': 1e-3
 #              }
 
+# task_args = {'task': exp.SchurCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'N': 128,
+#              'p':0.5,
+#              'snr': 30,
+#              'dim': su.Set([None, 100, 200, 400]),
+#              'orth': True,
+#              'scl': 1e-3
+#              }
 
-N = su.Set(2**np.arange(4,10))
+# N = su.Set(2**np.arange(4,10))
+# task_args = {'task': exp.HierarchicalCategories,
+#              'samps': 6,
+#              'seed': su.Set([0,1]),
+#              'N': N,
+#              'bmin':2,
+#              'bmax': 4,
+#              'snr': 0 << su.Real(num=3) << 30,
+#              'dim': None,
+#              'orth': True
+#              }
+# task_args = {'task': exp.HierarchicalCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'N': 64,
+#              'bmin':2,
+#              'bmax': 4,
+#              'snr': 30,
+#              'dim': su.Set([None, 500]),
+#              'orth': True
+#              }
+
+N = su.Set(2**np.arange(4,9))
 task_args = {'task': exp.HierarchicalCategories,
-             'samps': 6,
-             'seed': su.Set([0,1]),
+             'samps': 2,
+             'seed': su.Set([0,1,2,3,4,5,6]),
              'N': N,
              'bmin':2,
              'bmax': 4,
@@ -140,15 +173,63 @@ task_args = {'task': exp.HierarchicalCategories,
              'orth': True
              }
 
+# task_args = {'task': exp.HierarchicalCategories,
+#              'samps': 12,
+#              'seed': 0,
+#              'N': 32,
+#              'bmin':2,
+#              'bmax': 4,
+#              'snr': 30,
+#              'orth': True
+#              }
+
+# mod_args = {'model': exp.SBMF,
+#             'ortho': True,
+#             'decay_rate': (1, 0.9),
+#             'T0': (1e-6, 5),
+#             'max_iter': (100, None),
+#             # 'sparse_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             # 'pr_reg': su.Set([0, 1e-2]),
+#             'period': 2
+#             }
 # mod_args = {'model': exp.SBMF,
 #             'ortho': True,
 #             'decay_rate': (1, 0.9),
 #             'T0': (1e-6, 5),
 #             'max_iter': (100, None),
 #             'sparse_reg': su.Set([0, 1e-2]),
-#             'tree_reg': 0,
+#             # 'tree_reg': 0,
 #             # 'pr_reg': su.Set([0, 1e-2]),
 #             'period': 2
+#             }
+# mod_args = {'model': exp.SBMF,
+#             'ortho': True,
+#             'decay_rate': 0.95,
+#             'T0': 5,
+#             # 'max_iter': (100, None),
+#             # 'sparse_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 1,
+#             # 'pr_reg': su.Set([0, 1e-2]),
+#             'period': 2,
+#             'dim_hid': 1 << su.Integer(step=1) << 200
+#             }
+
+# mod_args = {'model': exp.KBMF,
+#             'dim_hid': None,
+#             'decay_rate': 0.9,
+#             'T0': 10,
+#             'max_iter': None,
+#             'tree_reg': su.Set([0, 1e-1, 1]),
+#             'period': 5
+#             }
+
+# mod_args = {'model': exp.KBMF,
+#             'decay_rate': 0.95,
+#             'T0': 5,
+#             'tree_reg': su.Set([0, 1e-1, 1]),
+#             'dim_hid': 1 << su.Integer(step=1) << 100,
+#             'period': 5
 #             }
 
 # mod_args = {'model': exp.KBMF,
@@ -162,22 +243,34 @@ task_args = {'task': exp.HierarchicalCategories,
 
 mod_args = {'model': exp.KBMF,
             'dim_hid': None,
-            'decay_rate': (0.95, 1),
-            'T0': (5, 1e-5),
-            'max_iter': (None, 10),
-            'tree_reg': su.Set([0, 1e-1, 1]),
-            'period': 5
+            'decay_rate': 0.95,
+            'T0': 10,
+            'max_iter': None,
+            'tree_reg': su.Set([1e-1, 1]),
+            'period': 2
             }
 
 # mod_args = {'model': exp.BAE,
 #             'search': (True, False),
-#             'beta': (1.0, 0.0),
+#             # 'beta': (1.0, 0.0),
 #             'decay_rate': 0.9,
 #             'T0': 5,
 #             'max_iter':None,
 #             'pr_reg': su.Set([0, 1e-2]),
 #             'tree_reg': 0,
 #             'epochs': 10,
+#             }
+
+# mod_args = {'model': exp.BAE,
+#             'search': (True, True, False),
+#             'beta': (1.0, 1.0, 0.0),
+#             'decay_rate': (0.9, 1, 1),
+#             'T0': (5, 1e-5, 1e-5),
+#             'max_iter': (None, 1000, 1000),
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             'batch_size':su.Set([1, 32, 64, 128]),
+#             'epochs': 20,
 #             }
 
 # mod_args = {'model': exp.BAE,
@@ -190,6 +283,18 @@ mod_args = {'model': exp.KBMF,
 #             'tree_reg': su.Set([0, 1]),
 #             'epochs': 20,
 #             }
+
+# mod_args = {'model': exp.BAE,
+#             'search': False,
+#             'decay_rate': 1,
+#             'beta': su.Set([0,1]),
+#             # 'T0': 1e-5,
+#             'max_iter': 2000,
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             'epochs': 10,
+            # }
+
 
 all_exp_args, prm = su.get_all_experiments(task_args, mod_args, bool_friendly=True)
 
@@ -216,8 +321,8 @@ for k,v in all_metrics.items():
 #%%
 
 # plot_this = 'time'
-# plot_this = 'hamming'
-plot_this = 'norm_hamming'
+plot_this = 'hamming'
+# plot_this = 'norm_hamming'
 # plot_this = 'cond_hamming'
 # plot_this = 'norm_cond_hamming'
 # plot_this = 'mean_mat_ham'
@@ -231,18 +336,13 @@ plot_this = 'norm_hamming'
 plot_against = prm['N']
 # plot_against = prm['values']**prm['bits']
 # plot_against = 2**prm['bits']
+# plot_against = prm['batch_size']
+# plot_against = prm['dim_hid']
 
 # normalize = True
 normalize = False
-# these = (prm['decay_rate']<1)&(prm['tree_reg']==0)&(~prm['isometric'])
-these = (prm['decay_rate']<1)&(prm['tree_reg']==1)
-# these = (prm['search'])&(prm['decay_rate']<1)&(prm['pr_reg']>0)&(prm['tree_reg']==0)
-# these = (prm['beta']==0)
-# these = (prm['dim_hid'] == 3000)&(prm['beta']==0)
-# these = (prm['dim_hid'] == 3000)
-# these = prm['dim'] == 200
-# these = (prm['br']==2)
-# these = (prm['br']==2)&(prm['p']==0.1)
+
+these = (prm['decay_rate'] < 1)&(prm['tree_reg']==1)
 
 # these = these&(prm['values'] == 5)
 
@@ -251,6 +351,7 @@ these = (prm['decay_rate']<1)&(prm['tree_reg']==1)
 style = '-'
 # style = '--'
 # style = ':'
+# style = '-.'
 
 marker = '.'
 # marker = 'd'
@@ -268,3 +369,9 @@ for i,snr in enumerate(esenar):
     plt.plot(N, line, style, marker=marker, color=cols[i], linewidth=2, markersize=10)
 
 plt.semilogx()
+
+# def plotmetrics(prm, xaxis, yaxis, ):
+    
+
+
+

@@ -29,6 +29,7 @@ from scipy.optimize import linprog as lp
 from scipy.optimize import nnls
 
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
 import networkx as nx
 import cvxpy as cvx
@@ -36,6 +37,7 @@ import cvxpy as cvx
 # my code
 import util
 import df_util
+import pt_util
 import bae
 import bae_models
 import bae_util
@@ -77,37 +79,159 @@ for s in Sall[is_attr]:
 
 #%%
 
-N = [2**3, 2**4, 2**5, 2**6]
-betas = 10**np.linspace(-2, -1, 10)
+N = 2**np.arange(3, 9)
+betas = [1e-1, 1]
 draws = 20
 
-neal = bae_util.Neal(0.9, period=2)
+neal = bae_util.Neal(0.95, period=4)
 ham = []
 tree = []
+nbs = []
 for n in N:
     disham = []
     distree = []
+    disnbs = []
     for beta in tqdm(betas):
         
         wa = []
         ba = []
+        ga = []
         for draw in range(draws):
         
             S = df_util.randtree_feats(n, 2,4)
             X = df_util.noisyembed(S, S.shape[1], 30, scl=1e-4)
             
-            # mod = bae_models.KernelBMF(S.shape[1], tree_reg=beta, scale_lr=1)
-            mod = bae_models.BiPCA(S.shape[1], tree_reg=1, sparse_reg=0)
-            en = neal.fit(mod, X, verbose=False)
+            mod = bae_models.KernelBMF(2*S.shape[1], tree_reg=beta)
+            # mod = bae_models.BiPCA(S.shape[1], tree_reg=beta, sparse_reg=0)
+            en = neal.fit(mod, X, verbose=False, T_min=1e-3)
             
             wa.append(df_util.permham(S, mod.S, norm=True).mean())
             ba.append(df_util.treecorr(mod.S).mean())
+            ga.append(util.nbs(mod.S, X))
         
         disham.append(np.mean(wa, 0))
         distree.append(np.mean(ba, 0))
+        disnbs.append(np.mean(ga, axis=0))
     
     ham.append(disham)
     tree.append(distree)
+    nbs.append(disnbs)
+
+#%%
+
+nepoch = 600
+draws = 12
+
+loss = []
+nbs = []
+ham = []
+pham = []
+tree = []
+
+for _ in tqdm(range(draws)):
+    
+    S = df_util.randtree_feats(64, 2, 4)
+    depth = df_util.porder(S)
+    # S = df_util.schurcats(64, 0.5)
+    W = sts.ortho_group(S.shape[1]).rvs()[:,:S.shape[1]]    
+    X = S@W.T
+    
+    # mod = bae_models.BiPCA(S.shape[1], tree_reg=0.1)
+    mod = bae_models.KernelBMF(2*S.shape[1], tree_reg=1)
+    
+    # dl = pt_util.batch_data(torch.FloatTensor(X), batch_size=len(S))
+        
+    # mod = bae_models.BernVAE(S.shape[1], X.shape[1], beta=0, weight_reg=1e-2)
+    # mod.initialize(dl)
+    
+    ls = []
+    br = []
+    hm = []
+    ph = []
+    tr = []
+    # for _ in tqdm(range(nepoch)):
+    #     ls.append(mod.grad_step(dl))
+    #     Sest = mod.hidden(dl.dataset.tensors[0]).detach().numpy()
+    #     br.append(util.nbs(Sest, X))
+    #     hm.append(df_util.permham(S, Sest).mean())
+    mod.initialize(X)
+    for it in (range(nepoch)):
+        T = 5*(0.95**(it//4))
+        mod.temp = T
+        ls.append(mod.grad_step(X))
+        br.append(util.nbs(mod.S, X))
+        tr.append(df_util.treecorr(mod.S).mean())
+        
+        minham = df_util.minham(S, mod.S, sym=True)
+        hm.append(util.group_mean(minham/S.sum(0), depth))
+        ph.append(df_util.permham(S, mod.S, norm=True).mean())
+    
+    loss.append(ls)
+    nbs.append(br)
+    ham.append(np.array(hm))
+    tree.append(tr)
+    pham.append(ph)
+
+allham = util.pad_to_dense(ham)[...,:-1]
+
+#%%
+# cmap = cm.viridis
+cmap = cm.spring
+
+num_ham = allham.shape[-1]
+norm = plt.Normalize(1, num_ham)
+
+# cols = cm.viridis(np.arange(num_ham))
+for i, thisham in enumerate(np.nanmean(allham,0).T):
+    # plt.plot(thisham, c=cols[i])
+    plt.plot(thisham, c=cmap(norm(i)))
+
+#%%
+
+# dim_emb = np.arange(16, 220, 20)
+dim_emb = [200]
+# batch_size = np.append(1, np.arange(8,136,8)).astype(int)
+batch_size = [128]
+draws = 5
+
+# S = df_util.schurcats(2**7, 0.5)
+
+# neal = bae_util.Neal(0.9, period=20)
+ham = []
+nbs = []
+for h in tqdm(dim_emb):
+    disham = []
+    distree = []
+    disnbs = []
+    for bsz in batch_size:
+        
+        neal = bae_util.Neal(0.9, period=int(10 + 50*bsz/128))
+        
+        wa = []
+        ga = []
+        for draw in range(draws):
+        
+            W = sts.ortho_group(h).rvs()[:,:16]    
+            X = S@W.T
+            
+            if bsz == 1:
+                dl = pt_util.batch_data(torch.FloatTensor(X))
+            else:
+                dl = pt_util.batch_data(torch.FloatTensor(X), batch_size=bsz)
+                
+            mod = bae_models.BinaryAutoencoder(S.shape[1], X.shape[1], weight_reg=0.1)
+            en = neal.fit(mod, dl, T_min=1e-4, verbose=False)
+            
+            Sest = mod.hidden(dl.dataset.tensors[0]).detach().numpy()
+            
+            wa.append(df_util.permham(S, Sest, norm=True).mean())
+            ga.append(util.nbs(Sest, X))
+        
+        disham.append(wa)
+        disnbs.append(ga)
+    
+    ham.append(disham)
+    nbs.append(disnbs)
 
 #%%
 
@@ -394,10 +518,10 @@ for i in range(n):
         for k in range(m):
             
             ## non-stacked version
-            A = StS[j,k] - S[i,j]*S[i,k]
+            A = StS[j,k]/n - (S[i,j]*S[i,k])/n
             B = StS[j,j] - A - S[i,j] 
             C = StS[k,k] - A
-            D = n - A - B - C
+            D = 1 - A - B - C
 
             if A < min(B,C-1,D):
                 deez[i,j,k] += S[i,k]

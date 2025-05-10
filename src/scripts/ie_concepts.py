@@ -88,11 +88,15 @@ for f,l in tqdm(zip(fid, lid)):
 
 #%%
 
-mod = bae_models.KernelBMF(300, tree_reg=1, scale_lr=0.9)
+mod = bae_models.KernelBMF(600, tree_reg=0.1)
+# mod = bae_models.BiPCA(300, tree_reg=1, sparse_reg=0)
 
-neal = bae_util.Neal(decay_rate=0.95, period=2, initial=5)
+neal = bae_util.Neal(decay_rate=0.95, period=2, initial=10)
 
 en = neal.fit(mod, cogmat)
+
+S = np.unique((mod.S+(mod.S.mean(0)>0.5))%2, axis=1)
+S = S[:,S.sum(0)>0]
 
 # neal = bae_util.Neal(decay_rate=0.95, period=2)
 
@@ -116,7 +120,11 @@ en = neal.fit(mod, cogmat)
 
 #%%
 
-E,H = df_util.allpaths(mod.S)
+cmap = cm.tab10
+
+deez = np.arange(160)[grp==7]
+
+E,H = df_util.allpaths(mod.S[deez])
 
 G = nx.Graph()
 G.add_edges_from(E)
@@ -125,116 +133,122 @@ G.add_edges_from(E)
 
 pos = graphviz_layout(G, prog='twopi')
 
-#%%
-
-cmap = cm.tab10
-
 fig,ax = plt.subplots()
-plt_these = np.isin(G.nodes,range(160))
+plt_these = np.isin(G.nodes, range(len(deez)))
 nx.draw(G, pos=pos, node_size=10*plt_these, 
-        node_color=cmap(grp[np.where(plt_these, G.nodes, 0)]))
+        node_color=cmap(grp[deez[np.where(plt_these, G.nodes, 0)]]))
 
 p_cntr = np.mean([p for p in pos.values()],0)
-X = np.array([pos[i] for i in range(160)])
+X = np.array([pos[i] for i in np.arange(len(deez))])
 
-names = lang['Glottolog_Name'].tolist()
+names = lang['Glottolog_Name'][deez].tolist()
 
-dicplt.hovertext(X[:,0], X[:,1], labels=names, c=grp)
+dicplt.hovertext(X[:,0], X[:,1], labels=names, c=grp[deez])
 
 dicplt.square_axis()
 
 #%%
 
-these_langs = ['Latin',
-               'Old Breton',
-               'Tregorrois',
-               'Italian',
-               'Gothic',
-               'Elfdalian',
-               'Danish',
-               'Dutch',
-               'Central Alemannic',
-               'Irish',
-               'Bakhtiari',
+these_langs = ['Takestani',
+               'Larestani',
+               'Western Farsi',
+               'Central Kurdish',
                'Southern Kurdish',
-               'Sogdian',
                'Parthian',
-               'Albanian',
-               'Achaean Greek',
-               'Modern Greek',
-               'Oscan',
+               'Sogdian',
+               'Khotanese',
+               'Bactrian',
+               'Khowar',
+               'Kamviri',
+               'Ashkun',
+               'Hindi',
                'Urdu',
-               # 'Hindi',
-               'Kashmiri',
                'Bengali',
+               'Sinhala',
+               'Gawri',
                'Vedic Sanskrit',
-               'Latvian',
-               'Macedonian',
-               'Polish',
-               'Slovenian',
-               'Slovak',
-               'Ukrainian',
-               'Walloon',
-               'Barbaricino',
-               'Romanian',
-               'Catalan']
+               'Magahi',
+               'Eastern Panjabi']
 
 # these_langs = ['Latin',
-#                # 'Brazilian Portuguese',
-#                # 'Portuguese',
-#                'Hindi',
-#                'Urdu',
-#                'Italian',
-#                'English',
-#                'Sinhala',
-#                'Hittite',
-#                'Gothic',
-#                'Kamviri',
-#                'Transalpine Gaulish',
-#                'Polish',
-#                'Bengali',
-#                'Eastern Pahari',
-#                'Scottish Gaelic',
-#                'Northern Welsh',
 #                'Barbaricino',
-#                'Slovenian',
-#                # 'Slovak',
-#                # 'Umbrian',
-#                'Western Farsi',
-#                'Modern Greek',
-#                'Early Irish',
-#                'Icelandic',
+#                'Umbrian',
+#                'Italian',
+#                'Romanian',
 #                'Catalan',
-#                'Southern Kurdish',
-#                'Kumzari',
+#                'Spanish',
+#                'Portuguese',
+#                'French',
+#                'Walloon',
+#                'Anglo-Norman',
+#                'Friulian',
+#                'Ladin',
+#                ]
+
+# these_langs = ['Old Russian',
+#                'Bulgarian',
+#                'Macedonian',
+#                'Ukrainian',
+#                'Russian',
+#                'Czech',
+#                'Polish',
+#                'Kashubian',
+#                'Latvian',
+#                'Lithuanian',
+#                'Polabian',
+#                'Rusyn',
+#                'Old Prussian',
+#                'Slovenian',
+#                'Slovak',
+#                'Lower Sorbian']
+
+# these_langs = ['Latin',
+#                'Old Breton',
+#                'Vannetais',
+#                'Italian',
+#                'Gothic',
 #                'Elfdalian',
 #                'Danish',
-#                'Western Flemish',
-#                # 'German',
-#                'Takestani',
-#                # 'Hawraman-I Taxt',
-#                'Tokharian A',
-#                'Macedonian',
-#                'Bakhtiari',
-#                'Romanian',
+#                'Dutch',
 #                'Central Alemannic',
-#                'Francoprovencalic',
+#                'Irish',
+#                'Bakhtiari',
+#                'Southern Kurdish',
+#                'Sogdian',
+#                'Parthian',
+#                'Albanian',
+#                'Achaean Greek',
+#                'Modern Greek',
 #                'Oscan',
+#                'Urdu',
+#                'Hindi',
+#                'Old Russian',
+#                'Kashmiri',
+#                'Bengali',
+#                'Vedic Sanskrit',
 #                'Latvian',
-#                # 'Dalmatian',
-#                'Khwarezmian',
+#                'Macedonian',
+#                'Polish',
+#                'Slovenian',
+#                'Slovak',
 #                'Ukrainian',
-#                'Eastern Armenian']
+#                'Walloon',
+#                'Barbaricino',
+#                'Romanian',
+#                'Catalan',
+#                'Old Saxon',
+#                ]
+
 
 plt.figure()
-plt_these = np.isin(G.nodes,range(160))
+plt_these = np.isin(G.nodes,range(len(deez)))
 nx.draw(G, pos=pos, node_size=10*plt_these, 
-        node_color=cmap(grp[np.where(plt_these, G.nodes, 0)]))
+        node_color=cmap(grp[deez[np.where(plt_these, G.nodes, 0)]]))
 
 p_cntr = np.mean([p for p in pos.values()],0)
 
 for this_lang in these_langs:
-    this = lang['Glottolog_Name'].tolist().index(this_lang)
+    this = names.index(this_lang)
     
     if pos[this][0] > p_cntr[0]:
         dx = 5
@@ -256,13 +270,13 @@ for this_lang in these_langs:
     else:
         dy = 5e-2
         va = 'bottom'
-    plt.scatter(pos[this][0], pos[this][1], color=cmap(grp[this]), zorder=10)
+    plt.scatter(pos[this][0], pos[this][1], color=cmap(grp[deez[this]]), zorder=10)
     plt.text(pos[this][0]+dx,pos[this][1]+dy, this_lang,
              horizontalalignment = ha,
              verticalalignment = va,
-             color=cmap(grp[this]),
+             color=cmap(grp[deez[this]]),
              bbox={'facecolor':'white', 
-                   'edgecolor': cmap(grp[this]), 
+                   'edgecolor': cmap(grp[deez[this]]), 
                    'alpha': 0.8,
                    'boxstyle': 'round'})
     
