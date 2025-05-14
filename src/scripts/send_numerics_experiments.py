@@ -87,49 +87,29 @@ send_remotely = True
 #             'reg': 'sparse'
 #             }
 
-N = su.Set(2**np.arange(4,12))
-task_args = {'task': exp.SchurCategories,
-             'samps': 12,
-             'seed': 0,
-             'N': N,
-             'p':0.5,
-             'snr': 0 << su.Real(num=3) << 30,
-             'dim': 200,
-             'orth': True,
-             'scl': 1e-3
-             }
-
+# N = su.Set(2**np.arange(4,12))
 # task_args = {'task': exp.SchurCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'N': 128,
+#              'samps': 6,
+#              'seed': su.Set([0,1,2]),
+#              'N': N,
 #              'p':0.5,
 #              'snr': 30,
-#              'dim': su.Set([None, 100, 200, 400]),
+#              'ratio': 10,
 #              'orth': True,
 #              'scl': 1e-3
 #              }
 
-# b = su.Set(np.arange(4,12))
-# task_args = {'task': exp.CubeCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'bits': b,
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': None,
-#              'orth': True,
-#              }
 
-# task_args = {'task': exp.GridCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'bits': su.Set([2,3,4]),
-#              'values': su.Set([3,4,5]),
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': su.Set([None,200]),
-#              'orth': True,
-#              'isometric': su.Set([True, False])
-#              }
+task_args = {'task': exp.GridCategories,
+             'samps': 6,
+             'seed': su.Set([0,1]),
+             'bits': su.Set([2,3,4]),
+             'values': su.Set([3,4,5]),
+             'snr': 30,
+             'ratio': 10,
+             'orth': True,
+             'isometric': su.Set([True, False])
+             }
 
 # N = su.Set(2**np.arange(4,10))
 # task_args = {'task': exp.HierarchicalCategories,
@@ -165,27 +145,27 @@ task_args = {'task': exp.SchurCategories,
 #              'orth': True
 #              }
 
-# mod_args = {'model': exp.SBMF,
-#             'ortho': True,
-#             'decay_rate': 0.95,
-#             'T0': 5,
-#             # 'max_iter': (100, None),
-#             # 'sparse_reg': su.Set([0, 1e-2]),
-#             'tree_reg': 1,
-#             # 'pr_reg': su.Set([0, 1e-2]),
-#             'period': 2,
-#             'dim_hid': 1 << su.Integer(step=1) << 200
-#             }
+mod_args = {'model': exp.SBMF,
+            'ortho': True,
+            'decay_rate': 0.95,
+            'T0': 5,
+            # 'max_iter': (100, None),
+            'sparse_reg': 0,
+            # 'tree_reg': su.Set([0, 1e-1]),
+            'tree_reg': 1e-2,
+            # 'pr_reg': su.Set([0, 1e-2]),
+            'period': 2,
+            'dim_hid': None
+            }
 
 # mod_args = {'model': exp.KBMF,
-#             'dim_hid': None,
 #             'decay_rate': 0.95,
 #             'T0': 10,
 #             'max_iter': None,
 #             'tree_reg': su.Set([1e-1, 1]),
 #             'period': 2
 #             }
-
+    
 # mod_args = {'model': exp.KBMF,
 #             'decay_rate': 0.95,
 #             'T0': 5,
@@ -216,17 +196,18 @@ task_args = {'task': exp.SchurCategories,
 #             'epochs': 10,
 #             }
 
-mod_args = {'model': exp.BAE,
-            'search': (True, True, False),
-            'beta': (1.0, 1.0, 0.0),
-            'decay_rate': (0.9, 1, 1),
-            'T0': (5, 1e-5, 1e-5),
-            'max_iter': (None, 1000, 1000),
-            'pr_reg': su.Set([0, 1e-2]),
-            'tree_reg': 0,
-            'batch_size':su.Set([1, 64]),
-            'epochs': 20,
-            }
+# mod_args = {'model': exp.BAE,
+#             'search': (True, False, False),
+#             'beta': (1.0, 1.0, 0.0),
+#             'decay_rate': (0.9, 1, 1),
+#             'T0': (5, 1e-5, 1e-5),
+#             'max_iter': (None, 1000, 1000),
+#             'pr_reg': su.Set([0, 1e-2]),
+#             'tree_reg': 0,
+#             'batch_size':su.Set([1, 64]),
+#             'epochs': 10,
+#             }
+
 
 ### magic
 ##############################

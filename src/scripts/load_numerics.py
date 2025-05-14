@@ -30,236 +30,38 @@ import df_models
 
 #%%
 
-# N = su.Set(2**np.arange(4,12))
-# task_args = {'task': exp.SchurCategories,
-#               'samps': 6,
-#               'seed': su.Set([1,2,3]),
-#               'N': N,
-#               'p':0.5,
-#               'snr': 0 << su.Real(num=6) << 30,
-#               'dim': su.Set([200,1000]),
-#               'orth': True
-#               }
-# mod_args = {'model': exp.BAE,
-#             'eps': 1e-2,
-#             'tol': 0.2,
-#             'lr': 0.1,
-#             'whiten': True,
-#             'dim_hid': 1000,
-#             'max_iter': 500,
-#             'alpha': 0.88,
-#             'beta': 5
-#             }
-# N = su.Set(2**np.arange(4,10))
-# # task_args = {'task': exp.HierarchicalCategories,
-# #               'samps': 5,
-# #               'seed': su.Set([0,1,2,3]),
-# #               'N': N,
-# #               'bmin':2,
-# #               'bmax': 4,
-# #               'snr': 0 << su.Real(num=6) << 30,
-# #               'dim': 2000,
-# #               'orth': True
-# #               }
-# task_args = {'task': exp.SchurTreeCategories,
-#               'samps': 5,
-#               'seed': su.Set([0,1,2,3]),
-#               'N': N,
-#               'p': su.Set([0.1,0.5]),
-#               'bmin':2,
-#               'bmax': 4,
-#               'snr': 0 << su.Real(num=6) << 30,
-#               'dim': 2000,
-#               'orth': True
-#               }
 
-# mod_args = {'model': exp.SBMF,
-#             'beta': 1e-5,
-#             'eps': 0.5,
-#             'tol': 1e-2,
-#             'pimin': 0.1,
-#             'br': su.Set([1,2]),
-#             'order': 'given',
-#             'reg': 'sparse'
-#             }
-
-# N = su.Set(2**np.arange(4,12))
-# task_args = {'task': exp.SchurCategories,
-#              'samps': 6,
-#              'seed': 1,
-#              'N': N,
-#              'p':0.5,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 200,
-#              'orth': True,
-#              'scl': 1e-3
-#              }
-# N = su.Set(2**np.arange(4,12))
-# task_args = {'task': exp.SchurCategories,
-#              'samps': 6,
-#              'seed': 1,
-#              'N': N,
-#              'p':0.5,
-#              'snr': 0 << su.Real(num=6) << 30,
-#              'dim': 200,
-#              'orth': True,
-#              'scl': 1e-3
-#              }
-
-# b = su.Set(np.arange(4,12))
-# task_args = {'task': exp.CubeCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'bits': b,
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': None,
-#              'orth': True,
-#              }
-
-# N = su.Set(2**np.arange(4,12))
+# N = su.Set(2**np.arange(4,11))
+# # task_args = {'task': exp.SchurCategories,
+# #              'samps': 6,
+# #              'seed': su.Set([0,1,2]),
+# #              'N': N,
+# #              'p':0.5,
+# #              'snr': 30,
+# #              'ratio': 10,
+# #              'orth': True,
+# #              'scl': 1e-3
+#              # }
 # task_args = {'task': exp.SchurCategories,
 #              'samps': 12,
 #              'seed': 0,
 #              'N': N,
-#              'p':0.5,
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': su.Set([None, 200]),
-#              'orth': True,
-#              'scl': 1e-3
-#              }
-
-# task_args = {'task': exp.SchurCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'N': 128,
 #              'p':0.5,
 #              'snr': 30,
-#              'dim': su.Set([None, 100, 200, 400]),
+#              'ratio': 10,
 #              'orth': True,
 #              'scl': 1e-3
 #              }
-
-# N = su.Set(2**np.arange(4,10))
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 6,
-#              'seed': su.Set([0,1]),
-#              'N': N,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 0 << su.Real(num=3) << 30,
-#              'dim': None,
-#              'orth': True
-#              }
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'N': 64,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 30,
-#              'dim': su.Set([None, 500]),
-#              'orth': True
-#              }
-
-N = su.Set(2**np.arange(4,9))
-task_args = {'task': exp.HierarchicalCategories,
-             'samps': 2,
-             'seed': su.Set([0,1,2,3,4,5,6]),
-             'N': N,
-             'bmin':2,
-             'bmax': 4,
-             'snr': 0 << su.Real(num=3) << 30,
-             'dim': None,
-             'orth': True
+task_args = {'task': exp.GridCategories,
+             'samps': 6,
+             'seed': su.Set([0,1]),
+             'bits': su.Set([2,3,4]),
+             'values': su.Set([3,4,5]),
+             'snr': 30,
+             'ratio': 10,
+             'orth': True,
+             'isometric': su.Set([True, False])
              }
-
-# task_args = {'task': exp.HierarchicalCategories,
-#              'samps': 12,
-#              'seed': 0,
-#              'N': 32,
-#              'bmin':2,
-#              'bmax': 4,
-#              'snr': 30,
-#              'orth': True
-#              }
-
-# mod_args = {'model': exp.SBMF,
-#             'ortho': True,
-#             'decay_rate': (1, 0.9),
-#             'T0': (1e-6, 5),
-#             'max_iter': (100, None),
-#             # 'sparse_reg': su.Set([0, 1e-2]),
-#             'tree_reg': 0,
-#             # 'pr_reg': su.Set([0, 1e-2]),
-#             'period': 2
-#             }
-# mod_args = {'model': exp.SBMF,
-#             'ortho': True,
-#             'decay_rate': (1, 0.9),
-#             'T0': (1e-6, 5),
-#             'max_iter': (100, None),
-#             'sparse_reg': su.Set([0, 1e-2]),
-#             # 'tree_reg': 0,
-#             # 'pr_reg': su.Set([0, 1e-2]),
-#             'period': 2
-#             }
-# mod_args = {'model': exp.SBMF,
-#             'ortho': True,
-#             'decay_rate': 0.95,
-#             'T0': 5,
-#             # 'max_iter': (100, None),
-#             # 'sparse_reg': su.Set([0, 1e-2]),
-#             'tree_reg': 1,
-#             # 'pr_reg': su.Set([0, 1e-2]),
-#             'period': 2,
-#             'dim_hid': 1 << su.Integer(step=1) << 200
-#             }
-
-# mod_args = {'model': exp.KBMF,
-#             'dim_hid': None,
-#             'decay_rate': 0.9,
-#             'T0': 10,
-#             'max_iter': None,
-#             'tree_reg': su.Set([0, 1e-1, 1]),
-#             'period': 5
-#             }
-
-# mod_args = {'model': exp.KBMF,
-#             'decay_rate': 0.95,
-#             'T0': 5,
-#             'tree_reg': su.Set([0, 1e-1, 1]),
-#             'dim_hid': 1 << su.Integer(step=1) << 100,
-#             'period': 5
-#             }
-
-# mod_args = {'model': exp.KBMF,
-#             'dim_hid': su.Set([None, 200]),
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'max_iter': None,
-#             'tree_reg': su.Set([0, 1e-1]),
-#             'period': 2
-#             }
-
-mod_args = {'model': exp.KBMF,
-            'dim_hid': None,
-            'decay_rate': 0.95,
-            'T0': 10,
-            'max_iter': None,
-            'tree_reg': su.Set([1e-1, 1]),
-            'period': 2
-            }
-
-# mod_args = {'model': exp.BAE,
-#             'search': (True, False),
-#             # 'beta': (1.0, 0.0),
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'max_iter':None,
-#             'pr_reg': su.Set([0, 1e-2]),
-#             'tree_reg': 0,
-#             'epochs': 10,
-#             }
 
 # mod_args = {'model': exp.BAE,
 #             'search': (True, True, False),
@@ -271,29 +73,40 @@ mod_args = {'model': exp.KBMF,
 #             'tree_reg': 0,
 #             'batch_size':su.Set([1, 32, 64, 128]),
 #             'epochs': 20,
-#             }
+#             
 
 # mod_args = {'model': exp.BAE,
-#             'search': (True, False),
-#             'beta': (1.0, 0.0),
-#             'decay_rate': 0.9,
-#             'T0': 5,
-#             'max_iter':None,
-#             'pr_reg': su.Set([0, 1e-2]),
-#             'tree_reg': su.Set([0, 1]),
-#             'epochs': 20,
-#             }
-
-# mod_args = {'model': exp.BAE,
-#             'search': False,
-#             'decay_rate': 1,
-#             'beta': su.Set([0,1]),
-#             # 'T0': 1e-5,
-#             'max_iter': 2000,
+#             'search': (True, False, False),
+#             'beta': (1.0, 1.0, 0.0),
+#             'decay_rate': (0.9, 1, 1),
+#             'T0': (5, 1e-5, 1e-5),
+#             'max_iter': (None, 1000, 1000),
 #             'pr_reg': su.Set([0, 1e-2]),
 #             'tree_reg': 0,
+#             'batch_size':su.Set([1, 64]),
 #             'epochs': 10,
-            # }
+#             }
+
+mod_args = {'model': exp.SBMF,
+            'ortho': True,
+            'decay_rate': 0.95,
+            'T0': 5,
+            # 'max_iter': (100, None),
+            # 'sparse_reg': su.Set([0, 1e-2]),
+            'tree_reg': su.Set([0, 1e-2, 1e-1]),
+            # 'pr_reg': su.Set([0, 1e-2]),
+            'period': 2,
+            'dim_hid': None
+            }
+
+# mod_args = {'model': exp.KBMF,
+#             'dim_hid': None,
+#             'decay_rate': 0.95,
+#             'T0': 10,
+#             'max_iter': None,
+#             'tree_reg': su.Set([1e-1, 1]),
+#             'period': 2
+#             }
 
 
 all_exp_args, prm = su.get_all_experiments(task_args, mod_args, bool_friendly=True)
@@ -317,12 +130,11 @@ for exp_args in tqdm(all_exp_args):
 for k,v in all_metrics.items():
     all_metrics[k] = su.pad_to_dense(v)
 
-
 #%%
 
 # plot_this = 'time'
-plot_this = 'hamming'
-# plot_this = 'norm_hamming'
+# plot_this = 'hamming'
+plot_this = 'norm_hamming'
 # plot_this = 'cond_hamming'
 # plot_this = 'norm_cond_hamming'
 # plot_this = 'mean_mat_ham'
@@ -333,8 +145,8 @@ plot_this = 'hamming'
 # plot_this = 'loss'
 # plot_this = 'nbs'
 
-plot_against = prm['N']
-# plot_against = prm['values']**prm['bits']
+# plot_against = prm['N']
+plot_against = prm['values']**prm['bits']
 # plot_against = 2**prm['bits']
 # plot_against = prm['batch_size']
 # plot_against = prm['dim_hid']
@@ -342,7 +154,9 @@ plot_against = prm['N']
 # normalize = True
 normalize = False
 
-these = (prm['decay_rate'] < 1)&(prm['tree_reg']==1)
+these = (prm['decay_rate'] < 1)&(prm['tree_reg']==1e-2)
+# these = (prm['search'])&(prm['pr_reg']>0)&(prm['batch_size']==1)&(prm['beta']>0)
+these = these*(prm['isometric'])
 
 # these = these&(prm['values'] == 5)
 

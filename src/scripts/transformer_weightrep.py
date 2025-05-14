@@ -117,9 +117,9 @@ model = HookedTransformer.from_pretrained('gpt2-medium', device='cpu')
 #%%
 
 gamma = model.W_U.T.detach()
-W, d = gamma.shape
+w, d = gamma.shape
 gam_ = gamma.mean(0)
-Covg = (gamma-gam_).T@(gamma-gam_) / W
+Covg = (gamma-gam_).T@(gamma-gam_) / w
 # Covg = (gamma.T @ gamma - len(gamma)*torch.outer(gam_,gam_)) / W
 l, V = torch.linalg.eigh(Covg)
 inv_sqrt_Cov = V @ torch.diag(1/torch.sqrt(l + 1e-6)) @ V.T

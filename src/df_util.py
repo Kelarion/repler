@@ -8,6 +8,7 @@ import torch.optim as optim
 import numpy as np
 import numpy.linalg as nla
 import matplotlib.pyplot as plt
+from matplotlib import cm
 from itertools import permutations, combinations
 from dataclasses import dataclass
 from tqdm import tqdm
@@ -107,35 +108,104 @@ def krusty(X, Y):
 
     return A
 
-def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, W_lr=1e-2, b_lr=1e-2):
-    """
-    A 'soft' Procrustes regression:
-    
-    min |WX - Y|^2 + lam * |W|^2 - gam * (tr W'W)^2 / tr W'WW'W 
+# def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, lr=1e-2, nonneg=False):
+#     """
+#     X is shape (dimx, points)
+#     Y is shape (dimy, points)
 
-    which encourages W to be as orthogonal. Trained by gradient descent.
-    """
+#     A 'soft' Procrustes regression:
+    
+#     min |WX - Y|^2 + lam * |W|^2 - gam * (tr W'W)^2 / tr W'WW'W 
+
+#     which encourages W to be as orthogonal. Trained by gradient descent.
+#     """
+
+#     m,n = X.shape
+#     l,n = Y.shape
+
+#     X_ = X - X.mean(1, keepdims=True)
+#     Y_ = Y - Y.mean(1, keepdims=True)
+
+#     W = np.random.randn(l,m)/np.sqrt(m)
+#     ls = []
+#     for it in range(iters):
+
+#         WTW = W.T@W
+
+#         dXhat = (Y_ - W@X_)
+#         eta = gam*np.trace(WTW)/np.sum(WTW**2)
+#         dReg = (gam-lam)*W - eta*W@WTW
+
+#         dW = dXhat@X_.T/n
+
+#         W -= lr*(dW - dReg)
+
+#         ls.append(np.mean(dXhat**2))
+
+#     return W, ls
+
+def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, nonneg=False, **opt_args):
 
     m,n = X.shape
     l,n = Y.shape
-    W = np.random.randn(l,m)/np.sqrt(m)
-    b = np.zeros(l)
+
+    k = min(m,l)
+
+    # X_ = torch.FloatTensor(X - X.mean(1, keepdims=True))
+    # Y_ = torch.FloatTensor(Y - Y.mean(1, keepdims=True))
+    X_ = torch.FloatTensor(X)
+    Y_ = torch.FloatTensor(Y)
+    nrm = torch.mean(Y_**2)
+
+    W = nn.Parameter(torch.rand(l,m))
+
+    optimizer = optim.Adam([W], **opt_args)
+
+    ls = []
+    pr = []
     for it in range(iters):
 
-        WTW = W.T@W
+        optimizer.zero_grad()
 
-        dXhat = (Y - W@X - b)
-        # dReg = self.alpha*self.W@np.sign(self.W.T@self.W)
-        dReg = gam*W@(np.eye(m) - WTW*np.trace(WTW)/np.sum(WTW**2))
-        dReg -= lam*W
+        loss = nn.MSELoss()(W@X_, Y_)
+        ls.append(loss.item()/nrm)
 
-        dW = dXhat@X.T/n
-        db = dXhat.sum(0)/n
+        WtW = W.T@W
+        loss -= gam*((torch.trace(WtW)**2)/torch.sum(WtW**2))/k
+        loss += lam*torch.mean(W**2)
 
-        W += W_lr*(dW + dReg)
-        b += b_lr*db
+        loss.backward()
+        optimizer.step()
 
-    return W, b
+        if nonneg:
+            with torch.no_grad():
+                W[W<0] = 0
+
+    return W.detach().numpy(), ls
+
+def minpr(W, lr=1e-2, nonneg=False, iters=100, beta=1e-2):
+
+    m = len(W)
+
+    W_ = 1*W
+    ls = []
+    pr = []
+    for it in range(iters):
+
+        err = W_-W
+
+        WTW = W_.T@W_
+        eta = np.trace(WTW)/np.sum(WTW**2)
+
+        W_ -= lr*(beta*err - eta*(W - W_@WTW))
+        if nonneg:
+            W_[W_<0] = 0
+
+        ls.append(np.mean(err**2))
+        pr.append(eta*np.trace(WTW))
+
+    return W_, [ls, pr]
+
 
 def minham(S, Z, sym=False):
     """
@@ -204,29 +274,35 @@ def porder(S):
 
     return depth[idx]
 
-# def conceptdepth(S):
-#     """
-#     Not super sure what this does, I think it takes a binary matrix
-#     whose rows are clusters (a "hypergraph" incidence matrix) and 
-#     assigns to each one a depth.
+def trans(S):
+    """
+    Compute a kind of transitive reduction of the covariance, StS
+    """
 
-#     Dependency on networkx package
-#     """
+    Sunq, idx = np.unique(S, axis=1, return_inverse=True)
 
-#     k = S.shape[1]
+    StS = Sunq.T@Sunq
+    k = len(StS)
+    norm_ovlp = StS/np.diag(StS)[None] - np.eye(k)
 
-#     issubset = ((S.T@S)/S.sum(0,keepdims=True) - np.eye(k) == 1)
-#     aye, jay = np.where(issubset)
-#     porder = util.topsort(aye, jay)
-    
-#     depth = np.zeros(k)
-#     for i in nx.topological_sort(G):
-#         anc = 
-#         if len(anc)>0:
-#             depth[i] = np.max(depth[anc])+1
+    ## Get the order under the transitive reduction
+    aye, jay = np.where(norm_ovlp == 1)
+    graph = {i:jay[aye==i] for i in range(k)}
+    depth = util.depth(graph)
 
-#     return depth
+    print(depth[idx])
+    ## Compute the positive and negative weights
+    R = np.zeros((k,k))
 
+    aye, jay = np.where(norm_ovlp == 1)
+    keep = np.abs(depth[aye] - depth[jay]) == 1
+    R[aye[keep], jay[keep]] += 1
+
+    kay, ell = np.where(StS == 0)
+    keep = depth[kay] == depth[ell]
+    R[kay[keep], ell[keep]] -= 1
+
+    return (R + R.T)[idx,:][:,idx]
 
 def treecorr(S):
     return np.min([S.T@S, (1-S).T@S, S.T@(1-S), (1-S).T@(1-S)], axis=0)
@@ -532,9 +608,9 @@ def sparse_feats(num_feats, num_data, sparsity=0.1):
 class NMF:
 
     r: int 
-    zl2: float = 1e-2       # L2 penalty on Z
+    zl2: float = 0          # L2 penalty on Z
     zl1: float = 0          # L1 penalty on Z
-    wl2: float = 1e-2       # L2 penalty on W
+    wl2: float = 0          # L2 penalty on W
     wpr: float = 0          # PR penalty on W
 
     def initialize(self, X):
@@ -565,7 +641,7 @@ class NMF:
 
         ## Update W
         if (self.wl2 <= 1e-6) and (self.wpr <= 1e-6): ## linear regression
-            self.W = la.pinv(self.Z)@X
+            self.W = X.T@la.pinv(self.Z).T
 
         elif self.wpr <= 1e-6: ## ridge regression
             U,s,V = la.svd(self.Z, full_matrices=False)
@@ -581,7 +657,7 @@ class NMF:
             dW = dXhat.T@self.Z/self.n
             db = dXhat.sum(0)/self.n
 
-            self.W += 1e-2*(dW + dReg)
+            self.W -= 1e-2*(dW - dReg)
 
 def seminmf(X, r, max_iter=10, **kwargs):
 
@@ -1210,20 +1286,38 @@ def schurcats(N, p, rmax=np.inf):
 
     return S
 
-def noisyembed(S, dim, logsnr, orth=True, scl=0.1):
+def noisyembed(S, dim, logsnr, orth=True, nonneg=False, scl=1e-3):
 
     N, r = S.shape
 
     pi_true = r * np.random.dirichlet(np.ones(r)/scl)
     W = np.random.randn(dim,r)/np.sqrt(dim)
     if orth:
-        W = la.qr(W, mode='economic')[0]
+        if r > dim:
+            raise ValueError('Cannot have nonnegative orthogonal compression')
+        if nonneg:
+            mask = randmask(r, dim)
+            W = np.abs(W)*mask
+        else:
+            W = la.qr(W, mode='economic')[0]
+    elif nonneg:
+        W[W<0] = 0 
+    W /= la.norm(W, axis=0, keepdims=True)
+
     W = W@np.diag(np.sqrt(pi_true))
 
     noise = np.random.randn(dim, N)/np.sqrt(dim)
     a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-logsnr/20)
 
-    return S@W.T + a*noise.T
+    return S@W.T + a*noise.T, W
+
+def randmask(n, m):
+    assert n < m
+    num = 1 + np.random.multinomial(m-n, [1/n]*n)
+    idx = np.random.permutation(np.repeat(np.arange(n), num))
+
+    return np.eye(n)[idx]
+
 
 def snr2scl(S, dim, logsnr):
     """
@@ -1661,6 +1755,10 @@ def plotgraph(S, type='neato', labels=None, **scat_args):
     G = nx.Graph()
     G.add_edges_from(E)
 
+    G_E = np.array(G.edges)
+    print(G_E.shape)
+    elab = np.argmax(np.abs(H[G_E[:,0]] - H[G_E[:,1]]), axis=1)
+
     pos = graphviz_layout(G, type)
 
     idx = np.argsort(list(pos.keys()))
@@ -1668,7 +1766,8 @@ def plotgraph(S, type='neato', labels=None, **scat_args):
 
     deez = np.isin(np.array(list(G.nodes))[idx], np.arange(len(S)))
 
-    nx.draw(G, pos, node_size=0)
+    cmap = cm.tab10
+    nx.draw(G, pos, node_size=0, edge_color=elab, edge_cmap=cmap, width=2)
 
     plt.scatter(xy[deez,0], xy[deez,1], **scat_args)
 

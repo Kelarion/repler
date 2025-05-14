@@ -119,7 +119,7 @@ for n in N:
 
 #%%
 
-nepoch = 600
+nepoch = 400
 draws = 12
 
 loss = []
@@ -130,14 +130,14 @@ tree = []
 
 for _ in tqdm(range(draws)):
     
-    S = df_util.randtree_feats(64, 2, 4)
+    # S = df_util.randtree_feats(64, 2, 4)
+    S = df_util.schurcats(64, 0.5)
     depth = df_util.porder(S)
-    # S = df_util.schurcats(64, 0.5)
     W = sts.ortho_group(S.shape[1]).rvs()[:,:S.shape[1]]    
     X = S@W.T
     
-    # mod = bae_models.BiPCA(S.shape[1], tree_reg=0.1)
-    mod = bae_models.KernelBMF(2*S.shape[1], tree_reg=1)
+    # mod = bae_models.BiPCA(S.shape[1], tree_reg=0)
+    mod = bae_models.KernelBMF(S.shape[1], tree_reg=0)
     
     # dl = pt_util.batch_data(torch.FloatTensor(X), batch_size=len(S))
         
@@ -156,16 +156,18 @@ for _ in tqdm(range(draws)):
     #     hm.append(df_util.permham(S, Sest).mean())
     mod.initialize(X)
     for it in (range(nepoch)):
-        T = 5*(0.95**(it//4))
-        mod.temp = T
-        ls.append(mod.grad_step(X))
         br.append(util.nbs(mod.S, X))
         tr.append(df_util.treecorr(mod.S).mean())
         
         minham = df_util.minham(S, mod.S, sym=True)
         hm.append(util.group_mean(minham/S.sum(0), depth))
-        ph.append(df_util.permham(S, mod.S, norm=True).mean())
-    
+        ph.append(df_util.permham(S, mod.S, norm=False).mean())
+        
+        T = 5*(0.95**(it//4))
+        mod.temp = T
+        # mod.temp = 1e-4
+        ls.append(mod.grad_step(X))
+            
     loss.append(ls)
     nbs.append(br)
     ham.append(np.array(hm))
@@ -185,6 +187,15 @@ norm = plt.Normalize(1, num_ham)
 for i, thisham in enumerate(np.nanmean(allham,0).T):
     # plt.plot(thisham, c=cols[i])
     plt.plot(thisham, c=cmap(norm(i)))
+
+#%%
+
+S = df_util.randtree_feats(16, 2,4)
+
+R = df_util.dH(S)[0]
+aye,jay = np.where(np.triu(R) == 1)
+
+depth = df_util.porder(S)
 
 #%%
 

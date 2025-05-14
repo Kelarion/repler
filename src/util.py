@@ -1345,17 +1345,6 @@ def depth(graph):
 
     return depths
 
-# def transitive_reduction(graph):
-#     """
-#     Remove edges between nodes that aren't direct descendants
-#     """
-
-#     order = topsort(graph)
-
-#     for node in range(len(order)):
-#         reachable = set([order[-(1+node)]])
-
-
 
 ##############################################
 ############# Binary variables ###############

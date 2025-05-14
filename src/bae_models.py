@@ -89,7 +89,7 @@ class BiPCA(BMF):
     on non-identifiable instances. 
     """
 
-    def __init__(self, dim_hid, tree_reg=0, sparse_reg=1e-1, center=False,
+    def __init__(self, dim_hid, tree_reg=0, sparse_reg=0, center=False,
         alpha_pr=2, beta_pr=5):
 
         super().__init__()
@@ -192,7 +192,7 @@ class SemiBMF(BMF):
     """
 
     def __init__(self, dim_hid, noise='gaussian', tree_reg=1e-2, weight_reg=1e-2, 
-        S_steps=1, W_steps=1, do_pca=False):
+        do_pca=False, nonneg=False):
 
         super().__init__()
 
@@ -201,8 +201,7 @@ class SemiBMF(BMF):
 
         self.r = dim_hid
 
-        self.S_steps = S_steps
-        self.W_steps = W_steps
+        self.nonneg = nonneg
 
         self.alpha = weight_reg
         self.beta = tree_reg
@@ -406,7 +405,7 @@ class KernelBMF(BMF):
 
         self.scl = self.scl_lr*dot/nrm + (1-self.scl_lr)*self.scl
         
-        return (nrm - 2*dot)/(self.n*self.d)
+        return 1 + (nrm - 2*dot)/(self.n*self.d)
 
 
 ####################################################################

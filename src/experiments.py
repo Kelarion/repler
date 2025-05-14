@@ -17,6 +17,8 @@ import scipy.special as spc
 import scipy.stats as sts
 from itertools import permutations
 from sklearn import svm, linear_model
+from sklearn.decomposition import NMF
+from sklearn.cluster import k_means
 
 import einops
 from jaxtyping import Float, Int
@@ -242,6 +244,57 @@ class KBMF(exp.Model):
             self.metrics['nbs'].append(nbs)
 
 @dataclass
+class NMF2(exp.Model):
+
+    dim_hid: int = None
+    l1_ratio: float = 1
+    reg: float = 0
+
+    def fit(self, X, Strue):
+
+        self.metrics = {'loss':[],
+                        'nbs':[],
+                        'hamming':[],
+                        'norm_hamming': [],
+                        'cond_hamming': [],
+                        'norm_cond_hamming': [],
+                        'time':[]}
+
+        for it in range(len(X)):
+
+            if self.dim_hid is None:
+                h = len(Strue[it].T)
+            else:
+                h = self.dim_hid
+
+            nmf = NMF(h, l1_ratio=self.l1_ratio, alpha_W=self.reg)
+
+            t0 = time()
+            Z = nmf.fit_transform(X[it])
+            S = []
+            for i in range(Z.shape[1]):
+                S.append(k_means(Z[:,[i]], 2)[1])
+            self.metrics['time'].append(time()-t0)
+            S = np.array(S.T)
+
+            cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
+            mat_ham = df_util.permham(Strue[it], S)
+            norm_ham = df_util.permham(Strue[it], S, norm=True)
+            nbs = util.nbs(X[it], S)
+
+            depth = df_util.porder(Strue[it])
+            minham = df_util.minham(Strue[it], S, sym=True)
+            cham = util.group_mean(minham, depth)
+            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
+
+            self.metrics['norm_hamming'].append(np.mean(norm_ham))
+            self.metrics['hamming'].append(np.mean(mat_ham))
+            self.metrics['cond_hamming'].append(cham)
+            self.metrics['norm_cond_hamming'].append(ncham)
+            self.metrics['loss'].append(cka)
+            self.metrics['nbs'].append(nbs)
+
+@dataclass
 class SBMF(exp.Model):
 
     dim_hid: int = None
@@ -313,7 +366,6 @@ class SBMF(exp.Model):
             self.metrics['norm_cond_hamming'].append(ncham)
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
-
 
 @dataclass
 class SAE(exp.Model):
@@ -467,13 +519,40 @@ class BernVAE(exp.Model):
 ################## Tasks for server interface ###############################
 #############################################################################
 
-# @dataclass
-# class CatTask(exp.Task):
-#     samps: int
-#     snr: float
-#     dim: int = None
-#     orth: bool = True
-#     seed: int = 0
+@dataclass
+class CatTask(exp.Task):
+
+    samps: int
+    snr: float
+    ratio: int = 1
+    orth: bool = True
+    seed: int = 0 
+    nonneg: bool = False
+
+    def latents(self):
+        return NotImplementedError
+
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        Xs = []
+        Strues = []
+        for it in range(self.samps):
+
+            S = self.latents()
+
+            dim = self.ratio*S.shape[1]
+
+            X = df_util.noisyembed(S, dim, 
+                snr=self.snr, orth=self.orth, 
+                nonneg=self.nonneg, scl=1e-4)
+
+            Xs.append(X)
+            Strues.append(S) 
+
+        return {'X': Xs, 'Strue': Strues}
+
 
 
 @dataclass
@@ -519,141 +598,41 @@ class SparseFeatures(exp.Task):
 
         return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
 
-@dataclass
-class SchurCategories(exp.Task):
+@dataclass(kw_only=True)
+class SchurCategories(CatTask):
 
-    samps: int
     N: int
-    snr: float
-    dim: int = None
     p: float = 0.5
-    scl: float = 0.1
-    orth: bool = True
     r: int = None
-    seed: int=0
 
-    def sample(self):
-
-        np.random.seed(self.seed)
+    def latents(self):
 
         if self.r is None:
             r = int(np.sqrt(2*self.N))
         else:
             r = self.r 
 
-        Xs = []
-        Strues = []
-        for j in range(self.samps):
-
+        S = df_util.schurcats(self.N, self.p, r)
+        it = 0
+        while len(S.T) < r:
             S = df_util.schurcats(self.N, self.p, r)
-            it = 0
-            while len(S.T) < r:
-                S = df_util.schurcats(self.N, self.p, r)
-                it += 1
-                if it > 100:
-                    break
-            
-            if self.dim is None:
-                dim = S.shape[1]
-            else:
-                dim = self.dim
+            it += 1
+            if it > 100:
+                break
 
-            X = df_util.noisyembed(S, dim, self.snr, self.orth, self.scl)
-
-            Xs.append(X)
-            Strues.append((1+S)//2)
-
-        return {'X': Xs, 'Strue': Strues}
+        return (1+S)//2
 
 
 @dataclass
 class HierarchicalCategories(exp.Task):
 
-    samps: int
     N: int
     bmin: int 
     bmax: int 
-    snr: float
-    dim: int = None
-    orth: bool = True
-    seed: int = 0
 
-    def sample(self):
+    def latents(self):
+        return df_util.randtree_feats(self.N, self.bmin, self.bmax)
 
-        np.random.seed(self.seed)
-
-        Xs = []
-        Strues = []
-        for it in range(self.samps):
-            S = df_util.randtree_feats(self.N, self.bmin, self.bmax)
-
-            if self.dim is None:
-                dim = S.shape[1]
-            else:
-                dim = self.dim
-
-            X = df_util.noisyembed(S, dim, self.snr, self.orth, scl=1e-4)
-
-            Xs.append(X)
-            Strues.append(S) 
-
-        return {'X': Xs, 'Strue': Strues}
-
-@dataclass
-class SchurTreeCategories(exp.Task):
-
-    samps: int
-    N: int
-    snr: float
-    bmin: int 
-    bmax: int 
-    dim: int = None
-    p: float = 0.5
-    scl: float = 1e-3
-    orth: bool = True
-    r: int = None
-    seed: int = 0
-
-    def sample(self):
-
-        np.random.seed(self.seed)
-
-        if self.r is None:
-            r = int(np.sqrt(2*self.N))
-        else:
-            r = self.r 
-
-        Xs = []
-        Strues = []
-        for it in range(self.samps):
-
-            Sschur = df_util.schurcats(self.N, self.p, r)
-            it = 0
-            best = len(Sschur.T)
-            while best < r:
-                newS = df_util.schurcats(self.N, self.p, r)
-                if len(newS.T) > best:
-                    Sschur = newS*1
-                it += 1
-                if it > 100:
-                    break
-
-            # for k in range(len(Sschur.T)):
-            Stree = 2*df_util.randtree_feats(self.N, self.bmin, self.bmax)-1
-            
-            S = np.hstack([Sschur, Stree])
-
-            if self.dim is None:
-                dim = S.shape[1]
-            else:
-                dim = self.dim
-
-            X = df_util.noisyembed(S, dim, self.snr, self.orth, self.scl)
-
-            Xs.append(X)
-            Strues.append(S)
-
-        return {'X': np.array(Xs), 'Strue': Strues}
 
 @dataclass
 class CubeCategories(exp.Task):
@@ -662,7 +641,7 @@ class CubeCategories(exp.Task):
     bits: int 
     snr: float
     seed: int = 0
-    dim: int = None
+    ratio: int = 1
     orth: bool = True
     perturb: bool = False
 
@@ -676,10 +655,7 @@ class CubeCategories(exp.Task):
         if self.perturb:
             S = np.hstack([S, np.eye(2**self.bits)])
 
-        if self.dim is None:
-            dim = S.shape[1]
-        else:
-            dim = self.dim
+        dim = self.ratio*S.shape[1]
 
         Xs = []
         Strue = []
@@ -693,14 +669,19 @@ class CubeCategories(exp.Task):
 @dataclass
 class GridCategories(exp.Task):
 
-    samps: int
     bits: int 
     values: int
-    snr: float
-    seed: int = 0
-    dim: int = None
     isometric: bool = True
-    orth: bool = True
+
+    def latents(self):
+
+        S = df_util.gridcats(self.values, self.bits)
+        if self.isometric:
+            Srep = df_util.gridcats(self.values, self.bits)
+        else:
+            Srep = df_util.grid_feats(self.values, self.bits)
+
+        return Srep
 
     def sample(self):
 
@@ -714,10 +695,7 @@ class GridCategories(exp.Task):
         else:
             Srep = df_util.grid_feats(self.values, self.bits)
 
-        if self.dim is None:
-            dim = Srep.shape[1]
-        else:
-            dim = self.dim
+        dim = self.ratio*Srep.shape[1]
 
         Xs = []
         Strue = []

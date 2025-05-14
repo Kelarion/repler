@@ -925,7 +925,7 @@ def hovertext(x, y, labels, offset=1, c=None, cmap=cm.tab10,
 
     fig.canvas.mpl_connect("motion_notify_event", hover)
 
-def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, **scat_args):
+def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, offset=1e-2, **scat_args):
     """
     Scatter plot of x and y, with labels when you hover over the points
     """    
@@ -943,17 +943,17 @@ def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, **scat_args):
 
     for n,l in enumerate(labels):
         if x[n] > xbar[0]:
-            dx = -3e-2
+            dx = -offset
             ha = 'right'
         else:
-            dx = 1e-2 
+            dx = offset
             ha = 'left'
         if y[n] > xbar[1]:
-            dy = -3e-2
+            dy = -offset
             va = 'top'
             ha = 'right'
         else:
-            dy = 3e-2
+            dy = offset
             va = 'bottom'
 
         plt.text(x[n]+dx, y[n]+dy, l,
@@ -963,3 +963,5 @@ def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, **scat_args):
                    'edgecolor': 'black', 
                    'alpha': 0.8,
                    'boxstyle': 'round'})
+
+# def triangle(X, )
