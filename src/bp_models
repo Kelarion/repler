@@ -1,0 +1,136 @@
+import os, sys, re
+import pickle
+from time import time
+import copy
+from dataclasses import dataclass
+from typing import Optional
+
+import torch
+import torch.nn as nn
+import torchvision
+import torch.optim as optim
+import torch.distributions as dis
+import torch.linalg as tla
+import torch._dynamo
+import numpy as np
+from itertools import permutations, combinations
+# from tqdm import tqdm
+
+import scipy.stats as sts
+import scipy.linalg as la
+import scipy.spatial as spt
+import scipy.sparse as sprs
+import scipy.special as spc
+import numpy.linalg as nla
+from scipy.optimize import linear_sum_assignment as lsa
+from scipy.optimize import linprog as lp
+from scipy.optimize import nnls
+
+torch._dynamo.config.suppress_errors = True 
+
+from numba import njit
+import math
+
+# my code
+import util
+import pt_util
+import bae_util
+import bae_search
+import students
+
+
+
+@dataclass(eq=False)
+class BAE(students.NeuralNet):
+    """
+    A hybdrid of a Bernoulli VAE and SemiBMF 
+
+    Minimizes the same loss as the BMF models, but S is parameterised by a 
+    linear-threshold layer, S = f[MX + p], rather than stored non-parametrically.
+
+    Also can include the entropy regularization used by the Bernoulli VAE.
+    """
+    
+    dim_hid: int
+    dim_inp: int
+    beta: float = 1.0
+    temp: float = 2/3
+    tree_reg: float = 0
+    sparse_reg: float = 1e-2
+    weight_reg: float = 1e-2
+
+    def __post_init__(self):
+        super().__init__()
+
+        self.q = nn.Linear(self.dim_inp, self.dim_hid) # x -> s
+        self.p = nn.Linear(self.dim_hid, self.dim_inp) # s -> x'
+
+        self.Cov = torch.zeros((self.dim_hid, self.dim_hid))
+
+    #     self.init_weights()
+
+    # def init_weights(self, scale=None):
+
+    #     if scale is None:
+    #         scl = 1
+
+    #     if self.dim_hid > self.dim_inp:
+    #         W = sts.ortho_group(self.dim_hid).rvs()[:,:self.dim_inp]
+    #     else:
+    #         W = sts.ortho_group(self.dim_inp).rvs()[:,:self.dim_hid].T
+
+    #     with torch.no_grad():
+    #         self.q.weight.copy_(torch.tensor(scl*W))
+    #         self.p.weight.copy_(torch.tensor(scl*W.T))
+
+    def initialize(self, dl, **opt_args):
+        """
+        Input should be a dataloader for the data, same as the input to grad_step
+
+        Eventually, 'N' will be a hyperparmeter whose default is some large number,
+        but that's not something I'm implementing yet
+        """
+        self.N = len(dl.dataset)
+        self.init_optimizer(**opt_args)
+
+        self.tree_lr = dl.batch_size/self.N
+
+    def forward(self, X):
+        # return self.p((torch.sign(self.q(X))+1)/2)
+        return self.p(torch.sigmoid(self.q(X)/self.temp))
+    
+    def hidden(self, X):
+        return (1+torch.sign(self.q(X)))/2
+
+    def metrics(self, dl):
+        pass
+
+    def EStep(self, S, X):
+        """
+        Discrete search over S, initialised by q(s|x)
+
+        Expects two pytorch tensors, returns a pytorch tensor
+        """
+        return NotImplementedError
+
+    def MStep(self, S, X):
+        """
+        Continuous parameter loss function
+
+        Expects two pytorch tensors, returns a scalar loss
+        """
+        return NotImplementedError
+
+    def loss(self, batch):
+
+        C0 = self.q(batch[0])
+        S0 = torch.sigmoid(C0)
+
+        ## Search over S
+        S = self.EStep(S0, batch[0])
+
+        ## Update continuous parameters
+        qls = nn.BCEWithLogitsLoss()(C0, S)
+        pls = self.MStep(S, batch[0])
+
+        return pls + self.beta*qls 

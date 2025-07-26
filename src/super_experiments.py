@@ -221,7 +221,7 @@ class Experiment:
             except:
                 print(stupidpath)
                 raise Exception
-                
+
         path2file = os.path.normpath(os.path.join(stupidpath,metrics_fname))
 
         self.model.load(path2file)

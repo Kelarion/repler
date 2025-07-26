@@ -67,41 +67,42 @@ class Neal:
 
         return en # , mets
 
-    def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=False , 
-        draws=10, folds=10, **opt_args):
+#     def cv_fit(self, model, X, T_min=1e-4, max_iter=None, verbose=False , 
+#         draws=10, folds=10, **opt_args):
 
-        if max_iter is None:
-            max_iter = self.period*int(np.log(T_min/self.initial)/ np.log(self.decay_rate))
+#         if max_iter is None:
+#             max_iter = self.period*int(np.log(T_min/self.initial)/ np.log(self.decay_rate))
 
-        if verbose:
-            pbar = tqdm(range(draws))
+#         if verbose:
+#             pbar = tqdm(range(draws))
 
-        ens = []
-        mods = []
-        for fold in range(draws):
+#         ens = []
+#         mods = []
+#         for fold in range(draws):
             
-            model.initialize(X)
+#             model.initialize(X)
 
-            ## Mask
-            M = np.random.rand(*X.shape) < (1/folds)
+#             ## Mask
+#             M = np.random.rand(*X.shape) < (1/folds)
 
-            ## Initialize masked values at random
-            X_M = X*1
-            X_M[M] = np.random.randn(M.sum())
+#             ## Initialize masked values at random
+#             X_M = X*1
+#             X_M[M] = np.random.randn(M.sum())
 
-            ## Fit parameters and mask
-            for it in range(max_iter):
-                T = self.initial*(self.decay_rate**(it//self.period))
-                model.grad_step(X_M, T, **opt_args)
-                X_M[M] = model()[M]
+#             ## Fit parameters and mask
+#             for it in range(max_iter):
+#                 T = self.initial*(self.decay_rate**(it//self.period))
+#                 model.grad_step(X_M, T, **opt_args)
+#                 X_M[M] = model()[M]
 
-            ens.append(model.loss(X, mask=M))
-            mods.append(model.S*1)
+#             ens.append(model.loss(X, mask=M))
+#             mods.append(model.S*1)
 
-            if verbose:
-                pbar.update(1)
+#             if verbose:
+#                 pbar.update(1)
 
-        return ens, mods
+#         return ens, mods
+
 
 
 #############################################################

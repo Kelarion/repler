@@ -29,6 +29,7 @@ warnings.simplefilter("ignore", category=ConvergenceWarning)
 
 ####  Load dataset and parameters  ######
 ##########################################################
+print('Started!')
 
 # get the indices
 allargs = sys.argv

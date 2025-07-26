@@ -1,6 +1,7 @@
 import os
 import pickle
 import warnings
+import platform
 import re
 from time import time
 from dataclasses import dataclass
@@ -16,9 +17,12 @@ import scipy.linalg as la
 import scipy.special as spc
 import scipy.stats as sts
 from itertools import permutations
+
+if platform.system() == 'Linux':
+    os.environ['MKL_THREADING_LAYER'] = 'GNU'
 from sklearn import svm, linear_model
 from sklearn.decomposition import NMF
-from sklearn.cluster import k_means
+from sklearn.cluster import k_means, KMeans
 
 import einops
 from jaxtyping import Float, Int
@@ -45,47 +49,6 @@ import bae_util
 #############################################################################
 ################## Models for server interface ##############################
 #############################################################################
-
-# @dataclass
-# class SBMF(exp.Model):
-
-#     beta: float 
-#     eps: float
-#     br: int
-#     tol: float
-#     pimin: float
-#     reg: str = 'sparse'
-#     order: str = 'ball'
-
-#     def fit(self, K, Strue):
-
-#         self.metrics = {'loss':[],
-#                         'mean_hamming':[],
-#                         'median_hamming':[],
-#                         'weighted_hamming':[],
-#                         'time':[]}
-
-#         for it in range(len(K)):
-
-#             t0 = time()
-#             S, pi = df.cuts(K[it], 
-#                             branches=self.br, eps=self.eps, beta=self.beta, 
-#                             order=self.order, tol=self.tol, pimin=self.pimin,
-#                             reg = self.reg, rmax=2*len(K[it]))
-#             self.metrics['time'].append(time()-t0)
-
-#             S = S.toarray()
-#             bestS, bestpi = df_util.mindist(K[it], S, beta=1e-5)
-
-#             nrm = np.sum(util.center(K[it])**2)
-#             ls = util.centered_kernel_alignment(K[it], bestS@np.diag(bestpi)@bestS.T)
-#             ham = len(bestS) - (np.abs((2*S-1).T@Strue[it]).max(0))
-#             w = np.min([(Strue[it]>0).sum(0), (Strue[it]<0).sum(0)], axis=0)
-
-#             self.metrics['loss'].append(ls)
-#             self.metrics['mean_hamming'].append(np.mean(ham))
-#             self.metrics['median_hamming'].append(np.median(ham))
-#             self.metrics['weighted_hamming'].append(ham@w/np.sum(w))
 
 @dataclass
 class BAE(exp.Model):
@@ -119,7 +82,7 @@ class BAE(exp.Model):
             if self.dim_hid is None:
                 h = len(Strue[it].T)
             else:
-                h = self.dim_hid
+                h = self.dim_hid*len(Strue[it].T)
 
             if self.search:
                 mod = bae_models.BinaryAutoencoder(
@@ -139,15 +102,15 @@ class BAE(exp.Model):
                             beta=self.beta
                             )
 
-            neal = bae_util.Neal(decay_rate=self.decay_rate, 
-                period=self.epochs, 
-                initial=self.T0)
-
             dl = pt_util.batch_data(torch.FloatTensor(X[it]), 
                 batch_size=self.batch_size)
 
             t0 = time()
-            en = neal.fit(mod, dl, max_iter=self.max_iter, T_min=1e-6)
+            en = mod.fit(dl, decay_rate=self.decay_rate, 
+                             period=self.period, 
+                             initial=self.T0,
+                             max_iter=self.max_iter,
+                             T_min=1e-6)
             self.metrics['time'].append(time()-t0)
 
             S = mod.hidden(torch.FloatTensor(X[it])).detach().numpy()
@@ -176,20 +139,20 @@ class KBMF(exp.Model):
     dim_hid: int = None
     steps: int = 1
     decay_rate: float = 0.8
-    T0: float = 5
+    T0: float = 10
     period: int = 2
     tree_reg: float = 1e-2
     max_iter: int = None
 
     def fit(self, X, Strue):
 
-        self.metrics = {'loss':[],
-                        'nbs':[],
-                        'hamming':[],
+        self.metrics = {'loss': [],
+                        'nbs': [],
+                        'hamming': [],
                         'norm_hamming': [],
                         'cond_hamming': [],
                         'norm_cond_hamming': [],
-                        'time':[]}
+                        'time': []}
 
         for it in range(len(X)):
 
@@ -198,27 +161,18 @@ class KBMF(exp.Model):
             if self.dim_hid is None:
                 h = len(Strue[it].T)
             else:
-                h = self.dim_hid
+                h = int(self.dim_hid*Strue[it].shape[1]) + 1
 
-            mod = bae_models.KernelBMF(h, tree_reg=self.tree_reg,
-                scale_lr=0.9)
-            neal = bae_util.Neal(decay_rate=self.decay_rate, 
-                period=self.period, 
-                initial=self.T0)
-
-            # mod.init_optimizer(decay_rate=self.decay_rate,
-            #     period=self.period,
-            #     initial=self.T0)
+            mod = bae_models.KernelBMF(h, tree_reg=self.tree_reg)
 
             t0 = time()
-            en = neal.fit(mod, X[it], max_iter=self.max_iter)
-            # for i in range(self.max_iter):
-            #     mod.proj()
-            #     mod.grad_step()
+            en = mod.fit(X[it], decay_rate=self.decay_rate, 
+                                period=self.period, 
+                                initial_temp=self.T0,
+                                max_iter=self.max_iter)
 
             self.metrics['time'].append(time()-t0)
 
-            # S = mod.S.todense()
             S = mod.S
 
             # bestS, bestpi = df_util.mindistX(X[it], S)
@@ -243,12 +197,14 @@ class KBMF(exp.Model):
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
 
+
 @dataclass
 class NMF2(exp.Model):
 
     dim_hid: int = None
     l1_ratio: float = 1
     reg: float = 0
+    squish: bool = False   # whether to force into positive orthant
 
     def fit(self, X, Strue):
 
@@ -265,17 +221,28 @@ class NMF2(exp.Model):
             if self.dim_hid is None:
                 h = len(Strue[it].T)
             else:
-                h = self.dim_hid
+                h = int(self.dim_hid*len(Strue[it].T))
 
+            # print('Started fit')
             nmf = NMF(h, l1_ratio=self.l1_ratio, alpha_W=self.reg)
+            # print('created NMF')
 
             t0 = time()
-            Z = nmf.fit_transform(X[it])
-            S = []
-            for i in range(Z.shape[1]):
-                S.append(k_means(Z[:,[i]], 2)[1])
+            if self.squish:
+                U,s,V = la.svd(X[it], full_matrices=False)
+                Xpos = np.hstack([(U*(U>0))@np.diag(s), -(U*(U<0))@np.diag(s)])
+            else:
+                Xpos = X[it] - X[it].min()
+                Z = nmf.fit_transform(Xpos)
+                # print('Fit NMF')
+                S = []
+                kmn = KMeans(2, n_init=1)
+                for i in range(Z.shape[1]):
+                    S.append(kmn.fit_predict(Z[:,[i]]))
+                # S.append(k_means(Z[:,[i]], 2)[1])
+                # S.append(1*(Z[:,i] > Z[:,i].mean(0)))
             self.metrics['time'].append(time()-t0)
-            S = np.array(S.T)
+            S = np.array(S).T
 
             cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
             mat_ham = df_util.permham(Strue[it], S)
@@ -294,17 +261,19 @@ class NMF2(exp.Model):
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
 
+
 @dataclass
 class SBMF(exp.Model):
 
     dim_hid: int = None
     ortho: bool = True
-    decay_rate: float = 0.8
-    T0: float = 5
+    decay_rate: float = 0.9
+    T0: float = 10
     period: int = 2
-    sparse_reg: float = 1e-2
+    sparse_reg: float = 0
     tree_reg: float = 0
-    pr_reg: float = 1e-2
+    pr_reg: float = 0
+    nonneg: bool = False
     max_iter: int = None
 
     def fit(self, X, Strue):
@@ -324,7 +293,7 @@ class SBMF(exp.Model):
             if self.dim_hid is None:
                 h = len(Strue[it].T)
             else:
-                h = self.dim_hid
+                h = int(self.dim_hid*len(Strue[it].T))
 
             if self.ortho:
                 mod = bae_models.BiPCA(h, 
@@ -333,18 +302,14 @@ class SBMF(exp.Model):
             else:
                 mod = bae_models.SemiBMF(h, 
                         tree_reg=self.tree_reg,
-                        weight_reg=self.pr_reg)
-
-            neal = bae_util.Neal(decay_rate=self.decay_rate, 
-                period=self.period, 
-                initial=self.T0)
-
-            # mod.init_optimizer(decay_rate=self.decay_rate,
-            #     period=self.period,
-            #     initial=self.T0)
+                        weight_reg=self.pr_reg,
+                        nonneg=self.nonneg)
 
             t0 = time()
-            en = neal.fit(mod, X[it], max_iter=self.max_iter)
+            en = mod.fit(X[it], decay_rate=self.decay_rate, 
+                                period=self.period, 
+                                initial_temp=self.T0,
+                                max_iter=self.max_iter)
 
             self.metrics['time'].append(time()-t0)
 
@@ -448,72 +413,6 @@ class SAE(exp.Model):
         self.metrics['mean_hamming'].append(np.mean(ham, axis=-1))
         self.metrics['median_hamming'].append(np.median(ham, axis=-1))
 
-@dataclass
-class BernVAE(exp.Model):
-    
-    dim_hid: int = None
-    steps: int = 500
-    temp: float = 2/3
-    alpha: float = 1
-    beta: float = 1 
-    period: float = 10
-    scale: float = 0.5
-    
-    def fit(self, X, Strue):
-        
-        self.metrics = {'loss':[],
-                        'mean_hamming':[],
-                        'median_hamming':[],
-                        'mean_mat_ham':[],
-                        'median_mat_ham':[],
-                        'mean_norm_ham': [],
-                        'time':[]}
-        
-        for it in range(len(X)):
-
-            if self.dim_hid is None:
-                dh = len(Strue[it].T)
-            else:
-                dh = self.dim_hid
-            
-            mod = students.BVAE(len(X[it].T), 
-                                dh, 
-                                temp=self.temp,
-                                beta=self.beta,
-                                scale=self.scale)
-            
-            ptX = torch.FloatTensor(X[it] - X[it].mean(0))
-            
-            dl = pt_util.batch_data(ptX)
-            
-            ## Fit 
-            t0 = time()
-            for step in range(self.steps):
-                ## Exponential annealing schedule
-                T = self.temp*(self.alpha**(step//self.period))
-                mod.temp = T
-                
-                ls = mod.grad_step(dl)
-                
-            self.metrics['time'].append(time()-t0)
-            # self.metrics['loss'].append(ls)
-            
-            S = np.sign(mod.q(ptX).detach().numpy())
-            
-            ## Assess ground truth recovery
-            ham = len(X[it]) - (np.abs(S.T@Strue[it]).max(0))
-            cka = util.centered_kernel_alignment(X[it]@X[it].T, S@S.T)
-            mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = mat_ham/np.min([(Strue[it]>0).sum(0), (Strue[it]<=0).sum(0)],0)
-
-            self.metrics['mean_norm_ham'].append(np.mean(norm_ham))
-            self.metrics['mean_mat_ham'].append(np.mean(mat_ham))
-            self.metrics['median_mat_ham'].append(np.median(mat_ham))
-            self.metrics['mean_hamming'].append(np.mean(ham))
-            self.metrics['median_hamming'].append(np.median(ham))
-            self.metrics['loss'].append(cka)
-            
-
 
 #############################################################################
 ################## Tasks for server interface ###############################
@@ -552,7 +451,6 @@ class CatTask(exp.Task):
             Strues.append(S) 
 
         return {'X': Xs, 'Strue': Strues}
-
 
 
 @dataclass
@@ -598,29 +496,51 @@ class SparseFeatures(exp.Task):
 
         return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
 
-@dataclass(kw_only=True)
-class SchurCategories(CatTask):
+@dataclass
+class SchurCategories(exp.Task):
 
     N: int
+    samps: int
+    snr: float
+    ratio: int = 1
+    orth: bool = True
+    seed: int = 0 
+    nonneg: bool = False
     p: float = 0.5
     r: int = None
 
-    def latents(self):
+    def sample(self):
+
+        np.random.seed(self.seed)
 
         if self.r is None:
             r = int(np.sqrt(2*self.N))
         else:
             r = self.r 
 
-        S = df_util.schurcats(self.N, self.p, r)
-        it = 0
-        while len(S.T) < r:
-            S = df_util.schurcats(self.N, self.p, r)
-            it += 1
-            if it > 100:
-                break
+        Xs = []
+        Strues = []
+        for it in range(self.samps):
 
-        return (1+S)//2
+            S = df_util.schurcats(self.N, self.p, r)
+            it = 0
+            while len(S.T) < r:
+                S = df_util.schurcats(self.N, self.p, r)
+                it += 1
+                if it > 100:
+                    break
+            S = (1+S)//2
+
+            dim = int(self.ratio*S.shape[1])
+
+            X = df_util.noisyembed(S, dim, 
+                logsnr=self.snr, orth=self.orth, 
+                nonneg=self.nonneg, scl=1e-4)
+
+            Xs.append(X)
+            Strues.append(S) 
+
+        return {'X': Xs, 'Strue': Strues}
 
 
 @dataclass
@@ -629,9 +549,33 @@ class HierarchicalCategories(exp.Task):
     N: int
     bmin: int 
     bmax: int 
+    samps: int
+    snr: float
+    ratio: int = 1
+    orth: bool = True
+    seed: int = 0 
+    nonneg: bool = False
 
-    def latents(self):
-        return df_util.randtree_feats(self.N, self.bmin, self.bmax)
+    def sample(self):
+
+        np.random.seed(self.seed)
+
+        Xs = []
+        Strues = []
+        for it in range(self.samps):
+
+            S = df_util.randtree_feats(self.N, self.bmin, self.bmax)
+
+            dim = int(self.ratio*S.shape[1])
+
+            X = df_util.noisyembed(S, dim, 
+                logsnr=self.snr, orth=self.orth, 
+                nonneg=self.nonneg, scl=1e-4)
+
+            Xs.append(X)
+            Strues.append(S) 
+
+        return {'X': Xs, 'Strue': Strues}
 
 
 @dataclass
@@ -655,7 +599,7 @@ class CubeCategories(exp.Task):
         if self.perturb:
             S = np.hstack([S, np.eye(2**self.bits)])
 
-        dim = self.ratio*S.shape[1]
+        dim = int(self.ratio*S.shape[1])
 
         Xs = []
         Strue = []
@@ -671,17 +615,13 @@ class GridCategories(exp.Task):
 
     bits: int 
     values: int
+    samps: int
+    snr: float
+    ratio: int = 1
+    orth: bool = True
+    seed: int = 0 
+    nonneg: bool = False
     isometric: bool = True
-
-    def latents(self):
-
-        S = df_util.gridcats(self.values, self.bits)
-        if self.isometric:
-            Srep = df_util.gridcats(self.values, self.bits)
-        else:
-            Srep = df_util.grid_feats(self.values, self.bits)
-
-        return Srep
 
     def sample(self):
 
@@ -695,16 +635,21 @@ class GridCategories(exp.Task):
         else:
             Srep = df_util.grid_feats(self.values, self.bits)
 
-        dim = self.ratio*Srep.shape[1]
+        dim = int(self.ratio*Srep.shape[1])
 
         Xs = []
         Strue = []
         for it in range(self.samps):
 
-            Xs.append(df_util.noisyembed(Srep, dim, self.snr, self.orth, scl=1e-3))
+            X = df_util.noisyembed(Srep, dim, 
+                logsnr=self.snr, orth=self.orth, 
+                nonneg=self.nonneg, scl=1e-4)
+
+            Xs.append(X)
             Strue.append(S)
 
         return {'X': Xs, 'Strue': Strue}
+
 
 
 ######################################################################

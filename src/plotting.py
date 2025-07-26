@@ -528,7 +528,7 @@ def plotcube(E, S, V=None, dim=2, hidden=None, show_hid=False,
     if dim == 2:
         plt.scatter(F[~hidden,0], F[~hidden,1], 
                 c='k', **scat_args, zorder=10)
-        plt.quiver(locs[0], locs[1], dirs[0], dirs[1],e_lab, 
+        plt.quiver(locs[0], locs[1], dirs[0], dirs[1], e_lab, 
                 angles='xy', scale_units='xy', scale=1, cmap=cmap,
                 headwidth=headwidth)
     elif dim == 3:

@@ -105,8 +105,9 @@ def krusty(X, Y):
     M = np.einsum('...ij,...kj->...ik', X, Y)
     U,s,V = nla.svd(M, full_matrices=False)
     A = U@V
+    scl = np.sum(s)/np.sum(X**2)
 
-    return A
+    return scl*A
 
 # def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, lr=1e-2, nonneg=False):
 #     """
@@ -274,7 +275,7 @@ def porder(S):
 
     return depth[idx]
 
-def trans(S):
+def transcov(S):
     """
     Compute a kind of transitive reduction of the covariance, StS
     """
@@ -290,22 +291,23 @@ def trans(S):
     graph = {i:jay[aye==i] for i in range(k)}
     depth = util.depth(graph)
 
-    print(depth[idx])
     ## Compute the positive and negative weights
     R = np.zeros((k,k))
 
-    aye, jay = np.where(norm_ovlp == 1)
+    # aye, jay = np.where(norm_ovlp == 1)
     keep = np.abs(depth[aye] - depth[jay]) == 1
     R[aye[keep], jay[keep]] += 1
 
-    kay, ell = np.where(StS == 0)
-    keep = depth[kay] == depth[ell]
-    R[kay[keep], ell[keep]] -= 1
-
     return (R + R.T)[idx,:][:,idx]
 
-def treecorr(S):
-    return np.min([S.T@S, (1-S).T@S, S.T@(1-S), (1-S).T@(1-S)], axis=0)
+# def clean_inhib(S):
+    
+
+def treecorr(S, sym=True):
+    vals = [S.T@S, (1-S).T@S, S.T@(1-S)]
+    if sym:
+        vals.append((1-S).T@(1-S))
+    return np.min(vals, axis=0)
 
 class DidntWorkError(Exception):
     pass
@@ -470,6 +472,9 @@ def cross_feats(N):
     """
     X = np.vstack([np.eye(N), -np.flipud(np.eye(N))])
     return X
+
+# def crosscats(N):
+
 
 def simplex(N):
     """
@@ -1307,9 +1312,11 @@ def noisyembed(S, dim, logsnr, orth=True, nonneg=False, scl=1e-3):
     W = W@np.diag(np.sqrt(pi_true))
 
     noise = np.random.randn(dim, N)/np.sqrt(dim)
+    if nonneg:
+        noise[noise<0] = 0 
     a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-logsnr/20)
 
-    return S@W.T + a*noise.T, W
+    return S@W.T + a*noise.T
 
 def randmask(n, m):
     assert n < m
@@ -1548,7 +1555,7 @@ def dH(S):
 
     return R, r
 
-def allpaths(S, verbose=False, separate_duplicates=True):
+def allpaths(S, verbose=False, separate_duplicates=True, ovlp=None, thr=1e-3):
     """
     Paths of the graph of S
     """
@@ -1566,14 +1573,15 @@ def allpaths(S, verbose=False, separate_duplicates=True):
     Nall = len(S)
 
     cats = [set(np.nonzero(s)[0]) for s in Sunq]
-    ovlp = Sunq.T@Sunq
+    if ovlp is None:
+        ovlp = S_.T@S_/len(S_)
 
     ## Superset relation
-    issup = (ovlp == np.diag(ovlp)) - np.eye(k)
+    issup = (np.diag(ovlp) - ovlp < thr) - np.eye(k)
     numsup = issup.sum(0)
 
     ## Mutual exclusivity (and no self-connections)
-    isopp = (ovlp == 0) + np.eye(k)
+    isopp = (ovlp < thr) + np.eye(k)
 
     ## Recursion to add components
     def addcomp(node, visited):

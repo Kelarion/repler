@@ -4,6 +4,7 @@ channels:
  - conda-forge
 dependencies:
  - numpy
+ - blas[build=openblas]
  - scipy=1.10.1
  - matplotlib
  - scikit-learn
@@ -16,7 +17,6 @@ dependencies:
  - pip
  - pip:
    - transformers
-   - nnsight
    - jaxtyping
    - transformer_lens
    - torch 

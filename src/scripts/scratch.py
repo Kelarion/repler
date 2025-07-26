@@ -6,6 +6,7 @@ import pickle as pkl
 from time import time
 import math
 sys.path.append(CODE_DIR)
+sys.path.append('C:/Users/mmall/OneDrive/Documents/github/concepts/sbmf/')
 
 import torch
 import torch.nn as nn
@@ -40,9 +41,77 @@ import df_util
 import pt_util
 import bae
 import bae_models
-import bae_util
 import bae_search
 import plotting as tpl
+
+#%%
+# from sparse_factorization import *
+from factorization import *
+
+Ssp = sprs.csr_array(df_util.randtree_feats(2**6, 2, 4))
+S = Ssp.todense()
+X_ = util.pca_reduce(Ssp.todense().T, thrs=1)
+X = df_util.noisyembed(X_, 2*X_.shape[1], 30, nonneg=False)
+# X = df_util.noisyembed(S, 2*S.shape[1], 100, nonneg=True, orth=True)
+
+mod = KernelBMF(S.shape[1], sparse_reg=0, tree_reg=0)
+mod.initialize(X)
+mod.temp = 1e-7
+
+inds, ptr = mod.S.to_csr()
+Sest = sprs.csr_array((np.ones(len(inds)), inds, ptr), 
+                      shape=(mod.n, mod.dim_hid)).todense()
+
+mod2 = bae_models.KernelBMF(S.shape[1], sparse_reg=0, tree_reg=0)
+# mod2 = bae_models.SemiBMF(S.shape[1], nonneg=True, weight_reg=1e-2, tree_reg=1e-2)
+mod2.initialize(X, S0=Sest)
+# mod2.temp = 1e-7
+
+# mod = SparseKernelBMF(S.shape[1], tree_reg=1e-2)
+# mod = KernelBMF(S.shape[1], tree_reg=1e-2)
+# mod2 = bae_models.KernelBMF(S.shape[1], tree_reg=1e-2)
+#%%
+
+import search
+
+Ssp = sprs.csr_array(df_util.randtree_feats(2**6, 2, 4))
+X_ = util.pca_reduce(Ssp.todense().T, thrs=1)
+X = df_util.noisyembed(X_, 2*X_.shape[1], 30, nonneg=False)
+X = X-X.mean(0)
+
+n,m = Ssp.shape
+StS = (Ssp.T@Ssp).todense()
+StX = Ssp.T@X
+
+S = search.BiMat(Ssp.indices, Ssp.indptr, m)
+sampler = search.KernelSampler(StS/n, StX/n, 1/n)
+
+C1 = sampler.sample(S, X, 1, 1e-7, 0, 0)
+C2 = bae_search.kerbmf(X, Ssp.todense(), 
+                       StX=1*StX, StS=1*StS, scl=1, N=n, 
+                       beta=0, alpha=0, temp=1e-7)
+# C3 = bae_search.oldkerbmf(X, Ssp.todense(), 
+#                        StX=S.T@X, StS=S.T@S, scl=mod2.scl, N=mod2.n, 
+#                        beta=mod2.tree_reg, temp=mod2.temp)
+# C2 = mod2.EStep()
+plt.scatter(C1.flatten(), C2.flatten(), c=np.arange(np.prod(C1.shape)))
+
+#%%
+from spbae import KernelSampler, BiMat
+
+bs = 2**9
+lr = 0.0
+
+Ssp = sprs.csr_array(df_util.randtree_feats(2**9, 2, 4))
+inds = Ssp.indices
+ptr = Ssp.indptr
+
+X = util.pca_reduce(Ssp.todense().T, thrs=1)
+StS = (Ssp.T@Ssp).todense() / Ssp.shape[0]
+StX = Ssp.T@(X) / Ssp.shape[0]
+
+Sbin = BiMat(Ssp.indices, Ssp.indptr, Ssp.shape[1])
+sampler = KernelSampler(StS, StX, bs, lr)
 
 #%%
 
@@ -76,6 +145,70 @@ for s in Sall[is_attr]:
     
     plt.plot(dA[-1])
     plt.xticks(ticks=np.arange(len(samps)-1,step=k),labels=np.arange(len(samps)//k))
+
+
+#%%
+
+deez = (2**np.linspace(9, 14, 20)).astype(int)
+n = 10
+
+tdense = []
+tsparse = [] 
+tnump = []
+ndense = []
+nsparse = []
+
+for d in tqdm(deez):
+    
+    td = []
+    ts = []
+    tn = []
+    for i in range(n):
+        J = 1.0*np.random.choice([-1,0,1], size=(d,d), p=[0.1,0.8,0.1])
+        J = np.triu(J,1) + np.triu(J,1).T
+        h = -10*np.ones(d)
+        
+        S = np.random.choice([0,1], size=d, p=[0.95, 0.05])
+        Slist = FiniteSet(np.where(S)[0].astype(int), d)
+        # Slist = set(list(np.where(S)[0].astype(int)))
+        
+        t0 = time()
+        wa = greedy(J, h, S, 1e-3)
+        td.append(time() - t0)
+        
+        t0 = time()
+        ba = spgreedy(J, h, Slist, 1e-3)
+        ts.append(time() - t0)
+        
+        Jspr = sprs.csr_array(J)
+        t0 = time()
+        ba = Jspr@S + h
+        tn.append(time() - t0)
+    
+    tdense.append(np.mean(td))
+    tsparse.append(np.mean(ts))
+    tnump.append(np.mean(tn))
+
+#%%
+
+S = df_util.randtree_feats(2**9, 2, 4)
+X = util.pca_reduce(S.T, thrs=1)
+
+StS = S.T@S/len(S)
+StX = S.T@X/len(S)
+
+Ssp = sprs.csr_array(S)
+Sbin = BinaryMatrix(Ssp.indices, Ssp.indptr, S.shape[1])
+
+#%%
+t0=time()
+ba = bae_search.kerbae(X, 1*S, StX, StS, 1, 1e-4)
+print(time()-t0)
+
+t0=time()
+wa = spkerbmf(, X, StX, StS, 1, 1e-4)
+print(time()-t0)
+
 
 #%%
 
@@ -416,23 +549,30 @@ tpl.square_axis()
 
 theta = 0
 # noise_angle = np.pi/2
-noise_angle = -np.pi/4
+noise_angle = np.pi/4
+
+kappa = 0
 
 x = np.array([np.cos(theta),np.sin(theta)])
 eps = np.array([np.cos(noise_angle),np.sin(noise_angle)])
 
 these_rho = np.linspace(-10,10,100)
 
+delts = []
 xhats = []
 err = []
 for rho in these_rho:
-    xhat = (x+rho*eps)/la.norm(x+rho*eps)
+    delt = x+rho*eps
+    xhat = delt/la.norm(delt)
     thhat = np.arctan2(xhat[1], xhat[0])
     # err.append(np.arccos(np.cos(thhat-theta))**2)
     err.append(thhat**2)
     xhats.append(xhat)
+    delts.append(delt)
 xhats = np.array(xhats)
+delts = np.array(delts)
 err = np.array(err)
+
 
 plt.subplot(1,2,1)
 circ = np.linspace(-np.pi, np.pi, 100)
@@ -442,7 +582,7 @@ plt.scatter(xhats[:,0],xhats[:,1])
 plt.plot(x[0] + np.linspace(-2,2,100)*eps[0], x[1]+ np.linspace(-2,2,100)*eps[1], 'k--')
 
 plt.subplot(1,2,2)
-plt.plot(these_rho,err)
+plt.plot(these_rho, err)
 plt.plot(these_rho, np.arctan(these_rho*np.sin(noise_angle)/(1+these_rho*np.cos(noise_angle)))**2)
 
 #%%
@@ -644,6 +784,48 @@ for i in tqdm(range(n)):
         truth[i,j] += df_util.treecorr(thisS).sum()/2
         thisS[i,j] = 0
         truth[i,j] -= df_util.treecorr(thisS).sum()/2
+
+#%%
+
+n,m = S.shape
+StS = S.T@S
+
+deez = np.zeros((n,m))
+truth = np.zeros((n,m))
+troof = np.zeros((n,m))
+for i in tqdm(range(n)):
+    d = np.array([S[i], 1-S[i], -S[i], -(1-S[i])]).T
+    
+    R,r = df_util.dH(S[util.rangediff(n, [i])], sym=False)
+    
+    for j in range(m):
+        # diff = 0
+        inhib = 0
+        for k in range(m):
+            
+            ## non-stacked version
+            A = StS[j,k] - S[i,j]*S[i,k]
+            B = StS[j,j] - A - S[i,j] 
+            C = StS[k,k] - A
+            
+            if A < min(B,C-1):
+                inhib += S[i,k]
+            if B < min(A,C):
+                inhib += (1 - S[i,k])
+            if C <= min(A,B):
+                inhib -= S[i,k]
+                
+        deez[i,j] = inhib
+            
+        troof[i,j] = R[j]@S[i] + r[j]
+
+        ## ground truth
+        thisS = 1*S
+        thisS[i,j] = 1
+        truth[i,j] += df_util.treecorr(thisS, sym=False).sum()/2
+        thisS[i,j] = 0
+        truth[i,j] -= df_util.treecorr(thisS, sym=False).sum()/2
+
 
 #%%
 

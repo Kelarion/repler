@@ -109,7 +109,7 @@ class RadialBoyfriend:
         ## and shift so the mean population response across stimuli is 0
         # self.scale = 1/(1-np.exp(-0.5/width)*spc.i0(0.5/width))
         # self.shift = 0
-        self.scale = 1/(np.exp(0.5/width) - spc.i0(0.5/width))
+        self.scale = 1/(np.exp(self.kap) - spc.i0(self.kap))
         if center:
             self.shift = spc.i0(self.kap)
         else:
@@ -124,6 +124,19 @@ class RadialBoyfriend:
         denom = (np.exp(self.kap) - spc.i0(self.kap))
         return (np.exp(self.kap*np.cos(error)) - self.shift)/denom
 
+    def curv(self, x):
+        denom = (np.exp(self.kap) - spc.i0(self.kap))
+        return self.kap*np.exp(self.kap*np.cos(x))*(self.kap*np.sin(x)**2 - np.cos(x))/denom
+
+    def deriv(self, x):
+        denom = (np.exp(self.kap) - spc.i0(self.kap))
+        return -self.kap*np.sin(x)*np.exp(self.kap*np.cos(x))/denom
+
+    def tangent(self, x, y):
+        numer = self(x-y) - self(x) - self(y) + 1
+        denom = 2*np.sqrt((1-self(x))*(1-self(y)))
+        return numer/denom
+
     def sample(self, colors, size=1):
         """
         Sample activity in response to colors
@@ -133,6 +146,30 @@ class RadialBoyfriend:
         mu = np.zeros(len(colors))
         return np.random.multivariate_normal(mu, K, size=size).T/np.sqrt(size)
 
+class ProjectedNormal:
+    
+    def __init__(self, sigma):
+        self.sigma = sigma
+    
+    def Phi(self, x):
+        return 0.5*(1+spc.erf(x/np.sqrt(2)))
+
+    def phi(self, x):
+        return np.exp(-0.5*x**2)/np.sqrt(2*np.pi)
+    
+    def prob(self, x):
+        
+        kap = 1/self.sigma
+        
+        guess = np.exp(-0.5*kap**2)/(2*np.pi) 
+        corr = kap*np.cos(x)*self.Phi(kap*np.cos(x))/self.phi(kap*np.cos(x))
+        
+        return guess*(1+corr)
+    
+    @staticmethod
+    def mrl(kap):
+        xi = (kap**2)/4
+        return np.sqrt(np.pi*xi/2)*np.exp(-xi)*(spc.i0(xi) + spc.i1(xi))
 
 class MisesLogNormal:
     """
@@ -231,28 +268,36 @@ class VMM:
         self.pic = pic
         self.pig = 1-pic
         self.kmax = kmax
+        
+    def EStep(self, err):
+        
+        pe_c = self.pcorr(err)
+        pc = self.pic*pe_c/(self.pig/(2*np.pi) + self.pic*pe_c)
+        
+        return pc
+    
+    def MStep(self, R):
+        
+        if (R > 0) and (self.ratio(self.kmax, R)>0):
+            sol = root_scalar(self.ratio, args=(R,), bracket=(0,self.kmax))
+            return sol.root
+        elif R <=0:
+            return 0
+        else:
+            return self.kmax
     
     def fit(self, err, iters=10):
         
         lik = []
         for i in range(iters):
             ## E step
-            pe_c = self.pcorr(err)
-            pc = (self.pic*pe_c/(self.pig/(2*np.pi) + self.pic*pe_c))
-            
-            ## M step
-            R = np.cos(err)@pc/np.sum(pc)
-            if (R > 0) and (self.ratio(self.kmax, R)>0):
-                sol = root_scalar(self.ratio, args=(R,), bracket=(0,self.kmax))
-                self.k = sol.root
-            elif R <=0:
-                self.k = 0
-            else:
-                self.k = self.kmax
-            
+            pc = self.EStep(err)
             self.pic = np.mean(pc)
             self.pig = 1 - self.pic
             
+            ## M step
+            self.k = self.MStep(np.cos(err)@pc/np.sum(pc))
+
             lik.append(np.mean(np.log(self.p(err))))
         
         return lik
@@ -419,6 +464,406 @@ def kuiper_FPP(D,N):
             if abs(S2-so)/(abs(S2)+abs(so))<term_eps or abs(S1-so)<abs_eps:
                 break
         return S1 - 8*D/(3.*np.sqrt(N))*S2
+
+#%%
+
+theta = 0
+# noise_angle = np.pi/2
+noise_angle = np.pi/4
+
+x = np.array([np.cos(theta),np.sin(theta)])
+eps = np.array([np.cos(noise_angle),np.sin(noise_angle)])
+
+these_rho = np.linspace(-10,10,100)
+
+delts = []
+xhats = []
+err = []
+for rho in these_rho:
+    delt = x+rho*eps
+    xhat = delt/la.norm(delt)
+    thhat = np.arctan2(xhat[1], xhat[0])
+    # err.append(np.arccos(np.cos(thhat-theta))**2)
+    err.append(thhat**2)
+    xhats.append(xhat)
+    delts.append(delt)
+xhats = np.array(xhats)
+delts = np.array(delts)
+err = np.array(err)
+
+
+plt.subplot(1,2,1)
+circ = np.linspace(-np.pi, np.pi, 100)
+plt.plot(np.sin(circ), np.cos(circ))
+plt.scatter(x[0], x[1], s=500, marker='*', zorder=10)
+plt.scatter(xhats[:,0],xhats[:,1])
+plt.plot(x[0] + np.linspace(-2,2,100)*eps[0], x[1]+ np.linspace(-2,2,100)*eps[1], 'k--')
+
+plt.subplot(1,2,2)
+plt.plot(these_rho, err)
+plt.plot(these_rho, np.arctan(these_rho*np.sin(noise_angle)/(1+these_rho*np.cos(noise_angle)))**2)
+
+
+#%%
+
+n_samp = 500
+n_noise = 5000
+dim = 10000
+
+kappa = 1
+
+pop = RadialBoyfriend(1/kappa)
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+X = pop.sample(th, size=dim)
+
+these_rho = np.linspace(0,100,100)
+
+err = []
+for rho in tqdm(these_rho):
+    noise = np.random.randn(n_noise, dim)
+    noise = rho*noise/la.norm(noise, axis=1, keepdims=True)
+    
+    delt = X[th0] + noise
+    
+    thhat = th[np.argmax(X@delt.T, axis=0)]
+    # err.append(np.arccos(np.cos(thhat-theta))**2)
+    err.append(thhat)
+    
+err = np.array(err)
+
+# plt.subplot(1,2,1)
+# circ = np.linspace(-np.pi, np.pi, 100)
+# plt.plot(np.sin(circ), np.cos(circ))
+# plt.scatter(x[0], x[1], s=500, marker='*', zorder=10)
+# plt.scatter(xhats[:,0],xhats[:,1])
+# plt.plot(x[0] + np.linspace(-2,2,100)*eps[0], x[1]+ np.linspace(-2,2,100)*eps[1], 'k--')
+
+# plt.subplot(1,2,2)
+# plt.plot(these_rho, err)
+# plt.plot(these_rho, np.arctan(these_rho*np.sin(noise_angle)/(1+these_rho*np.cos(noise_angle)))**2)
+
+#%%
+
+pop = RadialBoyfriend(0.1)
+
+x = np.linspace(-np.pi,np.pi,1000)
+ds = np.linspace(-2,2,1001)
+
+# plt.subplot(1,2,1)
+
+clr = ['r', 'b']
+for y in np.linspace(0, 0.99*np.pi, 10):
+    amax = []
+    for d in ds:  
+        k = d*pop(x-y) + (1-d)*pop(x)
+        amax.append(x[np.argmax(k)])
+    plt.scatter(ds, amax, color=clr[1*(pop.curv(y/2)>0)], s=1)
+
+thresh = 2*np.arccos((np.sqrt(1 + 4*pop.kap**2) - 1)/(2*pop.kap))
+
+plt.plot(plt.xlim(), [thresh, thresh], 'k--')
+
+# plt.subplot(1,2,2)
+# plt.plot(amax)
+
+#%%
+
+kaps = 1/np.linspace(1e-2, 10, 100)
+thr = 2*np.arccos((-1 + np.sqrt(1 + 4*kaps**2))/(2*kaps))
+
+plt.plot(1/kaps, thr)
+
+#%%
+
+pop = RadialBoyfriend(1)
+
+thr = 2*np.arccos((-1 + np.sqrt(1 + 4*pop.kap**2))/(2*pop.kap))
+
+x = np.linspace(0,np.pi,1000)
+
+plt.plot(x, pop.curv(x/2))
+plt.plot(plt.xlim(), [0,0], 'k--')
+plt.plot([thr, thr], plt.ylim(), 'k--')
+
+#%%
+
+n_samp = 500
+n_noise = 10000
+dim = 5000
+
+kappa = 10
+noise_std = 0.3
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+
+pop = RadialBoyfriend(1/kappa)
+
+thresh = 2*np.arccos((np.sqrt(1 + 4*pop.kap**2) - 1)/(2*pop.kap))
+mse = np.pi*(np.exp(pop.kap) - spc.i0(pop.kap))/(np.exp(pop.kap)*pop.kap)
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+X = pop.sample(th, size=dim)
+
+noise = np.random.randn(n_noise, dim)*noise_std
+x_pert = X[th0] + noise
+
+xhat = th[(x_pert@X.T).argmax(1)]
+
+bins = np.linspace(-np.pi,np.pi,25)
+# k = np.argmax(bins>-thresh)
+# b1 = bins[k-1:-k+1]
+# b2 = bins[:k+1]
+# b3 = bins[-k-1:]
+
+# plt.hist(xhat[np.abs(xhat)<thresh], bins=b1, alpha=0.5, color='r')
+# plt.hist(xhat[np.abs(xhat)>=thresh], bins=b2, alpha=0.5, color='b')
+# plt.hist(xhat[np.abs(xhat)>=thresh], bins=b3, alpha=0.5, color='b')
+# plt.legend(['Local errors', 'Threshold errors'])
+
+# plt.hist(xhat, bins=bins, histtype='step', 
+#          linewidth=1, color='k')
+plt.hist(xhat, bins=bins, histtype='step', 
+         linewidth=1, density=True)
+# plt.hist(xhat[np.abs(xhat)<thresh]/thresh, bins=25, 
+#          density=True, histtype='step', linewidth=1)
+
+
+# plt.hist(np.pi*xhat[np.abs(xhat)<thresh]/thresh, bins=25, 
+#          density=True, histtype='step', linewidth=2)
+
+# # plt.hist(xhat, bins=np.linspace(-np.pi,np.pi,25), histtype='step', 
+#          # linewidth=5, color='r', density=True)
+
+# pn = ProjectedNormal(noise_std)
+# rho = pn.mrl(1/pn.sigma)
+
+# plt.plot(np.linspace(-1, 1, len(th)), np.pi*pn.prob(th))
+
+# ratio = lambda x,r=1: spc.i1(x)/spc.i0(x) - r
+# sol = root_scalar(ratio, args=(rho,), bracket=(0,100))
+# vmkap = sol.root
+
+# plt.plot(th, pn.prob(th), 'k')
+# plt.plot(th, vmpdf(th, vmkap), 'k--')
+
+#%%
+
+n_samp = 500
+n_noise = 10000
+dim = 5000
+
+kappa = 0.1
+noise_std = 2
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+
+pop = RadialBoyfriend(0.5/kappa)
+
+crit = 2*np.arccos((np.sqrt(1 + 4*pop.kap**2) - 1)/(2*pop.kap))
+thresh = np.sqrt(2*(1-pop(np.pi)))/2
+
+X = pop.sample(th, size=dim)
+
+U,s,V = la.svd(X-X.mean(0), full_matrices=False)
+k = np.argmax(np.cumsum(s**2)/np.sum(s**2) > 0.99) + 1
+pr = ((s**2).sum()**2)/(s**4).sum()
+
+noise = np.random.randn(n_noise, dim)*noise_std
+
+# noise_proj = noise@V[:k].T
+x_pert = X[th0] + noise
+
+xhat = th[(x_pert@X.T).argmax(1)]
+
+diffs = X - X[th0]
+diffs = diffs/(la.norm(diffs, axis=1, keepdims=True)+1e-6)
+
+x_proj = noise@diffs.T #/la.norm(x_pert-X[th0], axis=1, keepdims=True) 
+
+ovlp = diffs@noise.T/la.norm(noise, axis=1)
+
+legit = np.abs(th[ovlp.argmax(0)]) > th[th0+1]
+
+#%%
+
+kappa = 10
+
+pop = RadialBoyfriend(0.5/kappa)
+X = pop.sample(th, size=dim)
+
+noise = np.random.randn(n_noise, dim)
+
+diffs = X[np.abs(th)>0] - X[th0]
+diffs = diffs/(la.norm(diffs, axis=1, keepdims=True)+1e-6)
+
+x_proj = noise@diffs.T #/la.norm(x_pert-X[th0], axis=1, keepdims=True) 
+ovlp = diffs@noise.T/la.norm(noise, axis=1)
+
+legit = np.abs(th[x_proj.argmax(1)]) > th[th0+1]
+
+fun = np.hstack([np.roll(x_proj,th0, axis=1), -np.roll(x_proj,th0, axis=1)])
+
+#%%
+
+i = 6
+
+plt.scatter(th[np.abs(th)>0], x_proj[i])
+a = np.argmax(x_proj[i]) 
+plt.scatter(th[np.abs(th)>0][a], x_proj[i][a], s=200, marker='*')
+# plt.plot(wa, fun[i][:len(th)-1], color='r')
+# plt.plot(-np.flip(wa), fun[i][len(th)-1:], color='b')
+# a = np.argmax(fun[i])
+# if a > len(th)-1:
+#     plt.scatter(-np.flip(wa)[int(a % (len(th)-1))], fun[i][a],s=200, marker='*')
+# else:
+#     plt.scatter(wa[a], fun[i][a], s=200, marker='*')
+plt.title(legit[i])
+
+#%%
+
+plt.plot(np.roll((diffs@diffs.T)[i], th0-i))
+
+#%%
+# samps = []
+# while len(samps) < 1000:
+#     foo = np.random.randn(dim)*noise_std
+#     ovlp = diffs@foo.T/la.norm(foo)
+    
+#     if np.argmax(ovlp) == 5:
+#         samps.append(foo)
+#         print(len(samps))
+
+#%%
+plt.subplot(1,2,1)
+# plt.scatter(th[ovlp.argmax(0)][legit], 
+#             x_proj[np.arange(n_noise),ovlp.argmax(0)][legit]**2, 
+#             c=np.abs(xhat[legit])>crit, alpha=0.2)
+plt.scatter(th[ovlp.argmax(0)], 
+            x_proj[np.arange(n_noise),ovlp.argmax(0)]**2, 
+            c=np.abs(xhat)>crit, alpha=0.2)
+
+ylims = plt.ylim()
+
+plt.plot([crit, crit], ylims)
+plt.plot([-crit, -crit], ylims)
+plt.plot(plt.xlim(), [thresh**2, thresh**2])
+plt.ylim(ylims)
+
+wa = np.mean(x_proj[np.arange(n_noise),ovlp.argmax(0)][legit]**2)
+alf = wa/(2*noise_std**2)
+
+plt.subplot(1,2,2)
+# dist = sts.gamma(a=k/10, scale=2*noise_std**2)
+dist = sts.gamma(a=alf, scale=2*noise_std**2)
+plt.hist(x_proj[np.arange(n_noise),ovlp.argmax(0)][legit]**2, 
+         bins=25, density=True, orientation='horizontal')
+plt.plot(dist.pdf(np.linspace(0,ylims[1],100)), 
+         np.linspace(0,ylims[1],100), 'k-')
+
+plt.ylim(ylims)
+
+#%%
+
+n_samp = 500
+n_noise = 10000
+dim = 5000
+
+noise_std = 2
+# kaps = np.linspace(0.1, 200, 100)
+kaps = 2**np.linspace(-8,8,100)
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+
+alf = []
+pl = []
+pr = []
+pg = []
+pg_ = []
+for kap in tqdm(kaps):
+    
+    pop = RadialBoyfriend(0.5/kap)
+
+    crit = 2*np.arccos((np.sqrt(1 + 4*pop.kap**2) - 1)/(2*pop.kap))
+    thresh = np.sqrt(2*(1-pop(np.pi)))/2
+
+    X = pop.sample(th, size=dim)
+
+    noise = np.random.randn(n_noise, dim)*noise_std
+    x_pert = X[th0] + noise
+    
+    diffs = X - X[th0]
+    diffs = diffs/(la.norm(diffs, axis=1, keepdims=True)+1e-6)
+
+    U,s,V = la.svd(diffs, full_matrices=False)
+    pr.append(((s**2).sum()**2)/(s**4).sum())
+
+    x_proj = noise@diffs.T #/la.norm(x_pert-X[th0], axis=1, keepdims=True) 
+
+    ovlp = diffs@noise.T/la.norm(noise, axis=1)
+    
+    legit = np.abs(th[ovlp.argmax(0)]) > th[th0+1]
+    
+    alf.append(np.mean(x_proj[np.arange(n_noise),ovlp.argmax(0)][legit]**2)/(2*noise_std**2))
+    pl.append(np.mean(legit))
+    
+    xhat = th[(x_pert@X.T).argmax(1)]
+    
+    distr = sts.gamma(a=alf[-1], scale=2*noise_std**2)
+    
+    pg.append(np.mean(np.abs(xhat) > crit))
+    pg_.append(pl[-1]*(1-distr.cdf(thresh))*(1-crit/np.pi))
+
+alf = np.array(alf)
+pg = np.array(pg)
+pg_ = np.array(pg_)
+pl = np.array(pl)
+pr = np.array(pr)
+
+#%%
+
+n_samp = 500
+n_noise = 10000
+dim = 5000
+noise_std = 1
+kaps = np.linspace(0.1, 100, 100)
+
+th = np.linspace(-np.pi, np.pi, n_samp+1)
+th0 = int(n_samp//2)
+
+pg = []
+# pth = []
+for kap in tqdm(kaps):
+    
+    pop = RadialBoyfriend(0.5/kap)
+
+    thresh = 2*np.arccos((np.sqrt(1 + 4*pop.kap**2) - 1)/(2*pop.kap))
+    
+    X = pop.sample(th, size=dim)
+
+    noise = np.random.randn(n_noise, dim)*noise_std
+    x_pert = X[th0] + noise
+
+    xhat = th[(x_pert@X.T).argmax(1)]
+    
+    pg.append(np.mean(np.abs(xhat) > thresh))
+
+    # diff = X[np.abs(th)>thresh] - X[th0]
+    # x_proj = x_pert@diff/(la.norm(diff)**2)
+    
+    # pth.append()
+
+crit = 2*np.arccos((np.sqrt(1 + 4*kaps**2) - 1)/(2*kaps))
+d = np.sqrt(2*(1 - (np.exp(-kaps) - spc.i0(kaps))/(np.exp(kaps) - spc.i0(kaps))))/2
+
+p_th = 1 - sts.gamma.cdf(d**2, a=np.sqrt(np.pi/crit)/2, scale=2*noise_std**2)
+plt.plot(kaps, 0.88*(1-crit/np.pi)*p_th)
+plt.plot(kaps, pg) 
 
 #%%
 

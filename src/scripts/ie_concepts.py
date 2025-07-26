@@ -88,10 +88,10 @@ for f,l in tqdm(zip(fid, lid)):
 
 #%%
 
-mod = bae_models.KernelBMF(600, tree_reg=0.1)
+mod = bae_models.KernelBMF(900, tree_reg=2)
 # mod = bae_models.BiPCA(300, tree_reg=1, sparse_reg=0)
 
-neal = bae_util.Neal(decay_rate=0.95, period=2, initial=10)
+neal = bae_util.Neal(decay_rate=0.95, period=5, initial=10)
 
 en = neal.fit(mod, cogmat)
 
@@ -122,16 +122,16 @@ S = S[:,S.sum(0)>0]
 
 cmap = cm.tab10
 
-deez = np.arange(160)[grp==7]
+deez = np.arange(160)#[grp==7]
 
-E,H = df_util.allpaths(mod.S[deez])
+E,H = df_util.allpaths(S[deez])
 
 G = nx.Graph()
 G.add_edges_from(E)
 
 # G = nx.maximum_spanning_tree(G)
 
-pos = graphviz_layout(G, prog='twopi')
+pos = graphviz_layout(G, prog='dot')
 
 fig,ax = plt.subplots()
 plt_these = np.isin(G.nodes, range(len(deez)))
@@ -145,30 +145,30 @@ names = lang['Glottolog_Name'][deez].tolist()
 
 dicplt.hovertext(X[:,0], X[:,1], labels=names, c=grp[deez])
 
-dicplt.square_axis()
+# dicplt.square_axis()
 
 #%%
 
-these_langs = ['Takestani',
-               'Larestani',
-               'Western Farsi',
-               'Central Kurdish',
-               'Southern Kurdish',
-               'Parthian',
-               'Sogdian',
-               'Khotanese',
-               'Bactrian',
-               'Khowar',
-               'Kamviri',
-               'Ashkun',
-               'Hindi',
-               'Urdu',
-               'Bengali',
-               'Sinhala',
-               'Gawri',
-               'Vedic Sanskrit',
-               'Magahi',
-               'Eastern Panjabi']
+# these_langs = ['Takestani',
+#                'Larestani',
+#                'Western Farsi',
+#                'Central Kurdish',
+#                'Southern Kurdish',
+#                'Parthian',
+#                'Sogdian',
+#                'Khotanese',
+#                'Bactrian',
+#                'Khowar',
+#                'Kamviri',
+#                'Ashkun',
+#                'Hindi',
+#                'Urdu',
+#                'Bengali',
+#                'Sinhala',
+#                'Gawri',
+#                'Vedic Sanskrit',
+#                'Magahi',
+#                'Eastern Panjabi']
 
 # these_langs = ['Latin',
 #                'Barbaricino',
@@ -202,42 +202,60 @@ these_langs = ['Takestani',
 #                'Slovak',
 #                'Lower Sorbian']
 
-# these_langs = ['Latin',
-#                'Old Breton',
-#                'Vannetais',
-#                'Italian',
-#                'Gothic',
-#                'Elfdalian',
-#                'Danish',
-#                'Dutch',
-#                'Central Alemannic',
-#                'Irish',
-#                'Bakhtiari',
-#                'Southern Kurdish',
-#                'Sogdian',
-#                'Parthian',
-#                'Albanian',
-#                'Achaean Greek',
-#                'Modern Greek',
-#                'Oscan',
-#                'Urdu',
-#                'Hindi',
-#                'Old Russian',
-#                'Kashmiri',
-#                'Bengali',
-#                'Vedic Sanskrit',
-#                'Latvian',
-#                'Macedonian',
-#                'Polish',
-#                'Slovenian',
-#                'Slovak',
-#                'Ukrainian',
-#                'Walloon',
-#                'Barbaricino',
-#                'Romanian',
-#                'Catalan',
-#                'Old Saxon',
-#                ]
+these_langs = ['Latin',
+               'Old Breton',
+               'Vannetais',
+               'Italian',
+               'Gothic',
+               'Elfdalian',
+               'Danish',
+               'Dutch',
+               'Central Alemannic',
+               'Irish',
+               'Bakhtiari',
+               'Southern Kurdish',
+               'Sogdian',
+               'Parthian',
+               'Albanian',
+               'Achaean Greek',
+               'Modern Greek',
+               'Oscan',
+               'Urdu',
+               'Hindi',
+               'Old Russian',
+               'Kashmiri',
+               'Bengali',
+               'Vedic Sanskrit',
+               'Latvian',
+               'Macedonian',
+               'Polish',
+               'Slovenian',
+               'Slovak',
+               'Ukrainian',
+               'Walloon',
+               'Barbaricino',
+               'Romanian',
+               'Catalan',
+               'Old Saxon',
+               'Portuguese',
+               'Western Farsi',
+               'Old Persian (ca. 600-400 B.C.)',
+               'Tokharian B',
+               'Albanian',
+               'Irish',
+               'Old Norse',
+               'Swedish',
+               'Danish',
+               'Ashkun',
+               'French',
+               'Old French (842-ca. 1400)',
+               'Western Armenian',
+               'Ashreti',
+               'Church Slavic',
+               'Khowar',
+               'Khotanese',
+               'Kumzari',
+               ]
 
 
 plt.figure()
@@ -280,4 +298,4 @@ for this_lang in these_langs:
                    'alpha': 0.8,
                    'boxstyle': 'round'})
     
-dicplt.square_axis()
+# dicplt.square_axis()
