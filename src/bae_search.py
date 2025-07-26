@@ -558,6 +558,7 @@ def kerbmf(X: np.ndarray,
            N: int,
            scl: float,  
            temp: float,
+           alpha: flaot = 0.0,
            beta: float = 0.0):
     """
     One batch gradient step on S
@@ -620,7 +621,7 @@ def kerbmf(X: np.ndarray,
             ## Compute currents
             # curr = (scl*inp - (scl**2)*dot - beta*inhib)/temp
             # curr = (scl*(inp - scl*dot)/N - beta*inhib)/temp
-            curr = ((inp - scl*dot)/(N-1) - beta*inhib)/temp
+            curr = ((inp - scl*dot)/(N-1) - beta*inhib - alpha)/temp
             # curr = ((inp/scl - dot)/N - beta*inhib)/temp
 
             # currs[i,j] = temp*curr
