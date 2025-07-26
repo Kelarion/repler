@@ -558,7 +558,7 @@ def kerbmf(X: np.ndarray,
            N: int,
            scl: float,  
            temp: float,
-           alpha: flaot = 0.0,
+           alpha: float = 0.0,
            beta: float = 0.0):
     """
     One batch gradient step on S
