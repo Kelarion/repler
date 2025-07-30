@@ -207,13 +207,15 @@ class BiPCA(BMF):
             max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
 
         ens = []
-        ls = []
+        trn = []
+        tst = []
         # mets = []
         for draw in range(draws):
             if verbose:
                 pbar = tqdm(range(max_iter))
 
             self.initialize(X, **opt_args)
+            X_orig = 1*self.data
 
             M = np.random.rand(*self.data.shape) < (1/folds)
 
@@ -230,9 +232,13 @@ class BiPCA(BMF):
                 if verbose:
                     pbar.update(1)
 
-            ls.append(self.loss(X, M))
+            ens.append(en)
 
-        return en
+            pred = self()
+            tst.append(np.mean((X_orig[M] - pred[M])**2)/np.mean(X_orig[M]**2))
+            trn.append(np.mean((X_orig[~M] - pred[~M])**2)/np.mean(X_orig[~M]**2))
+
+        return trn, tst, ens
 
     def EStep(self):
         """
