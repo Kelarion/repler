@@ -45,7 +45,7 @@ import students
 ####################################################################
 
 @dataclass
-class BMF(nn.Module):
+class BMF:
 
     def __post_init__(self):
         ## Certain methods expect a temp attribute to exist
@@ -70,6 +70,39 @@ class BMF(nn.Module):
 
             if verbose:
                 pbar.update(1)
+
+        return en
+
+    def impcv(self, *data, mask='random', folds=10, draws=10, 
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+
+        if max_iter is None:
+            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+
+        ens = []
+        # mets = []
+        for draw in range(draws):
+            if verbose:
+                pbar = tqdm(range(max_iter))
+
+            self.initialize(*data, **opt_args)
+
+            M = np.random.rand(*self.data.shape) < (1/folds)
+
+            ## Initialize masked values at random
+            X_orig = self.data*1
+            self.data[M] = np.random.randn(M.sum())
+
+            en = []
+            for it in range(max_iter):
+                T = initial_temp*(decay_rate**(it//period))
+                self.temp = T
+                en.append(self.grad_step(*data))
+                self.data[M] = self()[M]
+
+                if verbose:
+                    pbar.update(1)
 
         return en
 
@@ -120,12 +153,12 @@ class BiPCA(BMF):
     sparse_reg: float = 1e-2
     tree_reg: float = 0
 
-    def initialize(self, X, alpha=2, beta=5, rank=None, pvar=1, W_init='pca'):
+    def initialize(self, X, alpha_pr=2, beta_pr=5, W_init='pca'):
 
         self.n, self.d = X.shape
 
         if self.center:
-            X_ = X 
+            X_ = X
         else:
             X_ = X - X.mean(0)
 
@@ -139,7 +172,7 @@ class BiPCA(BMF):
         self.prior_logits = -np.log(coding_level/(1-coding_level))
 
         ## Standardize data to O(1) fluctuations
-        self.data = X_ # /np.sqrt(np.mean(X_**2))
+        self.data = X_ / np.sqrt(np.mean(X_**2))
 
         ## Initialise b
         if self.center:
@@ -156,7 +189,8 @@ class BiPCA(BMF):
 
         # self.W = Vx[:self.r].T 
         # self.scl = 
-        self.scl = np.sqrt(np.mean(X_**2))
+        # self.scl = np.sqrt(np.mean(X_**2))
+        self.scl = 1
 
         ## Initialize S
         self.S = 1*(self.data@self.W - self.b@self.W > 0.5)
@@ -164,6 +198,41 @@ class BiPCA(BMF):
         # Mx = self.data@self.W
         # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
         # self.S = 1*(Mx >= thr)
+
+    def impcv(self, X, mask='random', folds=10, draws=10, 
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+
+        if max_iter is None:
+            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+
+        ens = []
+        ls = []
+        # mets = []
+        for draw in range(draws):
+            if verbose:
+                pbar = tqdm(range(max_iter))
+
+            self.initialize(X, **opt_args)
+
+            M = np.random.rand(*self.data.shape) < (1/folds)
+
+            ## Initialize masked values at random
+            self.data[M] = np.random.randn(M.sum())
+
+            en = []
+            for it in range(max_iter):
+                T = initial_temp*(decay_rate**(it//period))
+                self.temp = T
+                en.append(self.grad_step(X))
+                self.data[M] = self()[M]
+
+                if verbose:
+                    pbar.update(1)
+
+            ls.append(self.loss(X, M))
+
+        return en
 
     def EStep(self):
         """
@@ -174,7 +243,7 @@ class BiPCA(BMF):
 
         XW = (self.data@self.W - self.b@self.W)
 
-        if self.beta > 1e-6:
+        if self.tree_reg > 1e-6:
             StS = 1.0*self.S.T@self.S
             newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
                 StS=StS, N=self.n, 
@@ -221,7 +290,7 @@ class SemiBMF(BMF):
 
     dim_hid: int
     nonneg: bool = False
-    fit_intercept: bool = False
+    fit_intercept: bool = True
     sparse_reg: float = 0
     tree_reg: float = 1e-2
     weight_reg: float = 1e-2
@@ -261,6 +330,50 @@ class SemiBMF(BMF):
             Mx = self.data@self.W
             self.S = 1*(Mx >= 0.5)
 
+    def impcv(self, X, mask='random', folds=10, draws=10, 
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+
+        if max_iter is None:
+            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+
+        if verbose:
+            pbar = tqdm(range(draws))
+
+        ens = []
+        train = []
+        test = []
+        # mets = []
+        for draw in range(draws):
+
+            self.initialize(1*X, **opt_args)
+            X_orig = 1*self.data
+
+            M = np.random.rand(*self.data.shape) < (1/folds)
+
+            ## Initialize masked values at random
+            if self.nonneg:
+                self.data[M] = np.abs(np.random.randn(M.sum()))
+            else:
+                self.data[M] = np.random.randn(M.sum())
+
+            en = []
+            for it in range(max_iter):
+                T = initial_temp*(decay_rate**(it//period))
+                self.temp = T
+                en.append(self.grad_step(X))
+                self.data[M] = self()[M]
+
+            pred = self()
+            test.append(np.mean((X_orig[M] - pred[M])**2)/np.mean(X_orig[M]**2))
+            train.append(np.mean((X_orig[~M] - pred[~M])**2)/np.mean(X_orig[~M]**2))
+            ens.append(en)
+
+            if verbose:
+                pbar.update(1)
+
+        return train, test, ens
+
     def EStep(self):
 
         # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
@@ -289,7 +402,7 @@ class SemiBMF(BMF):
         Maximise log-likelihood conditional on S, with p.r. regularization
         """
 
-        if self.weight_reg > 1e-3:
+        if self.weight_reg > 1e-4:
             N = ES@self.W.T + self.b
 
             WTW = self.W.T@self.W
@@ -499,6 +612,8 @@ class KernelBMF(BMF):
         self.data *= np.sqrt(r*self.n/np.sum(s[:r]**2))
         self.d = self.data.shape[1]
 
+        self.data_norm = np.sum((self.data@self.data.T)**2)
+
         ## Initialize S
         if S0 is None:
             coding_level = np.random.beta(alpha, beta, self.dim_hid)/2
@@ -558,7 +673,7 @@ class KernelBMF(BMF):
 
         self.scl += self.scl_lr*(dot/nrm - self.scl)
         
-        return 1 + ((self.scl**2)*nrm - 2*self.scl*dot)/self.n
+        return 1 + ((self.scl**2)*nrm - 2*self.scl*dot)/self.data_norm
 
 
 ####################################################################

@@ -577,7 +577,7 @@ def kerbmf(X: np.ndarray,
     assert n == n2
     t = (N-1)/N
 
-    # currs = np.zeros(S.shape)
+    currs = np.zeros(S.shape)
 
     for i in np.random.permutation(np.arange(n)):
     # for i in np.arange(n):
@@ -593,13 +593,14 @@ def kerbmf(X: np.ndarray,
                 inp += (2*StX[j,k]*X[i,k] + (1-2*Sij)*X[i,k]**2)/t
 
             ## Recurrence
-            dot = t*(2*(N-2)*S_j*(1-S_j) + 1)*(1/2 - Sij)
+            # dot = 0.0
+            dot = t*(2*(N-2)*S_j*(1-S_j) + 1) * (1/2 - Sij)
             inhib = 0.0
             for k in range(m):                        
                 Sik = S[i,k] 
                 S_k = (StS[k,k]-Sik)/(N-1)
                 
-                dot += 2*(StS[j,k] - Sij*Sik + t*(1/2 - S_j - S_k - (N-2)*S_j*S_k))*(Sik - S_k)
+                dot += 2*(StS[j,k] - Sij*Sik + t*(0.5 - S_j - S_k - (N-2)*S_j*S_k))*(Sik - S_k)
                 dot -= t*(1-S_k)*S_k*(2*S_j-1)
 
                 if regularize:
@@ -608,7 +609,7 @@ def kerbmf(X: np.ndarray,
                     C = StS[k,k] - A
                     D = N - A - B - C
                     
-                    # Simple conditional assignment
+                    # Simple conditional assignment 
                     if A < min(B,C-1,D):
                         inhib += Sik
                     if B < min(A,C,D-1):
@@ -624,7 +625,7 @@ def kerbmf(X: np.ndarray,
             curr = ((inp - scl*dot)/(N-1) - beta*inhib - alpha)/temp
             # curr = ((inp/scl - dot)/N - beta*inhib)/temp
 
-            # currs[i,j] = temp*curr
+            currs[i,j] = temp*curr
 
             ## Apply sigmoid (overflow robust)
             if curr < -100:

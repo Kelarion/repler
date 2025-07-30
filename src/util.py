@@ -175,6 +175,9 @@ class LexOrderK:
 
 
 def kcomblexorder(n, k, m):
+    """
+    Return the m-th unordered k-tuple of n items
+    """
 
     out = np.zeros(n)
     while (n>0):

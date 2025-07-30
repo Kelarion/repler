@@ -52,41 +52,44 @@ send_remotely = True
 #              'nonneg': su.Set([True, False]),
 #              }
 
-task_args = {'task': exp.GridCategories,
-             'samps': 9,
-             'seed': 0,
-             # 'seed': su.Set([0,1]),
-             # 'bits': su.Set([2,3,4]),
-             'bits': 3,
-             # 'values': su.Set([3,4,5]),
-             'values': 5,
-             # 'snr': 30,
-             'snr': 0<<su.Real(12)<<30,
-             # 'ratio': su.Set([1,10]),
-             'ratio': 1,
-             'orth': True,
-             'isometric': su.Set([True, False]),
-             # 'nonneg': su.Set([True, False])
-             'nonneg': False
-             }
-
-# N = su.Set(2**np.arange(4,10))
-# task_args = {'task': exp.HierarchicalCategories,
+# task_args = {'task': exp.GridCategories,
 #              'samps': 9,
 #              'seed': 0,
-#              # 'seed': su.Set([0,1,2]),
-#              # 'N': N,
-#              'N': 64,
-#              # 'ratio': su.Set([1,5]),
-#              'ratio': 1,
-#              'bmin':2,
-#              'bmax': 4,
+#              # 'seed': su.Set([0,1]),
+#              # 'bits': su.Set([2,3,4]),
+#              'bits': 3,
+#              # 'values': su.Set([3,4,5]),
+#              'values': 5,
 #              # 'snr': 30,
-#              'snr': 0<<su.Real(12)<<30,
+#              # 'snr': 0<<su.Real(12)<<30,
+#              'snr': 0 << su.Integer(12) << 24,
+#              # 'ratio': su.Set([1,10]),
+#              'ratio': 1,
 #              'orth': True,
+#              'isometric': True,
+#              # 'isometric': su.Set([True, False]),
 #              # 'nonneg': su.Set([True, False])
-#              'nonneg': False,
-#              }
+#              'nonneg': False
+#              }  
+
+# N = su.Set(2**np.arange(4,10))
+task_args = {'task': exp.HierarchicalCategories,
+             'samps': 9,
+             'seed': 0,
+             # 'seed': su.Set([0,1,2]),
+             # 'N': N,
+             'N': 64,
+             # 'ratio': su.Set([1,5]),
+             'ratio': 1,
+             'bmin':2,
+             'bmax': 4,
+             # 'snr': 30,
+             # 'snr': 0<<su.Real(12)<<30,
+             'snr': 0 << su.Integer(13) << 24,
+             'orth': True,
+             # 'nonneg': su.Set([True, False])
+             'nonneg': False,
+             }
 
 
 ###############################
@@ -114,7 +117,8 @@ mod_args = {'model': exp.KBMF,
             'T0': 10,
             # 'T0': 20,
             'max_iter': None,
-            'tree_reg': su.Set([0, 1e-1, 1]),
+            'tree_reg': (0, 0, 1e-2),
+            'sparse_reg': (0, 0.1, 0),
             # 'tree_reg': 0,
             'dim_hid': 0.5 << su.Real(12) << 2,
             # 'dim_hid': 2,

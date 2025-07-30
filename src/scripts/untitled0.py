@@ -18,7 +18,8 @@ N = len(S)
 scl = 1  
 temp = 1e-5
 alpha = 0.0
-beta = 1e-2
+# beta = 1e-2
+beta = 0
 
 n, m = S.shape
 n2, d = X.shape
@@ -42,10 +43,11 @@ for i in np.arange(n):
 
         ## Inputs
         inp = 0    
-        for k in range(d):
-            inp += (2*StX[j,k]*X[i,k] + (1-2*Sij)*X[i,k]**2)/t
+        # for k in range(d):
+        #     inp += (2*StX[j,k]*X[i,k] + (1-2*Sij)*X[i,k]**2)/t
 
         ## Recurrence
+        # dot = 0
         dot = t*(2*(N-2)*S_j*(1-S_j) + 1)*(1/2 - Sij)
         inhib = 0.0
         for k in range(m):                        
@@ -133,13 +135,14 @@ for i in np.arange(n):
 
         ## Inputs
         inp = 0 
-        for k in range(d):
-            inp += sign[j]*(2*StX[j,k]*X[i,k] + (1 - 2*Sij)*X[i,k]**2)/(t*(N-1))
+        # for k in range(d):
+        #     inp += sign[j]*(2*StX[j,k]*X[i,k] + (1 - 2*Sij)*X[i,k]**2)/(t*(N-1))
 
         ## Recurrence
+        dot = 0
         dot = sign[j]*((N-2)*S_j*(1-S_j) + 1/2)*(1 - 2*Sij) / N
         inhib = 0.0
-        for k in range(m):                        
+        for k in range(m):                    
             Sik = 1*S[i,k]
             S_k = (StS[k,k] - Sik)/(N-1)
             SjSk = (StS[j,k] - Sij*Sik)/(N-1) # raw second moment
@@ -158,7 +161,6 @@ for i in np.arange(n):
                 A = SjSk
                 B = S_j - SjSk
                 C = S_k + Sik/(N-1) - SjSk
-                # C = S_k - SjSk
                 
                 if A < min(B,C - 1/(N-1)):
                     inhib += Sik
@@ -171,7 +173,7 @@ for i in np.arange(n):
         # curr = (scl*inp - (scl**2)*dot - beta*inhib)/temp
         # curr = (scl*(inp - scl*dot)/N - beta*inhib)/temp
         # curr = ((inp - scl*dot)/N - beta*inhib - alpha)/temp
-        curr = sign[j]*((inp - scl*dot) - beta*inhib - alpha)/temp
+        curr = sign[j]*(inp - scl*dot - beta*inhib - alpha)/temp
         # curr = ((inp/scl - dot)/N - beta*inhib)/temp
 
         C2[i,j] = sign[j]*temp*curr

@@ -110,6 +110,36 @@ class Neal:
 #############################################################
 
 
+# def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
+#     """
+#     Imputation-based cross validation 
+
+#     the `fold` of the CV is the fraction of the data masked
+
+#     optimizer should already be initialized
+#     """
+
+#     ens = []
+#     for fold in range(draws):
+#         model.initialize()
+#         model.init_optimizer(**opt_args)
+
+#         ## Mask
+#         M = np.random.rand(*model.X.shape) < (1/folds)
+
+#         ## Initialize masked values at random
+#         X_orig = model.X*1
+#         model.X[M] = np.random.randn(M.sum())
+
+#         for it in range(iters):
+#             model.grad_step()
+#             model.X[M] = model()[M]
+
+#         model.X = X_orig
+#         ens.append(model.energy())
+
+#     return ens
+
 def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
     """
     Imputation-based cross validation 
@@ -133,7 +163,7 @@ def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
 
         for it in range(iters):
             model.grad_step()
-            model.X[M] = model.predict()[M]
+            model.data[M] = model()[M]
 
         model.X = X_orig
         ens.append(model.energy())
@@ -145,9 +175,10 @@ def multifit(model, X, chains=10, **neal_args):
 
     Xpr = []
     ls = []
-    neal = Neal(**neal_args)
+    # neal = Neal(**neal_args)
     for it in tqdm(range(chains)):
-        en = neal.fit(model, X, verbose=False)
+        en = model.fit(X, **neal_args)
+        # en = neal.fit(model, X, verbose=False)
         ls.append(en)
         Xpr.append(model())
 

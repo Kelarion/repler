@@ -74,27 +74,38 @@ mod2.initialize(X, S0=Sest)
 
 import search
 
-Ssp = sprs.csr_array(df_util.randtree_feats(2**6, 2, 4))
-X_ = util.pca_reduce(Ssp.todense().T, thrs=1)
+beta = 1e-2
+# beta = 0
+
+Strue = df_util.randtree_feats(2**6, 2, 4)
+S0 = (Strue + np.random.choice([0,1], p=[0.99,0.01], size=Strue.shape))%2
+# S0 = 1*Strue
+
+# sign = np.ones(len(Strue.T))
+sign = np.random.choice([-1,1], size=len(S0.T))
+Sflip = (S0+(sign<0))%2 
+
+S_fl = sprs.csr_array(Sflip)
+X_ = util.pca_reduce(Strue.T, thrs=1)
 X = df_util.noisyembed(X_, 2*X_.shape[1], 30, nonneg=False)
 X = X-X.mean(0)
 
-n,m = Ssp.shape
-StS = (Ssp.T@Ssp).todense()
-StX = Ssp.T@X
+n,m = Strue.shape
 
-S = search.BiMat(Ssp.indices, Ssp.indptr, m)
-sampler = search.KernelSampler(StS/n, StX/n, 1/n)
+S = search.BiMat(S_fl.indices, S_fl.indptr, m)
+sampler = search.KernelSampler(Sflip.T@Sflip/n, Sflip.T@X/n, 1/n)
 
-C1 = sampler.sample(S, X, 1, 1e-7, 0, 0)
-C2 = bae_search.kerbmf(X, Ssp.todense(), 
-                       StX=1*StX, StS=1*StS, scl=1, N=n, 
-                       beta=0, alpha=0, temp=1e-7)
+C1 = sampler.sample(S, X, 1, 1e-7, 0, beta)
+C2 = bae_search.kerbmf(X, 1*S0, 
+                       StX=S0.T@X, StS=S0.T@S0, scl=1, N=n, 
+                       beta=beta, alpha=0, temp=1e-7)
 # C3 = bae_search.oldkerbmf(X, Ssp.todense(), 
 #                        StX=S.T@X, StS=S.T@S, scl=mod2.scl, N=mod2.n, 
 #                        beta=mod2.tree_reg, temp=mod2.temp)
 # C2 = mod2.EStep()
-plt.scatter(C1.flatten(), C2.flatten(), c=np.arange(np.prod(C1.shape)))
+# plt.scatter(C1.flatten(), C2.flatten(), c=util.const(np.arange(n), 1, m).flatten())
+plt.scatter(C1.flatten(), C2.flatten(), c=np.arange(np.prod(C1.shape)).flatten())
+plt.plot(plt.xlim(), plt.xlim())
 
 #%%
 from spbae import KernelSampler, BiMat

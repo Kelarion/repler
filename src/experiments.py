@@ -141,6 +141,7 @@ class KBMF(exp.Model):
     decay_rate: float = 0.8
     T0: float = 10
     period: int = 2
+    sparse_reg: float = 0.0
     tree_reg: float = 1e-2
     max_iter: int = None
 
@@ -152,6 +153,7 @@ class KBMF(exp.Model):
                         'norm_hamming': [],
                         'cond_hamming': [],
                         'norm_cond_hamming': [],
+                        'unique_k': [],
                         'time': []}
 
         for it in range(len(X)):
@@ -163,7 +165,9 @@ class KBMF(exp.Model):
             else:
                 h = int(self.dim_hid*Strue[it].shape[1]) + 1
 
-            mod = bae_models.KernelBMF(h, tree_reg=self.tree_reg)
+            mod = bae_models.KernelBMF(h, 
+                sparse_reg=self.sparse_reg,
+                tree_reg=self.tree_reg)
 
             t0 = time()
             en = mod.fit(X[it], decay_rate=self.decay_rate, 
@@ -196,7 +200,13 @@ class KBMF(exp.Model):
             self.metrics['norm_cond_hamming'].append(ncham)
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
+            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
 
+# @dataclass
+# class Agglom(exp.Model):
+
+#     dim_hid: float = None
+    
 
 @dataclass
 class NMF2(exp.Model):
@@ -214,6 +224,7 @@ class NMF2(exp.Model):
                         'norm_hamming': [],
                         'cond_hamming': [],
                         'norm_cond_hamming': [],
+                        'unique_k': [],
                         'time':[]}
 
         for it in range(len(X)):
@@ -260,6 +271,7 @@ class NMF2(exp.Model):
             self.metrics['norm_cond_hamming'].append(ncham)
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
+            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
 
 
 @dataclass
@@ -284,6 +296,7 @@ class SBMF(exp.Model):
                         'norm_hamming': [],
                         'cond_hamming': [],
                         'norm_cond_hamming': [],
+                        'unique_k': [],
                         'time':[]}
 
         for it in range(len(X)):
@@ -331,6 +344,7 @@ class SBMF(exp.Model):
             self.metrics['norm_cond_hamming'].append(ncham)
             self.metrics['loss'].append(cka)
             self.metrics['nbs'].append(nbs)
+            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
 
 @dataclass
 class SAE(exp.Model):

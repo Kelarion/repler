@@ -91,9 +91,9 @@ for f,l in tqdm(zip(fid, lid)):
 mod = bae_models.KernelBMF(900, tree_reg=2)
 # mod = bae_models.BiPCA(300, tree_reg=1, sparse_reg=0)
 
-neal = bae_util.Neal(decay_rate=0.95, period=5, initial=10)
+en = mod.fit(cogmat, decay_rate=0.95, period=5, initial_temp=10)
 
-en = neal.fit(mod, cogmat)
+# neal = bae_util.Neal(decay_rate=0.95, period=5, initial=10)
 
 S = np.unique((mod.S+(mod.S.mean(0)>0.5))%2, axis=1)
 S = S[:,S.sum(0)>0]

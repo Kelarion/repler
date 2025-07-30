@@ -664,6 +664,22 @@ class NMF:
 
             self.W -= 1e-2*(dW - dReg)
 
+@dataclass
+class SemiNMF:
+
+    r: int
+
+    def fit(self, X):
+
+        U,s,Vt = la.svd(X, full_matrices=False)
+
+        U = U[:,:self.r]
+        V = Vt[:self.r].T
+
+        V = np.sign(V.min(1) + V.max(1))[:,None]*V
+
+
+
 def seminmf(X, r, max_iter=10, **kwargs):
 
     fac = NMF(r, **kwargs)
@@ -673,6 +689,8 @@ def seminmf(X, r, max_iter=10, **kwargs):
         fac.grad_step(X)
 
     return fac.Z, fac.W
+
+
 
 
 #############################################
@@ -1275,6 +1293,35 @@ def schur(S):
     one = np.ones(S.shape[:-1]+(1,))
     pairs = np.array([S[...,i]*S[...,j] for i,j in combinations(range(n), 2)]).T
     return np.concatenate([one, pairs], axis=-1)
+
+def is_schur_independent(S):
+    n = S.shape[-1]
+    one = np.ones(S.shape[:-1]+(1,))
+    pairs = np.array([S[...,i]*S[...,j] for i,j in combinations(range(n), 2)]).T
+    kron = np.concatenate([one, pairs], axis=-1)
+    return nla.matrix_rank(kron) == kron.shape[1]
+
+def psi(B):
+    """
+    The permanental compound matrix from Sorensen et al.
+    """
+
+    n, k = B.shape
+
+    ## Index sets
+    s1, s2 = np.triu_indices(n, k=1)
+    t1, t2 = np.triu_indices(k)
+    u1, u2, u3 
+    U = np.array(combinations(range(k), 3)).T    # the U set
+
+    psiplus =  2 * B[s1,:][:,U[0]] * B[s2,:][:,U[1]] * B[s2,:][:,U[2]]
+    psiplus += 2 * B[s2,:][:,U[0]] * B[s1,:][:,U[1]] * B[s2,:][:,U[2]]
+    psiplus += 2 * B[s2,:][:,U[0]] * B[s2,:][:,U[1]] * B[s1,:][:,U[2]]
+
+    psimin =  B[s1,:][:,t1] * B[s2,:][:,t2] 
+    psimin += B[s2,:][:,t1] * B[s1,:][:,t2]
+
+
 
 def schurcats(N, p, rmax=np.inf):
 
