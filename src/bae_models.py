@@ -141,6 +141,7 @@ class BiPCA(BMF):
     tree_reg: float = 0
     alpha_pr: float = 2
     beta_pr: float = 2
+    fit_intercept: bool = True
     W_init: str = 'pca'
 
     def init_params(self, X):
@@ -197,7 +198,7 @@ class BiPCA(BMF):
 
         self.W = U@V
         self.scl = np.sum(s)/np.sum(ES**2)
-        if not self.center:
+        if self.fit_intercept:
             self.b = X.mean(0) - self.scl*self.W@ES.mean(0)
 
         return self.scl*np.sqrt(np.sum(ES**2))/np.sqrt(np.sum((X-self.b)**2))
