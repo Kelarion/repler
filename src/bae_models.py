@@ -50,9 +50,16 @@ class BMF:
     def __post_init__(self):
         ## Certain methods expect a temp attribute to exist
         self.temp = 1e-5 
+
+    def initialize(self, X):
+
+        self.n, self.d = X.shape
+
+        self.init_params(X)
+        self.init_latents(X)
     
     def fit(self, *data, initial_temp=1, decay_rate=0.8, period=2,
-            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+            min_temp=1e-4, max_iter=None, verbose=True):
 
         if max_iter is None:
             max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
@@ -62,8 +69,10 @@ class BMF:
 
         en = []
         # mets = []
-        self.initialize(*data, **opt_args)
+        self.initialize(*data)
         for it in range(max_iter):
+            # print(self.S.sum())
+            # print(self.scl)
             T = initial_temp*(decay_rate**(it//period))
             self.temp = T
             en.append(self.grad_step(*data))
@@ -73,49 +82,31 @@ class BMF:
 
         return en
 
-    def impcv(self, *data, mask='random', folds=10, draws=10, 
-            initial_temp=1, decay_rate=0.8, period=2,
-            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+    def sample(self, X, temp=None, n_samp=1, burnin=5):
+        """
+        Generate posterior samples of S, given X and current parameters
+        """
+        if temp is not None:
+            self.temp = temp
 
-        if max_iter is None:
-            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+        samps = np.zeros((n_samp,) + self.S.shape)
+        S = 1*self.S
+        i = 0
+        for n in range(n_samp*burnin):
+            S = self.EStep(S, X)
+            if not np.mod(n, burnin):
+                samps[i] = 1*S
+                i += 1
 
-        ens = []
-        # mets = []
-        for draw in range(draws):
-            if verbose:
-                pbar = tqdm(range(max_iter))
+        return samps
 
-            self.initialize(*data, **opt_args)
-
-            M = np.random.rand(*self.data.shape) < (1/folds)
-
-            ## Initialize masked values at random
-            X_orig = self.data*1
-            self.data[M] = np.random.randn(M.sum())
-
-            en = []
-            for it in range(max_iter):
-                T = initial_temp*(decay_rate**(it//period))
-                self.temp = T
-                en.append(self.grad_step(*data))
-                self.data[M] = self()[M]
-
-                if verbose:
-                    pbar.update(1)
-
-        return en
-
-    def metrics(self, X):
-        pass
-
-    def EStep(self, X):
+    def EStep(self, S, X):
         """
         Update of the discrete parameters
         """
-        return NotImplementedErro
+        return NotImplementedError
 
-    def MStep(self, X):
+    def MStep(self, E, X):
         """
         Update of the continuous parameters
         """
@@ -126,14 +117,11 @@ class BMF:
         One iteration of optimization
         """
 
-        E = self.EStep()
-        loss = self.MStep(E)
+        newS = self.EStep(self.S, X)
+        self.S = newS
+        loss = self.MStep(newS,X)
 
         return loss
-
-    def initialize(self):
-
-        raise NotImplementedError
 
 @dataclass
 class BiPCA(BMF):
@@ -149,135 +137,70 @@ class BiPCA(BMF):
     """
 
     dim_hid: int
-    center: bool = False
     sparse_reg: float = 1e-2
     tree_reg: float = 0
+    alpha_pr: float = 2
+    beta_pr: float = 2
+    W_init: str = 'pca'
 
-    def initialize(self, X, alpha_pr=2, beta_pr=5, W_init='pca'):
+    def init_params(self, X):
 
-        self.n, self.d = X.shape
+        if self.d < self.dim_hid: # then the rows are orthogonal
+            self.tranpose = True
 
-        if self.center:
-            X_ = X
-        else:
-            X_ = X - X.mean(0)
-
-        # self.frac_var = np.cumsum(s**2)/np.sum(s**2)
-        # if rank is None:
-        #     r = np.min([len(s), np.sum(self.frac_var <= pvar)+1])
-        # else:
-        #     r = rank
-
-        coding_level = np.random.beta(alpha_pr, beta_pr, self.dim_hid)/2
-        self.prior_logits = -np.log(coding_level/(1-coding_level))
-
-        ## Standardize data to O(1) fluctuations
-        self.data = X_ / np.sqrt(np.mean(X_**2))
-
-        ## Initialise b
-        if self.center:
-            self.b = X.mean(0)
-        else:
-            self.b = np.zeros(self.d)
-
-        ## Initialize W
-        if W_init == 'pca':
-            Ux,sx,Vx = la.svd(X_)
+        if self.W_init == 'pca':
+            Ux,sx,Vx = la.svd(X, full_matrices=False)
             self.W = Vx[:self.dim_hid].T
         else:
-            self.W = sts.ortho_group.rvs(self.d)[:,:self.dim_hid]
+            s1 = np.max([self.d, dim_hid])
+            s2 = np.min([self.d, dim_hid])
+            self.W = sts.ortho_group.rvs(s1)[:,:s2]
+            if self.transpose:
+                self.W = self.W.T
 
-        # self.W = Vx[:self.r].T 
-        # self.scl = 
-        # self.scl = np.sqrt(np.mean(X_**2))
-        self.scl = 1
+        self.b = X.mean(0)
+        self.scl = np.sqrt(np.mean((X-self.b)**2))
 
-        ## Initialize S
-        self.S = 1*(self.data@self.W - self.b@self.W > 0.5)
+    def init_latents(self, X):
 
-        # Mx = self.data@self.W
-        # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.r)]
-        # self.S = 1*(Mx >= thr)
+        coding_level = np.random.beta(self.alpha_pr, self.beta_pr, self.dim_hid)/2
+        self.prior_logits = -np.log(coding_level/(1-coding_level))
 
-    def impcv(self, X, mask='random', folds=10, draws=10, 
-            initial_temp=1, decay_rate=0.8, period=2,
-            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
+        self.S = 1*(X@self.W - self.b@self.W > 0.5**self.scl)
 
-        if max_iter is None:
-            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
-
-        ens = []
-        trn = []
-        tst = []
-        # mets = []
-        for draw in range(draws):
-            if verbose:
-                pbar = tqdm(range(max_iter))
-
-            self.initialize(X, **opt_args)
-            X_orig = 1*self.data
-
-            M = np.random.rand(*self.data.shape) < (1/folds)
-
-            ## Initialize masked values at random
-            self.data[M] = np.random.randn(M.sum())
-
-            en = []
-            for it in range(max_iter):
-                T = initial_temp*(decay_rate**(it//period))
-                self.temp = T
-                en.append(self.grad_step(X))
-                self.data[M] = self()[M]
-
-                if verbose:
-                    pbar.update(1)
-
-            ens.append(en)
-
-            pred = self()
-            tst.append(np.mean((X_orig[M] - pred[M])**2)/np.mean(X_orig[M]**2))
-            trn.append(np.mean((X_orig[~M] - pred[~M])**2)/np.mean(X_orig[~M]**2))
-
-        return trn, tst, ens
-
-    def EStep(self):
+    def EStep(self, S, X):
         """
         Compute expectation of log-likelihood over S 
 
         X is a FloatTensor of shape (num_inp, dim_inp)
         """
 
-        XW = (self.data@self.W - self.b@self.W)
+        XW = (X@self.W - self.b@self.W)
 
         if self.tree_reg > 1e-6:
-            StS = 1.0*self.S.T@self.S
-            newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
+            StS = 1.0*S.T@S
+            newS = bae_search.bpca(XW, 1.0*S, self.scl, 
                 StS=StS, N=self.n, 
                 alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp,
                 prior_logits=self.prior_logits)
         else:
-            newS = bae_search.bpca(XW, 1.0*self.S, self.scl, 
+            newS = bae_search.bpca(XW, 1.0*S, self.scl, 
                 alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp,
                 prior_logits=self.prior_logits)
 
-        self.S = newS
+        return newS
 
-        if self.center:
-            return newS - newS.mean(0)
-        else:
-            return newS
+    def MStep(self, ES, X):
 
-    def MStep(self, ES):
-
-        XS = self.data.T@ES-np.outer(self.b,ES.sum(0))
-        U,s,V = la.svd(XS + 1e-6*np.eye(self.d,self.dim_hid), full_matrices=False)
+        XS = X.T@ES - np.outer(self.b, ES.sum(0))
+        U,s,V = la.svd(XS + 1e-6*np.eye(X.shape[1], self.dim_hid), full_matrices=False)
 
         self.W = U@V
         self.scl = np.sum(s)/np.sum(ES**2)
         if not self.center:
-            self.b = self.data.mean(0) - self.scl*self.W@ES.mean(0)
+            self.b = X.mean(0) - self.scl*self.W@ES.mean(0)
 
-        return self.scl*np.sqrt(np.sum(ES**2))/np.sqrt(np.sum((self.data-self.b)**2))
+        return self.scl*np.sqrt(np.sum(ES**2))/np.sqrt(np.sum((X-self.b)**2))
 
     def __call__(self):
         return self.scl*self.S@self.W.T + self.b
@@ -299,12 +222,13 @@ class SemiBMF(BMF):
     fit_intercept: bool = True
     sparse_reg: float = 0
     tree_reg: float = 1e-2
-    weight_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l2_reg: float = 1e-2
 
     def __call__(self):
         return self.S@self.W.T + self.b
 
-    def initialize(self, X, S0=None, hot=False, W_lr=0.1, b_lr=0.1):
+    def initialize(self, X, S0=None, hot=False, W_lr=0.1, b_lr=0.1, weight_algo='exact'):
 
         self.n, self.d = X.shape
         self.data = X/np.sqrt(np.mean(X**2))
@@ -314,17 +238,19 @@ class SemiBMF(BMF):
 
         self.b = np.zeros(self.d) # Initialize b
 
-        if self.nonneg and hot: # Initialize with NMF
-            nmf = NMF(self.dim_hid)
-            Z = nmf.fit_transform(self.data)
-            # print('Fit NMF')
-            S = []
-            kmn = KMeans(2, n_init=1)
-            for i in range(Z.shape[1]):
-                S.append(kmn.fit_predict(Z[:,[i]]))
+        if hot: # Initialize with NMF
+            if self.nonneg:
+                nmf = NMF(self.dim_hid, l2_ratio=1, alpha_W=self.weight_l2_reg)
 
-            self.S = np.array(S).T
-            self.W = nmf.components_
+                Z = nmf.fit_transform(self.data - self.data.min())
+                self.W = nmf.components_.T
+            else:
+                nmf = df_util.SemiNMF(self.dim_hid)
+                nmf.fit(self.data.T)
+                Z = nmf.Z.T
+                self.W = nmf.W
+
+            self.S = df_util.binarize(Z)
 
         else:
             ## Initialize W
@@ -336,87 +262,41 @@ class SemiBMF(BMF):
             Mx = self.data@self.W
             self.S = 1*(Mx >= 0.5)
 
-    def impcv(self, X, mask='random', folds=10, draws=10, 
-            initial_temp=1, decay_rate=0.8, period=2,
-            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
-
-        if max_iter is None:
-            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
-
-        if verbose:
-            pbar = tqdm(range(draws))
-
-        ens = []
-        train = []
-        test = []
-        # mets = []
-        for draw in range(draws):
-
-            self.initialize(1*X, **opt_args)
-            X_orig = 1*self.data
-
-            M = np.random.rand(*self.data.shape) < (1/folds)
-
-            ## Initialize masked values at random
-            if self.nonneg:
-                self.data[M] = np.abs(np.random.randn(M.sum()))
-            else:
-                self.data[M] = np.random.randn(M.sum())
-
-            en = []
-            for it in range(max_iter):
-                T = initial_temp*(decay_rate**(it//period))
-                self.temp = T
-                en.append(self.grad_step(X))
-                self.data[M] = self()[M]
-
-            pred = self()
-            test.append(np.mean((X_orig[M] - pred[M])**2)/np.mean(X_orig[M]**2))
-            train.append(np.mean((X_orig[~M] - pred[~M])**2)/np.mean(X_orig[~M]**2))
-            ens.append(en)
-
-            if verbose:
-                pbar.update(1)
-
-        return train, test, ens
-
-    def EStep(self):
+    def EStep(self, S, X):
 
         # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
         #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)
 
-        XW = (self.data@self.W - self.b@self.W)
+        XW = (X@self.W - self.b@self.W)
         WtW = self.W.T@self.W
 
         if self.tree_reg > 1e-6:
-            StS = 1.0*self.S.T@self.S
-            newS = bae_search.sbmf(XW, 1.0*self.S, WtW, 
+            StS = 1.0*S.T@S
+            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
                 StS=StS, N=self.n, 
                 beta=self.tree_reg, alpha=self.sparse_reg,
                 temp=self.temp)
         else:
-            newS = bae_search.sbmf(XW, 1.0*self.S, WtW, 
+            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
                 beta=self.tree_reg, alpha=self.sparse_reg,
                 temp=self.temp)
 
-        self.S = newS
-
         return newS
 
-    def MStep(self, ES):
+    def MStep(self, ES, X):
         """
         Maximise log-likelihood conditional on S, with p.r. regularization
         """
 
-        if self.weight_reg > 1e-4:
+        if self.weight_pr_reg > 1e-4:
             N = ES@self.W.T + self.b
 
             WTW = self.W.T@self.W
 
-            dXhat = (self.data - N)
+            dXhat = (X - N)
             # dReg = self.gamma*self.W@np.sign(self.W.T@self.W)
             eta = np.trace(WTW)/np.sum(WTW**2)
-            dReg = self.weight_reg*(self.W - eta*self.W@WTW)
+            dReg = self.weight_pr_reg*(self.W - eta*self.W@WTW)
 
             dW = dXhat.T@ES/len(self.data)
             self.W += self.W_lr*(dW + dReg)
@@ -437,6 +317,23 @@ class SemiBMF(BMF):
                 what, rnorm = nnls(ES, self.data[:,i]-self.b[i])
                 self.W[i] = what
                 err += rnorm/self.d 
+
+        else:            
+            if self.fit_intercept:
+                S_ = ES-ES.mean(0)
+                X_ = self.data - self.data.mean(0)
+            else:
+                S_ = ES
+                X_ = self.data
+
+            U,s,V = la.svd(S_, full_matrices=False)
+            shat = s/(s**2 + self.weight_l2_reg**2)
+            self.W = X_.T@U@np.diag(shat)@V
+
+            if self.fit_intercept:
+                self.b = self.data.mean(0) - ES.mean(0)@self.W.T
+
+            err = np.mean((self.data - self())**2)
 
         return err
 
@@ -590,92 +487,99 @@ class KernelBMF(BMF):
     dim_hid: int
     sparse_reg: float = 0
     tree_reg: float = 1e-2
+    scl_lr: float = 1
+    # alpha_pr: float = 2
+    # beta_pr: float = 2
+    kernel_input: bool = False  # should we expect a kernel as input
+                                # or a feature matrix
 
-    def initialize(self, X, S0=None, alpha=2, beta=5, rank=None, pvar=1, scale_lr=1):
+    def init_params(self, X):
 
-        self.scl_lr = scale_lr
-
-        self.n = len(X)
-        U,s,V = la.svd(X-X.mean(0), full_matrices=False)        
-            
-        self.frac_var = np.cumsum(s**2)/np.sum(s**2)
-        if rank is None:
-            r = np.min([len(s), np.sum(self.frac_var <= pvar)+1])
-        else:
-            r = rank
-
-        # self.X = X
-        self.X = U[:,:r]@np.diag(s[:r])@V[:r]
-        self.U = U[:,s>1e-6]
-        self.U = self.U[:,:r]
-        
-        ## Center the kernel of each item excluding that item
         # K = self.X@self.X.T
         # notI = (1 - np.eye(self.n))/(self.n-1) 
         # self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
 
-        self.data = U[:,:r]@np.diag(s[:r])
-        self.data *= np.sqrt(r*self.n/np.sum(s[:r]**2))
-        self.d = self.data.shape[1]
-
-        self.data_norm = np.sum((self.data@self.data.T)**2)
-
-        ## Initialize S
-        if S0 is None:
-            coding_level = np.random.beta(alpha, beta, self.dim_hid)/2
-            num_active = np.floor(coding_level*len(X)).astype(int)
-
-            Mx = self.data@np.random.randn(self.d, self.dim_hid)
-            thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.dim_hid)]
-
-            self.S = np.array(1*(Mx >= thr))
+        if self.kernel_input:
+            X_ = util.center(X)
+            # self.scl = np.mean(X_**2)
+            self.scl = 1
+            self.data_norm = np.sum(X_**2)
         else:
-            self.S = 1*S0
+            X_ = X - X.mean(0)
+            self.scl = np.mean(X_**2)
+            self.data_norm = np.sum((X_.T@X_)**2)
 
-        self.scl = 1
+    def init_latents(self, X):
+
+        # coding_level = np.random.beta(self.alpha_pr, self.beta_pr, self.dim_hid)/2
+        # num_active = np.floor(coding_level*len(X)).astype(int)
+
+        if self.kernel_input:
+            l,V = la.eigh(X)
+            Mx = np.diag(np.sqrt(l+1e-6))@V@np.random.randn(self.d, self.dim_hid)
+        else:
+            Mx = X@np.random.randn(self.d, self.dim_hid)
+        # thr = -np.sort(-Mx, axis=0)[num_active, np.arange(self.dim_hid)]
+
+        # self.S = np.array(1*(Mx >= thr))
+        self.S = np.array(1.0*(Mx >= 0.5)) # make sure this is a float
+
+        self.StS = self.S.T@self.S
+        self.StX = self.S.T@X
 
     def __call__(self):
 
         return self.scl*util.center(self.S@self.S.T)
 
-    def loss(self):
+    def loss(self, X):
         """
         Compute the energy of the network, for a subset I
         """
         
-        X = self.data
-        S = self.S
-        K = X@X.T
-        dot = self.scl*np.sum(util.center(K)*(S@S.T))
-        Qnrm = (self.scl**2)*np.sum(util.center((S@S.T))**2)
-        Knrm = np.sum(util.center(K)**2)
-        
-        return Qnrm + Knrm - 2*dot
+        S = self.S 
+        StS = self.StS - np.outer(np.diag(self.StS), np.diag(self.StS))/len(X)
+        if self.kernel_input:
+            dot = self.scl*np.sum(util.center(X)*(S@S.T))
+            Knrm = np.sum(util.center(X)**2)
+        else:
+            K = X@X.T
+            dot = self.scl*np.sum((S.T@X)**2)
+            X_ = X - X.mean(0)
+            Knrm = np.sum(X_.T@X_**2)
+
+        Qnrm = (self.scl**2)*np.sum(StS**2)
     
-    def EStep(self):
+        
+        return (Qnrm + Knrm - 2*dot)/Knrm
+    
+    def EStep(self, S, X, inplace=True):
 
-        # newS = update_concepts_kernel(self.data, 1.0*self.S, 
-        #     scl=self.scl, beta=self.beta, temp=self.temp, steps=self.steps)
-        newS = bae_search.kerbmf(self.data, 1.0*self.S, scl=self.scl, 
-            StS=self.S.T@self.S, StX = self.S.T@self.data, N=self.n,
-            alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
-        # newS = bae_search.kerbae(self.data, 1.0*self.S, scl=self.scl, 
-        #     StS=self.S.T@self.S/self.n, StX = self.S.T@self.data/self.n,
-        #     beta=self.tree_reg, temp=self.temp)
+        if self.kernel_input: # the input is a kernel matrix
+            newS = bae_search.kerbmf2(X, 1.0*S, scl=self.scl, 
+                StS=self.StS, N=self.n, inplace=inplace,
+                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
 
-        # return newS
-        self.S = newS
-        return self.S
+        else: # the input is a feature matrix
+            newS = bae_search.kerbmf(X, 1.0*S, scl=self.scl, 
+                StS=self.StS, StX = self.StX, N=self.n, inplace=inplace,
+                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
 
-    def MStep(self, ES):
+        return newS
+
+    def MStep(self, ES, X):
         """
         Optimally scale S
         """
         
         S_ = ES - ES.mean(0)
-        
-        dot = np.sum((self.data@self.data.T)*(S_@S_.T))
-        nrm = np.sum((S_@S_.T)**2)
+        StS = self.StS - np.outer(np.diag(self.StS), np.diag(self.StS))/len(X)
+        StX = self.StX - np.outer(np.diag(self.StS), X.mean(0))
+
+        if self.kernel_input:
+            dot = np.sum(X*(S_@S_.T))
+        else:
+            dot = np.sum(StX**2)
+        nrm = np.sum(StS**2)
 
         self.scl += self.scl_lr*(dot/nrm - self.scl)
         
@@ -700,13 +604,13 @@ class BAE(students.NeuralNet):
     dim_hid: int
     dim_inp: int
     beta: float = 1.0
-    temp: float = 2/3
     tree_reg: float = 0
     sparse_reg: float = 1e-2
     weight_reg: float = 1e-2
 
     def __post_init__(self):
         super().__init__()
+        self.temp = 1e-5 
 
         self.q = nn.Linear(self.dim_inp, self.dim_hid) # x -> s
         self.p = nn.Linear(self.dim_hid, self.dim_inp) # s -> x'
@@ -769,9 +673,6 @@ class BAE(students.NeuralNet):
     
     def hidden(self, X):
         return (1+torch.sign(self.q(X)))/2
-
-    def metrics(self, dl):
-        pass
 
     def EStep(self, S, X):
         """
@@ -840,8 +741,8 @@ class BinaryAutoencoder(BAE):
 
             newS = torch.tensor(newS, dtype=S.dtype, device=S.device)
             self.Cov = torch.tensor(newCov, 
-                dtype=self.Cov.dtype, 
-                device=self.Cov.device)
+                                    dtype=self.Cov.dtype, 
+                                    device=self.Cov.device)
 
         return newS
 
@@ -868,7 +769,7 @@ class BernVAE(BAE):
             Sbin = 1*(S > 0)
             self.Cov += self.tree_lr*(Sbin.T@Sbin/len(Sbin) - self.Cov)
 
-        return torch.sigmoid(S)
+        return torch.sigmoid(S/self.temp)
 
     def MStep(self, S, X):
 

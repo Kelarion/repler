@@ -220,9 +220,9 @@ def minham(S, Z, sym=False):
     outputs an (num_S_features,)-sized vector of hamming distances
     """
 
-    if np.all(np.abs(S**2 - S) < 1e-6):
+    if not np.all(np.abs(S**2 - 1) < 1e-6):
         S = 2*S-1
-    if np.all(np.abs(Z**2 - Z) < 1e-6):
+    if not np.all(np.abs(Z**2 - 1) < 1e-6):
         Z = 2*Z-1
 
     dH = S.T@Z
@@ -590,7 +590,6 @@ def randtree(N, **kwargs):
     X = randtree_feats(N, **kwargs)
     return X@X.T
 
-
 def sparse_feats(num_feats, num_data, sparsity=0.1):
     """
     Generate continuous but sparse features
@@ -669,16 +668,80 @@ class SemiNMF:
 
     r: int
 
-    def fit(self, X):
+    def fit(self, X, max_iter=10):
+        """
+        X is shape (feats, items)
+        """
+
+        self.W, self.Z, e = self.initialize(X)
+
+        # ls = [np.mean((X - self.W@self.Z)**2)]
+        if e > 1e-3:
+            for it in range(max_iter):
+                self.refine(X)
+                # ls.append(np.mean((X - self.W@self.Z)**2))
+
+        # return ls
+
+    def initialize(self, X):
+        """
+        Algorithm 3 from Gillis and Kumar
+        """
 
         U,s,Vt = la.svd(X, full_matrices=False)
 
         U = U[:,:self.r]
-        V = Vt[:self.r].T
+        V = Vt[:self.r]
 
         V = np.sign(V.min(1) + V.max(1))[:,None]*V
 
+        e, y = bisection(V)
+        x = (V.T + e)@y
 
+        vmax = (-V/x[None,:]).max(1)
+        alpha = vmax*(vmax>0)
+
+        Vnew = V + np.outer(alpha, x)
+        Unew = X@la.pinv(Vnew)
+
+        return Unew, Vnew, e
+
+    def refine(self, X):
+        """
+        One step of ALS 
+        """
+        self.W = X@la.pinv(self.Z)
+
+        for i in range(self.r):
+            noti = np.setdiff1d(np.arange(self.r), [i])
+            res = (X - self.W[:,noti]@self.Z[noti]).T@self.W[:,i]
+            self.Z[i] = res / np.sum(self.W[:,i]**2) * (res > 0)
+
+
+def bisection(B):
+    """
+    Find a nearby semi-nonegative matrix B^* using binary search
+    """
+    n,m = B.shape
+    
+    ## First check if 
+    prog = lp(c=np.zeros(n), A_ub=-B.T, b_ub=-np.ones(m))
+    if prog.success:
+        return (0, prog.x)
+
+    emax = np.max(-B*(B<0))
+
+    interval = [0, emax]
+    while interval[1] - interval[0] > 1e-3:
+        e = np.mean(interval) 
+        prog = lp(c=np.zeros(n), A_ub=-(B.T + e), b_ub=-np.ones(m))
+        if prog.success:
+            interval[1] = e
+            y = prog.x          # current best 
+        else:
+            interval[0] = e
+
+    return (interval[1], y)
 
 def seminmf(X, r, max_iter=10, **kwargs):
 
@@ -691,7 +754,25 @@ def seminmf(X, r, max_iter=10, **kwargs):
     return fac.Z, fac.W
 
 
+def binarize(Z, axis=-2):
+    """
+    2-means clustering of Z along a given axis
+    """
+    n = Z.shape[axis]
 
+    Zswp = Z.swapaxes(0, axis)
+    Zsrt = -np.sort(-Zswp, axis=0)
+    errs = np.zeros(Zswp[:-1].shape)
+    for i in range(1,n):
+        set1 = Zsrt[:i]
+        set2 = Zsrt[i:]
+        errs[i-1] = np.var(set1, axis=0) + np.var(set2, axis=0)
+    emin = errs.argmin(0, keepdims=True)
+    elb = np.take_along_axis(Zsrt, emin, axis=0)
+    eub = np.take_along_axis(Zsrt, emin+1, axis=0)
+    thr = 0.5*(elb + eub)
+
+    return 1*(Zswp > thr).swapaxes(0, axis)
 
 #############################################
 ######### LP and QP helpers #################
@@ -1266,6 +1347,38 @@ def gradstep(X, K, m=1000):
 
     return  X + dX
 
+def buffet(N, alpha, size=1, burn_in=10):
+    """
+    Sample from an Indian buffet process
+    """
+
+    new_col = 1*(np.arange(N) == 0)[:,None]
+
+    samps = []
+    while len(samps) < size:
+
+        K_init = np.random.poisson(alpha*np.sum(1/np.arange(1,N+1)))
+        S = np.random.choice([0,1], (N, K_init))
+        for _ in range(burn_in):
+            for i in range(N):
+                p = S[1:].sum(0)/N
+
+                S[0] = 1*(np.random.rand(len(S[0])) < p)
+
+                deez = p > 0
+                S = S[:,deez]
+
+                n_new = np.random.poisson(alpha/N)
+
+                S = np.hstack([S, np.repeat(new_col, n_new, axis=1)])
+
+                S = np.roll(S, -1, axis=0)
+        samps.append(util.lof(S))
+
+    return samps
+
+
+
 ########################################################
 ################## Cut polytope ########################
 ########################################################
@@ -1336,9 +1449,12 @@ def schurcats(N, p, rmax=np.inf):
     S = S[:,:-1]
     S = S[:,np.abs(S.sum(0))<N]
 
-    return S
+    return (1+S)//2
 
 def noisyembed(S, dim, logsnr, orth=True, nonneg=False, scl=1e-3):
+    """
+    Return weights and noise for a noisy embedding of S
+    """
 
     N, r = S.shape
 
@@ -1363,7 +1479,7 @@ def noisyembed(S, dim, logsnr, orth=True, nonneg=False, scl=1e-3):
         noise[noise<0] = 0 
     a = np.sqrt(np.sum((S@W.T)**2)/np.sum(noise**2))*10**(-logsnr/20)
 
-    return S@W.T + a*noise.T
+    return W, a*noise.T
 
 def randmask(n, m):
     assert n < m

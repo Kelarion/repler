@@ -23,7 +23,6 @@ import bae
 import bae_util
 import bae_models
 
-
 ####################################
 
 send_remotely = True
@@ -35,22 +34,22 @@ send_remotely = True
 
 
 # N = su.Set(2**np.arange(4,12))
-# task_args = {'task': exp.SchurCategories,
-#              'samps': 6,
-#              # 'samps': 1,
-#              'seed': su.Set([0,1,2]),
-#              # 'seed': 0,
-#              # 'N': N,
-#              'N': 64, 
-#              'p':0.5,
-#              'snr': 0<<su.Real(12)<<30,
-#              # 'snr': 30,
-#              # 'ratio': 0.5<<su.Integer(num=5)<<2,
-#              'ratio': 10,
-#              'orth': True,
-#              # 'nonneg': False,
-#              'nonneg': su.Set([True, False]),
-#              }
+task_args = {'task': exp.SchurCategories,
+             'samps': 9,
+             # 'samps': 1,
+             # 'seed': su.Set([0,1,2]),
+             'seed': 0,
+             # 'N': N,
+             'N': 64, 
+             'p':0.5,
+             'snr': 0<<su.Real(13)<<24,
+             # 'snr': 30,
+             # 'ratio': 0.5<<su.Integer(num=5)<<2,
+             'ratio': 10,
+             'orth': True,
+             'nonneg': False,
+             # 'nonneg': su.Set([True, False]),
+             }
 
 # task_args = {'task': exp.GridCategories,
 #              'samps': 9,
@@ -62,7 +61,7 @@ send_remotely = True
 #              'values': 5,
 #              # 'snr': 30,
 #              # 'snr': 0<<su.Real(12)<<30,
-#              'snr': 0 << su.Integer(12) << 24,
+#              'snr': 0 << su.Real(13) << 24,
 #              # 'ratio': su.Set([1,10]),
 #              'ratio': 1,
 #              'orth': True,
@@ -72,24 +71,46 @@ send_remotely = True
 #              'nonneg': False
 #              }  
 
+# task_args = {'task': exp.GridCategories,
+#              'samps': 9,
+#              'seed': 0,
+#              # 'seed': su.Set([0,1]),
+#              # 'bits': su.Set([2,3,4]),
+#              'bits': 2,
+#              # 'values': su.Set([3,4,5]),
+#              'values': 5,
+#              # 'snr': 30,
+#              # 'snr': 0<<su.Real(12)<<30,
+#              'snr': 0 << su.Real(13) << 24,
+#              # 'snr': 24,
+#              # 'ratio': su.Set([1,10]),
+#              'ratio': 1,
+#              'orth': True,
+#              # 'isometric': False,
+#              'isometric': True,
+#              # 'isometric': su.Set([True, False]),
+#              # 'nonneg': su.Set([True, False])
+#              'nonneg': False
+#              }
+
 # N = su.Set(2**np.arange(4,10))
-task_args = {'task': exp.HierarchicalCategories,
-             'samps': 9,
-             'seed': 0,
-             # 'seed': su.Set([0,1,2]),
-             # 'N': N,
-             'N': 64,
-             # 'ratio': su.Set([1,5]),
-             'ratio': 1,
-             'bmin':2,
-             'bmax': 4,
-             # 'snr': 30,
-             # 'snr': 0<<su.Real(12)<<30,
-             'snr': 0 << su.Integer(13) << 24,
-             'orth': True,
-             # 'nonneg': su.Set([True, False])
-             'nonneg': False,
-             }
+# task_args = {'task': exp.HierarchicalCategories,
+#              'samps': 9,
+#              'seed': 0,
+#              # 'seed': su.Set([0,1,2]),
+#              # 'N': N,
+#              'N': 64,
+#              # 'ratio': su.Set([1,5]),
+#              'ratio': 1,
+#              'bmin':2,
+#              'bmax': 4,
+#              # 'snr': 30,
+#              # 'snr': 0<<su.Real(12)<<30,
+#              'snr': 0 << su.Real(13) << 24,
+#              'orth': True,
+#              # 'nonneg': su.Set([True, False])
+#              'nonneg': False,
+#              }
 
 
 ###############################
@@ -120,16 +141,31 @@ mod_args = {'model': exp.KBMF,
             'tree_reg': (0, 0, 1e-2),
             'sparse_reg': (0, 0.1, 0),
             # 'tree_reg': 0,
-            'dim_hid': 0.5 << su.Real(12) << 2,
+            'dim_hid': 0.5 << su.Real(13) << 2,
             # 'dim_hid': 2,
             'period': 2,
             }
+# mod_args = {'model': exp.KBMF,
+#             'decay_rate': 0.95,
+#             'T0': 10,
+#             # 'T0': 20,
+#             'max_iter': None,
+#             # 'tree_reg': (0, 0, 0.1),
+#             'tree_reg': (0, 0, 1),
+#             # 'tree_reg': [0, 1e-2, 5e-2],
+#             'sparse_reg': (0, 0.1, 0),
+#             # 'sparse_reg': [0, 0.1],
+#             # 'tree_reg': [0, 1],
+#             'dim_hid': 0.5 << su.Real(13) << 2,
+#             # 'dim_hid': 2,
+#             'period': 5,
+#             }
 
 # mod_args = {'model': exp.BAE,
 #             # 'search': (True, False, False),
 #             'search': False,
 #             # 'beta': (1.0, 1.0, 0.0),
-#             'beta': su.Set([1, 0]),
+#             'beta': [1, 0],
 #             # 'decay_rate': (0.9, 1, 1),
 #             'decay_rate': 1,
 #             # 'T0': (5, 1e-5, 1e-5),
@@ -141,7 +177,7 @@ mod_args = {'model': exp.KBMF,
 #             'pr_reg': 0,
 #             'sparse_reg': 1e-1,
 #             'tree_reg': 0,
-#             'batch_size': 256,
+#             'batch_size': [1,256],
 #             'epochs': 10,
 #             'dim_hid': 2,
 #             }

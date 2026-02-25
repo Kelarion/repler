@@ -711,6 +711,7 @@ fun = np.hstack([np.roll(x_proj,th0, axis=1), -np.roll(x_proj,th0, axis=1)])
 #%%
 
 i = 6
+# i = foo[0]
 
 plt.scatter(th[np.abs(th)>0], x_proj[i])
 a = np.argmax(x_proj[i]) 
@@ -722,7 +723,7 @@ plt.scatter(th[np.abs(th)>0][a], x_proj[i][a], s=200, marker='*')
 #     plt.scatter(-np.flip(wa)[int(a % (len(th)-1))], fun[i][a],s=200, marker='*')
 # else:
 #     plt.scatter(wa[a], fun[i][a], s=200, marker='*')
-plt.title(legit[i])
+# plt.title(legit[i])
 
 #%%
 
@@ -830,7 +831,7 @@ pr = np.array(pr)
 n_samp = 500
 n_noise = 10000
 dim = 5000
-noise_std = 1
+noise_std = 2
 kaps = np.linspace(0.1, 100, 100)
 
 th = np.linspace(-np.pi, np.pi, n_samp+1)

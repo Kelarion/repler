@@ -1,0 +1,218 @@
+import sympy as sp
+from sympy import IndexedBase, symbols, expand, collect, Sum, factor_terms, Poly, Idx, Wild
+
+s = IndexedBase('s')        # row s
+S = IndexedBase('S')        # submatrix excluding s
+savg = IndexedBase('savg')  # <s>
+
+i, j, k, l = symbols('i j k l', integer=True, positive=True)
+
+## Squared dot products
+# summand = ( (S[i,k] - savg[i] - (s[i]-savg[i])/n)*(S[i,l] - savg[i] - (s[i]-savg[i])/n)
+#            *(S[j,k] - savg[j] - (s[j]-savg[j])/n)*(S[j,l] - savg[j] - (s[j]-savg[j])/n) ) / (m**2)
+
+# summand = ( (S[i,k] - savg[i])*(S[i,l] - savg[i])
+#            *(S[j,k] - savg[j])*(S[j,l] - savg[j]) ) / (m**2)
+
+
+#%% Simplify into quadratic form
+
+wi, wj, wk = symbols('i j k', cls=Wild)
+
+## Provide the formulas for each empirical moment we want to define
+mts = {sp.Sum(S[wi,wk], (wk,1,n-1)): (n-1)*sp.Indexed('savg', wi),
+       sp.Sum(S[wi,wk], (wk,1,m)): m*sp.Indexed('stst', wi),
+       sp.Sum(S[wi,wk]*S[wj,wk], (wk,1,n-1)): (n-1)*sp.Indexed('C', wi, wj),
+       sp.Sum(S[wi,wk]*S[wj,wk], (wk,1,m)): m*sp.Indexed('Ctst', wi, wj)}
+
+# mt_bases = {x.base: x for x in mts.keys()}
+
+# def concrete(this_expr, this_idx):
+#     """
+#     Replace the summation indices of all sums in this_expr with this_idx
+#     """
+#     for this_sum in this_expr.find(sp.Sum):
+#         this_sum = 
+
+class SymNorm:
+    
+    def __init__(self, K, k_bounds=(1,'m'), l_bounds=(1,'m'), verbose=True, use_t=True):
+        
+        self.K = K
+        self.use_t = use_t
+        self.k_bounds = k_bounds
+        self.l_bounds = l_bounds
+        
+        m, n, r = symbols('m n r')       # m is number of rows of S, and n > m
+        
+        s = IndexedBase('s')        # row s
+        S = IndexedBase('S')        # submatrix excluding s
+        savg = IndexedBase('savg')  # <s>
+        
+        i, j, k, l = symbols('i j k l', integer=True, positive=True)
+        
+        ## Define norms
+        new = ( (S[i,k] - savg[i] - (s[i]-savg[i])/n)*(S[i,l] - savg[i] - (s[i]-savg[i])/n)
+                   *(S[j,k] - savg[j] - (s[j]-savg[j])/n)*(S[j,l] - savg[j] - (s[j]-savg[j])/n) )
+        
+        old = ( (S[i,k] - savg[i])*(S[i,l] - savg[i])
+               *(S[j,k] - savg[j])*(S[j,l] - savg[j]) )
+        
+        ## Functions for numerical evaluation
+        if verbose:
+            print('Compiling functions')
+
+        self.newf = sp.lambdify([S, s, n, m, r], self.prelambdify(new))
+        self.oldf = sp.lambdify([S, n, m, r], self.prelambdify(old))
+        
+        ## Simplified symbolic expression
+        if verbose:
+            print('Rearraning sums')
+        self.qf_new, self.lf_new, self.cf_new = self.rearrange(new, k_bounds, l_bounds)
+        self.qf_old, self.lf_old, self.cf_old = self.rearrange(old, k_bounds, l_bounds)
+    
+        ## Get equations
+        qf = sum([a*x*s[i]*s[j] for a,x in self.qf_new.items()])
+        lf = sum([a*x*s[i] for a,x in self.lf_new.items()])
+        cf = sum([a*x for a,x in self.cf_new.items()])
+        
+        if verbose:
+            print('Plugging in K')
+        self.new_quad = sp.Sum(qf, (i,1,K), (j,1,K)).doit()
+        self.new_lin = sp.Sum(lf, (i,1,K), (j,1,K)).doit()
+        self.new_const = sp.Sum(cf, (i,1,K), (j,1,K)).doit()
+        self.old_const = sp.Sum(sum([a*x for a,x in self.cf_old.items()]), (i,1,K), (j,1,K)).doit()
+        
+        # self.newf = sp.lambdify(, self.new_quad + 2*self.new_lin + self.new_const)
+        
+    def __call__(self, Sval, sval, m_val):
+        
+        r_val, n_val = Sval.shape
+        return self.newf(Sval, sval, n_val, m_val, r_val) - self.oldf(Sval, n_val, m_val, r_val)
+    
+    def prelambdify(self, summand):
+         
+        m, n, r = symbols('m n r')
+        i, j, k, l = symbols('i j k l', integer=True, positive=True)
+        S = IndexedBase('S')        # submatrix excluding s
+        savg = IndexedBase('savg')  # <s>
+        
+        ## Computer scientists are obsessed with 0 indexing so even
+        ## this symbolic math package requires it even though it makes
+        ## no damned sense in this context I hate it
+        stupid_k_bounds = (k, self.k_bounds[0]-1, self.k_bounds[1]+'-1')
+        stupid_l_bounds = (l, self.l_bounds[0]-1, self.l_bounds[1]+'-1')
+        
+        subsum = summand.subs(savg[i], sp.Sum(S[i,k], (k,0,n-1))/(n-1))
+        subsum = subsum.subs(savg[j], sp.Sum(S[j,k], (k,0,n-1))/(n-1))
+    
+        summed = sp.Sum(subsum, (i,0,r-1), (j,0,r-1), stupid_k_bounds, stupid_l_bounds)
+        return expand(factor_terms(expand(summed))).doit()
+    
+    # def compute_vars(self, S_vals, m_val):
+    #     """
+    #     S should be of shape (k, n), and should be organized such that the
+    #     first m columns are the test set
+    #     """
+        
+    #     var_dict = {}
+    #     for this_var in self.vars:
+                        
+    #         this_mt = mt_bases[this_var.base] # which moment
+    #         formula = mts[this_mt]            # explicit formula
+            
+    #         # fn = this_var.match(this_mom)
+    #         expr = formula.subs(m, m_val).change_index(wk,wk,k)
+
+    #         ## Manually make the array (;_;) this is so messy
+    #         indices = list(expr.free_symbols.intersection(set([i,j])))
+    #         varfunc = sp.lambdify([S] + indices, expr)
+            
+    #         dim = len(indices)
+    #         val = np.zeros((self.K,)*dim)
+    #         for idx in zip(*(dim*(range(self.K),))):
+    #             val[*idx] = varfunc(S, *idx)
+                
+    #         var_dict[this_var.base] = val
+        
+    def sub(self, C_vals, savg_vals, stst_vals, s_vals, n_val):
+        
+        m, n = symbols('m n')           # m is number of rows of S, and n > m
+
+        s = IndexedBase('s')            # row s
+        savg = IndexedBase('savg')      # <s>
+        stst = IndexedBase('stst')      # <s>_{test}
+        C = IndexedBase('C')            # <ss'>_{test}
+        
+        subs_dict = {n: n_val}
+        for row_idx in range(self.K):
+            subs_dict[savg[row_idx+1]] = savg_vals[row_idx]
+            subs_dict[stst[row_idx+1]] = stst_vals[row_idx]
+            subs_dict[s[row_idx+1]] = s_vals[row_idx]
+            for col_idx in range(self.K):
+                subs_dict[C[row_idx+1, col_idx+1]] = C_vals[row_idx, col_idx]
+        
+        return subs_dict
+
+    def rearrange(self, summand, k_bounds, l_bounds):
+                
+        ## Have to redefine the symbols
+        m, n = symbols('m n')       # m is number of rows of S, and n > m
+        i, j, k, l = symbols('i j k l', integer=True, positive=True)     
+        s = IndexedBase('s')        # row s
+
+        ## Normalize to remove m
+        self.k_sum = sp.Sum(1, (k,)+k_bounds).doit()
+        self.l_sum = sp.Sum(1, (l,)+l_bounds).doit()
+        denom = self.k_sum*self.l_sum
+
+        ## Rearrange the summation
+        expr = expand(summand/denom)
+        
+        summed = sp.Sum(expr, (k,)+k_bounds)
+        
+        summed = expand(factor_terms(expand(summed))).doit()
+        full_sum = expand(factor_terms(expand(sp.Sum(summed, (l,)+l_bounds)))).doit()
+        
+        ##
+        
+        ## Introduce moment variables and apply idempotence
+        result = full_sum
+        
+        ## Make substitutions according to the predefined dictionary
+        for this_sum in result.find(sp.Sum):
+            for pre,post in mts.items():
+                fn = this_sum.match(pre)
+                if fn is not None:
+                    result = result.subs(this_sum, post.subs(fn))
+       
+        for idx in [i,j]:
+            result = result.subs(s[idx]**2, s[idx])
+        
+        self.vars = [x for x in result.free_symbols if isinstance(x, sp.Indexed)]
+        
+        ## Gather terms
+        # Quadratic terms
+        quad_terms = self.get_monomials(result.coeff(s[i]*s[j]))
+        
+        # Linear terms (this is multiplied by 2)
+        lin_terms = self.get_monomials(result.subs(s[i],0).coeff(s[j]))
+
+        # constant
+        const_terms = self.get_monomials(result.subs({s[i]:0, s[j]:0}))
+        
+        return quad_terms, lin_terms, const_terms
+
+    def get_monomials(self, expr):
+        
+        if self.use_t:                  # useful shorthand 
+            n, t = symbols('n, t')
+        
+        poly = Poly(expr, *self.vars)
+        out_dict = {}
+        for powers, cfs in poly.as_dict().items():
+            term = sp.prod([g**e for g,e in zip(poly.gens, powers)])
+            if self.use_t:
+                out_dict[term] = sp.factor(cfs).subs((n-1)/n, t).simplify()
+        
+        return out_dict

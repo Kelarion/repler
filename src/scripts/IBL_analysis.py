@@ -330,7 +330,11 @@ for fil in fils:
         mask *= (dat['response_time'] >= 0.1)*(dat['response_time'] <= 0.8)
         trial = dat['trial'][mask]
         
-        Xsess.append(util.group_mean(dat['raster'][mask], trial, axis=0))
+        X = util.group_mean(dat['raster'][mask], trial, axis=0)
+        mavg = np.apply_along_axis(np.convolve, 0, X, np.ones(100)/100)
+        deez = mavg[100:-100].min(0) > 0
+        
+        Xsess.append(X[:,deez])
         
         pids.append(dat['PID'])
         
@@ -341,6 +345,43 @@ for fil in fils:
     meta[match[0]] = metasess
 
 areas = neur.keys()
+
+#%% Pseudopopulation
+
+all_neur = {}
+which_area = {}
+
+for area, X in neur.items():
+    
+    
+
+#%%
+
+ntrls = []
+nneur = []
+for this_area in neur.values():
+    ntrls.append( [len(foo) for foo in this_area] )
+    nneur.append( [len(foo.T) for foo in this_area] )
+
+ntrls = np.array(ntrls)
+nneur = np.array(nneur)
+
+## how many trials to sample from each condition?
+n_samp = np.round(ntrls.mean(0)).astype(int)
+# n_samp = ntrls.min(0)
+
+pp = {}
+for this_sess in all_neurs.values():
+    for i, (lab, rep) in enumerate(this_sess.items()):
+        
+        ix = np.random.choice(range(len(rep)), n_samp[i])
+        X_cond = rep[ix]
+        
+        if lab in pp.keys():
+            pp[lab] = np.hstack([pp[lab], X_cond])
+        else:
+            pp[lab] = X_cond
+
 
 #%%
 

@@ -18,47 +18,10 @@ from itertools import permutations, combinations
 import itertools as itt
 import networkx as nx
 from networkx.algorithms.flow import boykov_kolmogorov
-
+    
 #################################################
 ######### Indexing ##############################
 #################################################
-
-# @dataclass
-# class LexOrder:
-#     """
-#     Lexicographic order of symmetric pairs, (i,j), j < i
-    
-#     j = __|_0_1_2_3_
-#     i = 0 | - - - -
-#         1 | 0 - - -
-#         2 | 1 2 - -
-#         3 | 3 4 5 -
-        
-#     """
-#     diag: bool = False
-    
-#     def __call__(self,i,j):
-#         """
-#         (i,j) -> n
-#         n = i*(i-1)/2 + j
-#         """
-
-#         if self.diag:
-#             i1 = i - 1*(i>=j)
-#             i2 = j - 1*(i<j)
-
-#         n = np.where(i>j, i*(i-1)/2 + j, j*(j-1)/2 + i)
-#         return np.where(i==j, -1, n).astype(int)
-    
-#     def inv(self, n):
-#         """
-#         n -> (i,j)
-#         i = floor( (1 + sqrt(1 + 8n))/2 )
-#         j = n - (i*(i-1)/2)
-#         """
-#         i = np.floor((1 + np.sqrt(1+8*n))/2).astype(int)
-#         j = (n - i*(i-1)//2).astype(int)
-#         return i, j
 
 @dataclass
 class LexOrder:
@@ -90,7 +53,7 @@ class LexOrder:
             return np.where(i==j, -1, n).astype(int)
         else:
             return n
-    
+
     def inv(self, n):
         """
         n -> (i,j)
@@ -884,6 +847,14 @@ def outers(V):
     """
     return np.einsum('...ik,...jk->...kij', V, V)
 
+def pair_outers(V):
+    """
+    Computer outer products of all pairs of columns of V
+    """
+    n = V.shape[-1]
+    aye, jay = np.where(np.ones((n,n)))
+    return np.einsum('...ik,...jk->...kij', V[...,aye], V[...,jay])
+
 def const(v, axis=-1, d=None):
     """
     Return a matrix with d columns that are all v 
@@ -895,7 +866,6 @@ def const(v, axis=-1, d=None):
     if d is None:
         d = len(v)
     return np.repeat(np.expand_dims(v, axis), d, axis=axis)
-
 
 def spouters(i, j, v=None, incl_diag=True, shape=None):
     """
@@ -1445,6 +1415,10 @@ def rangediff(N, vals):
     """
     return list(set(range(N)) - set(vals))
 
+# def kmeans(X, k, nonneg=False):
+
+    
+
 def imf(A, b=None, s0=None, max_iter=20, tol=1e-3):
     """
     Iterative Max Flow (Konar and Sidiropoulos 2019) to solve
@@ -1704,6 +1678,12 @@ def gf2elim(B):
 
     return M
 
+def lof(S):
+    """
+    Left-order-form of binary matrix S
+    """
+    return S[:,np.lexsort(-S[::-1])]
+
 def addsum(Z, *ids):
     """
     Augment the columns of Z with the (F2-) sum of columns ids
@@ -1799,6 +1779,24 @@ def find_clique(A, first=0):
             clq.append(i)
 
     return clq
+
+def find_cliques(A, first=0):
+    """
+    Find a single maximal clique in A
+    """
+
+    N = len(A)
+
+    unsorted = list(range(len(A)))
+    clqs = []
+    while len(unsorted) > 0:
+        clq = find_clique(A, first=unsorted[0])
+        for i in clq:
+            unsorted.remove(i)
+        clqs.append(clq)
+
+    return clqs
+
 
 def decimal(B, axis=-1):
     """
@@ -2387,6 +2385,7 @@ def dirichlet_slice(N, k, size=1):
     d[...,:k] = d[...,:k].mean(-1)
 
     return d
+
 
 
 #########################################

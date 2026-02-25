@@ -34,7 +34,8 @@ class Feedforward(nn.Module):
     """
     def __init__(self, dim_layers, nonlinearity='ReLU', encoder=None, bias=True, 
         layer_type=None):
-        super(Feedforward, self).__init__()
+        # super(Feedforward, self).__init__()
+        super().__init__()
         
         onion = OrderedDict()
         self.ndim = dim_layers
@@ -72,8 +73,9 @@ class NewFeedforward(nn.Module):
     Generic feedforward module, can be, e.g., the encoder or decoder of VAE
     """
     def __init__(self, *dim_layers, nonlinearity='ReLU', encoder=None, bias=True, 
-        layer_type=None):
-        super(NewFeedforward, self).__init__()
+        layer_type=None, init_scale=1):
+        # super(NewFeedforward, self).__init__()
+        super().__init__()
         
         onion = OrderedDict()
         self.ndim = dim_layers
@@ -94,6 +96,7 @@ class NewFeedforward(nn.Module):
         for l in range(len(dim_layers)-1):
             # onions have layers
             onion['layer%d'%l] = self.layer_type(dim_layers[l], dim_layers[l+1], bias=bias)
+            onion['layer%d'%l].weight.data *= init_scale
             if nonlinearity[l] is not None:
                 if 'softmax' in nonlinearity[l].lower():
                     onion['link%d'%l] = getattr(nn, nonlinearity[l])(dim=-1)
@@ -589,6 +592,9 @@ class DeepDistribution(nn.Module):
     """
     def __init__(self):
         super(DeepDistribution, self).__init__()
+
+    def forward(self, X):
+        return self.distr(X)
         
     def name(self):
         return self.__class__.__name__
@@ -803,6 +809,7 @@ class NeuralNet(nn.Module):
             scale = 1
         for p in self.parameters():
             p.data.normal_(0, scale/np.sqrt(p.shape[-1]))
+            # p.data.normal_(0, scale)
 
     def init_optimizer(self, opt_alg=optim.Adam, **opt_alg_args):
         self.optimizer = opt_alg(self.parameters(), **opt_alg_args)
@@ -818,6 +825,24 @@ class NeuralNet(nn.Module):
         with open(from_path, 'rb') as f:
             self.load_state_dict(torch.load(f))
         
+
+class FFN(NeuralNet):
+
+    def __init__(self, dim_inp, dim_hid, dim_out, depth, loss_func=nn.MSELoss(), **ff_args):
+
+        super().__init__()
+
+        self.repr = NewFeedforward(*([dim_inp] + [dim_hid]*depth), **ff_args)
+        self.readout = nn.Linear(dim_hid, dim_out)
+        self.loss_func = loss_func
+
+    def forward(self, X):
+        return self.readout(self.repr(X))
+
+    def loss(self, batch):
+        yhat = self(batch[0])
+        return self.loss_func(yhat, batch[1])
+
 
 class ConvNet(NeuralNet):
     ## TODO: support different loss functions
@@ -1133,7 +1158,7 @@ class SimpleMLP(NeuralNet):
     def loss(self, batch):
         y_hat = self(batch[0])
         y = batch[1]
-        return -self.obs.distr(y_hat).log_prob(y).mean()
+        return -self.obs(y_hat).log_prob(y).mean()
 
 class ShallowNetwork(NeuralNet):
     """ Manually-trained network with one hidden layer """

@@ -24,6 +24,8 @@ from scipy.optimize import linear_sum_assignment as lsa
 from scipy.optimize import linprog as lp
 from scipy.optimize import nnls
 
+from sklearn import svm
+
 from numba import njit
 import math
 
@@ -109,38 +111,70 @@ class Neal:
 ###### Model comparison #####################################
 #############################################################
 
+def bicv(model, X, train_items, train_feats, n_iter=1, **opt_args):
+    """
+    Bi-crossvalidation (Owen and Perry, 2009; Fu and Perry, 2017)
+    """
 
-# def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
-#     """
-#     Imputation-based cross validation 
+    A = X[train_items][:,train_feats]
+    B = X[~train_items][:,train_feats]
+    C = X[train_items][:,~train_feats]
+    D = X[~train_items][:,~train_feats]
 
-#     the `fold` of the CV is the fraction of the data masked
+    ## Fit W and S from A
+    _ = model.fit(A, verbose=False, **opt_args)
+    S = 1*model.S       # model state: (S, W)
+    ls = model.loss(A)
 
-#     optimizer should already be initialized
-#     """
+    ## Fit S' from W and B
+    model.init_latents(B)   # re-initialize S
+    for _ in range(n_iter):
+        S_ = model.EStep(B) # model state: (S', W)
 
-#     ens = []
-#     for fold in range(draws):
-#         model.initialize()
-#         model.init_optimizer(**opt_args)
+    ## Fit W' from S and C
+    model.init_params(C)    # re-initialize (W,b)
+    _ = model.MStep(S, C)   # model state: (S', W')
 
-#         ## Mask
-#         M = np.random.rand(*model.X.shape) < (1/folds)
+    ## Residual between S'W' and D
+    return ls, model.loss(D) 
 
-#         ## Initialize masked values at random
-#         X_orig = model.X*1
-#         model.X[M] = np.random.randn(M.sum())
 
-#         for it in range(iters):
-#             model.grad_step()
-#             model.X[M] = model()[M]
+def fpcv(model, X, train_items, train_feats, classifier=svm.LinearSVC, **opt_args):
 
-#         model.X = X_orig
-#         ens.append(model.energy())
+    A = X[train_items][:,train_feats]
+    B = X[~train_items][:,train_feats]
+    C = X[train_items][:,~train_feats]
+    D = X[~train_items][:,~train_feats]
 
-#     return ens
+    ## Fit model on A
+    _ = model.fit(A, verbose=False, **opt_args)
+    S = 1*model.S
+    ls = model.loss(A)
 
-def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
+    ## Train classifier to predict S(A) from C
+    k = S.shape[1]
+    d = C.shape[1]
+
+    W = np.zeros((k,d))
+    b = np.zeros(k)
+    for i in range(k):
+        if S[:,i].sum() > 0:
+            clf = classifier()
+            clf.fit(C, S[:,i])
+
+            W[i] = 1*clf.coef_[0]
+            b[i] = 1*clf.intercept_[0]
+
+    ## Predict labels for heldout points
+    Spred = 1*(D@W.T + b > 0)
+
+    ## Evaluate
+    model.S = Spred
+    return ls, model.loss(B)
+
+def impcv(model, X, mask='random', folds=10, 
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=False, **init_args):
     """
     Imputation-based cross validation 
 
@@ -149,27 +183,141 @@ def impcv(model, mask='random', folds=10, iters=100, draws=10, **opt_args):
     optimizer should already be initialized
     """
 
-    ens = []
-    for fold in range(draws):
-        model.initialize()
-        model.init_optimizer(**opt_args)
+    if max_iter is None:
+        max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
 
-        ## Mask
-        M = np.random.rand(*model.X.shape) < (1/folds)
+    if verbose:
+        pbar = tqdm(range(max_iter))
 
-        ## Initialize masked values at random
-        X_orig = model.X*1
-        model.X[M] = np.random.randn(M.sum())
+    n,d = X.shape
+    idx = np.arange(n*d).reshape((n,d))
+    ntest = int(n*d/folds)
 
-        for it in range(iters):
-            model.grad_step()
-            model.data[M] = model()[M]
+    Z = 1*X
 
-        model.X = X_orig
-        ens.append(model.energy())
+    these_idx = np.random.choice(idx.flatten(), ntest, replace=False)
+    M = np.isin(idx, these_idx)
 
-    return ens
+    ## Initialize masked values from `empirical distribution`
+    Z[M] = np.random.choice(Z[~M], M.sum())
 
+    model.initialize(Z, **init_args)
+    en = []
+    for it in range(max_iter):
+        T = initial_temp*(decay_rate**(it//period))
+        model.temp = T
+        en.append(model.grad_step(Z))
+        Z[M] = model()[M]
+
+        if verbose:
+            pbar.update()
+
+    pred = model()
+    test = np.mean((X[M] - pred[M])**2)/np.mean(X[M]**2)
+    train = np.mean((X[~M] - pred[~M])**2)/np.mean(X[~M]**2)
+
+    return train, test
+
+def kerimpcv(model, X, mask='random', folds=10, diag=False,
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=False, **init_args):
+    """
+    Imputation-based cross validation 
+
+    the `fold` of the CV is the fraction of the data masked
+
+    optimizer should already be initialized
+    """
+
+    if max_iter is None:
+        max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+
+    if verbose:
+        pbar = tqdm(range(draws))
+
+    n,d = X.shape
+    tot = spc.binom(n,2) + n*diag
+    idx = util.LexOrder(diag=diag)
+
+    ntest = int(tot/folds)
+
+    K = util.center(X@X.T)
+    Z = 1*K
+
+    M = np.zeros((n,n)) > 0
+    these_idx = np.random.choice(np.arange(tot), ntest, replace=False)
+    M[idx.inv(these_idx)] = True
+
+    ## Initialize masked values from `empirical distribution`
+    Z[M] = np.random.choice(Z[~M], M.sum())
+    Z[M.T] = Z[M]
+    M = M + M.T # symmetrize
+
+    model.initialize(util.center(Z), **init_args)
+    en = []
+    for it in range(max_iter):
+        T = initial_temp*(decay_rate**(it//period))
+        model.temp = T
+        Z[M] = model()[M]
+        en.append(model.grad_step(util.center(Z)))
+
+    pred = model()
+    test = np.mean((K[M] - pred[M])**2)/np.mean(K[M]**2)
+    train = np.mean((K[~M] - pred[~M])**2)/np.mean(K[~M]**2)
+
+    return train, test
+
+def kercv(model, X, train_items, 
+            initial_temp=1, decay_rate=0.8, period=2,
+            min_temp=1e-4, max_iter=None, verbose=False, **init_args):
+    """
+    Cross validation procedure for the kernel MSE
+
+    the `fold` of the CV is the fraction of the data masked
+    """
+
+    if max_iter is None:
+        max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+
+    if verbose:
+        pbar = tqdm(range(draws))
+
+    n,d = X.shape
+
+    model.initialize(X, **init_args)
+    
+    Strn = model.S[train_items]
+    Stst = model.S[~train_items]
+
+    Xtrn = X[train_items]
+    Xtst = X[test_items]
+
+    # These are censored when inferring on test set
+    Jtst = Stst.T@Stst
+    Wtst = Stst.T@Xtst
+
+    en = []
+    for it in range(max_iter):
+        T = initial_temp*(decay_rate**(it//period))
+        model.temp = T
+
+        ## Train set
+        Strn = model.EStep(Xtrn, S0=Strn)
+
+        model.StS -= Jtst # remove information from test set
+        model.StX -= Wtst
+
+        Stst = model.EStep()
+        
+
+        en.append(model.grad_step(Z))
+        Z[M] = model()[M]
+
+    pred = model()
+    test = np.mean((X[M] - pred[M])**2)/np.mean(X[M]**2)
+    train = np.mean((X[~M] - pred[~M])**2)/np.mean(X[~M]**2)
+
+    return train, test
 
 def multifit(model, X, chains=10, **neal_args):
 

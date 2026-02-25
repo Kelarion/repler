@@ -59,7 +59,7 @@ class PCA3D(object):
         self.ax.scatter(new_pcs[:,0],new_pcs[:,1],new_pcs[:,2], **scat_args)
 
 
-def pca3d(X, special_vec=None, **scat_args):
+def pca3d(X, ax=None, special_vec=None, **scat_args):
     '''
     Assume that "X" is N_feat x N_samp, "coloring" is a vector of dim N_samp
     '''
@@ -73,11 +73,12 @@ def pca3d(X, special_vec=None, **scat_args):
     U, S, _ = la.svd(X-X.mean(1)[:,None], full_matrices=False)
     pcs = X.T@U[:,:3]
 
-    ax = plt.subplot(111, projection='3d')
+    if ax is None:
+        ax = plt.subplot(111, projection='3d')
     if special_vec is None:
-        scat = ax.scatter(pcs[:,0],pcs[:,1],pcs[:,2], **scat_args)
+        scat = ax.scatter3D(pcs[:,0],pcs[:,1],pcs[:,2], **scat_args)
     else:
-        scat = ax.scatter(y_,pcs[:,0],pcs[:,1], **scat_args)
+        scat = ax.scatter3D(y_,pcs[:,0],pcs[:,1], **scat_args)
     # ax.set_xlabel('pc1')
     # ax.set_ylabel('pc2')
     # ax.set_zlabel('pc3')

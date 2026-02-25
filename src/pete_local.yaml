@@ -5,19 +5,30 @@ channels:
 dependencies:
  - numpy
  - blas[build=openblas]
- - scipy=1.10.1
+ - scipy
  - matplotlib
  - scikit-learn
  - cvxpy
+ - h5py
+ - gensim
+ - spyder
+ - numba
  - networkx
+ - pydot
  - pandas
  - numba
  - einops
  - tqdm
+ - dandi
  - pip
  - pip:
    - transformers
+   - meson-python
    - cython
+   - sympy
+   - nibabel
+   - nnsight
+   - pycocotools
    - jaxtyping
    - transformer_lens
    - torch 

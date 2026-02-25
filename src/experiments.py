@@ -16,13 +16,14 @@ import scipy.special as spc
 import scipy.linalg as la
 import scipy.special as spc
 import scipy.stats as sts
+from scipy.optimize import nnls
 from itertools import permutations
 
 if platform.system() == 'Linux':
     os.environ['MKL_THREADING_LAYER'] = 'GNU'
 from sklearn import svm, linear_model
 from sklearn.decomposition import NMF
-from sklearn.cluster import k_means, KMeans
+# from sklearn.cluster import k_means, KMeans
 
 import einops
 from jaxtyping import Float, Int
@@ -39,7 +40,7 @@ import students
 import dichotomies as dic
 import super_experiments as exp
 import grammars as gram
-import distance_factorization as df
+# import distance_factorization as df
 import df_util
 import sparse_autoencoder as spae
 import bae
@@ -50,105 +51,15 @@ import bae_util
 ################## Models for server interface ##############################
 #############################################################################
 
-@dataclass
-class BAE(exp.Model):
-
-    dim_hid: int = None
-    search: bool = True     # whether to include discrete search
-    tree_reg: float = 0
-    sparse_reg: float = 1e-2
-    beta: float = 1.0
-    pr_reg: float = 1e-2
-    max_iter: int = None
-    epochs: int = 10
-    decay_rate: float = 0.88
-    T0: float = 5
-    batch_size: int = 1
-
-    def fit(self, X, Strue):
-
-        self.metrics = {'loss':[],
-                        'nbs':[],
-                        'hamming':[],
-                        'norm_hamming': [],
-                        'cond_hamming': [],
-                        'norm_cond_hamming': [],
-                        'time':[]}
-
-        for it in range(len(X)):
-
-            K = X[it]@X[it].T
-
-            if self.dim_hid is None:
-                h = len(Strue[it].T)
-            else:
-                h = self.dim_hid*len(Strue[it].T)
-
-            if self.search:
-                mod = bae_models.BinaryAutoencoder(
-                            dim_inp=X[it].shape[1], 
-                            dim_hid=h,
-                            tree_reg=self.tree_reg, 
-                            sparse_reg=self.sparse_reg, 
-                            weight_reg=self.pr_reg,
-                            beta=self.beta
-                            )
-            else:
-                mod = bae_models.BernVAE(
-                            dim_inp=X[it].shape[1], 
-                            dim_hid=h,
-                            weight_reg=self.pr_reg,
-                            sparse_reg=self.sparse_reg,
-                            beta=self.beta
-                            )
-
-            dl = pt_util.batch_data(torch.FloatTensor(X[it]), 
-                batch_size=self.batch_size)
-
-            t0 = time()
-            en = mod.fit(dl, decay_rate=self.decay_rate, 
-                             period=self.period, 
-                             initial=self.T0,
-                             max_iter=self.max_iter,
-                             T_min=1e-6)
-            self.metrics['time'].append(time()-t0)
-
-            S = mod.hidden(torch.FloatTensor(X[it])).detach().numpy()
-            Xhat = mod(torch.FloatTensor(X[it])).detach().numpy()
-
-            ls = np.mean((Xhat - X[it])**2)
-            mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = df_util.permham(Strue[it], S, norm=True)
-            nbs = util.nbs(X[it], S)
-
-            depth = df_util.porder(Strue[it])
-            minham = df_util.minham(Strue[it], S, sym=True)
-            cham = util.group_mean(minham, depth)
-            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
-
-            self.metrics['norm_hamming'].append(np.mean(norm_ham))
-            self.metrics['hamming'].append(np.mean(mat_ham))
-            self.metrics['cond_hamming'].append(cham)
-            self.metrics['norm_cond_hamming'].append(ncham)
-            self.metrics['loss'].append(en)
-            self.metrics['nbs'].append(nbs)
 
 @dataclass
-class KBMF(exp.Model):
+class BMFModel(exp.Model):
 
-    dim_hid: int = None
-    steps: int = 1
-    decay_rate: float = 0.8
-    T0: float = 10
-    period: int = 2
-    sparse_reg: float = 0.0
-    tree_reg: float = 1e-2
-    max_iter: int = None
+    def fit(self, X, Strue, Wtrue=None):
 
-    def fit(self, X, Strue):
-
-        self.metrics = {'loss': [],
+        self.metrics = {'losses': [], # all losses (i.e. train, CV, etc.)
                         'nbs': [],
+                        'cka': [],
                         'hamming': [],
                         'norm_hamming': [],
                         'cond_hamming': [],
@@ -165,29 +76,17 @@ class KBMF(exp.Model):
             else:
                 h = int(self.dim_hid*Strue[it].shape[1]) + 1
 
-            mod = bae_models.KernelBMF(h, 
-                sparse_reg=self.sparse_reg,
-                tree_reg=self.tree_reg)
-
-            t0 = time()
-            en = mod.fit(X[it], decay_rate=self.decay_rate, 
-                                period=self.period, 
-                                initial_temp=self.T0,
-                                max_iter=self.max_iter)
-
-            self.metrics['time'].append(time()-t0)
-
-            S = mod.S
-
-            # bestS, bestpi = df_util.mindistX(X[it], S)
+            ls, S, T = self.run_model(X[it], h)
+            self.metrics['time'].append(T)
 
             nrm = np.sum(util.center(K)**2)
-            # ls = util.centered_kernel_alignment(K, bestS@np.diag(bestpi)@bestS.T)
-            # ham = len(K) - (np.abs((2*S-1).T@Strue[it]).max(0))
             cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
             mat_ham = df_util.permham(Strue[it], S)
             norm_ham = df_util.permham(Strue[it], S, norm=True)
             nbs = util.nbs(X[it], S)
+
+            Sunq = np.unique((S+S[[0]])%2, axis=1)
+            Sunq = Sunq[:,Sunq.sum(0)>0]
 
             depth = df_util.porder(Strue[it])
             minham = df_util.minham(Strue[it], S, sym=True)
@@ -198,84 +97,147 @@ class KBMF(exp.Model):
             self.metrics['hamming'].append(np.mean(mat_ham))
             self.metrics['cond_hamming'].append(cham)
             self.metrics['norm_cond_hamming'].append(ncham)
-            self.metrics['loss'].append(cka)
+            self.metrics['losses'].append(ls)
+            self.metrics['cka'].append(cka)
             self.metrics['nbs'].append(nbs)
-            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
+            self.metrics['unique_k'].append(Sunq.shape[1]/Strue[it].shape[1])
+
+@dataclass
+class BAE(BMFModel):
+
+    dim_hid: int = None
+    search: bool = True     # whether to include discrete search
+    tree_reg: float = 0
+    sparse_reg: float = 1e-2
+    beta: float = 1.0
+    pr_reg: float = 1e-2
+    max_iter: int = None
+    decay_rate: float = 0.88
+    lr: float = 1e-3
+    T0: float = 5
+    batch_size: int = 1
+    period: int = 1
+
+    def run_model(self, X, h):
+
+        if self.search:
+            mod = bae_models.BinaryAutoencoder(
+                        dim_inp=X[it].shape[1], 
+                        dim_hid=h,
+                        tree_reg=self.tree_reg, 
+                        sparse_reg=self.sparse_reg, 
+                        weight_reg=self.pr_reg,
+                        beta=self.beta
+                        )
+        else:
+            mod = bae_models.BernVAE(
+                        dim_inp=X[it].shape[1], 
+                        dim_hid=h,
+                        weight_reg=self.pr_reg,
+                        sparse_reg=self.sparse_reg,
+                        beta=self.beta
+                        )
+
+        dl = pt_util.batch_data(torch.FloatTensor(X), 
+                batch_size=self.batch_size)
+
+        t0 = time()
+        en = mod.fit(dl, decay_rate=self.decay_rate, 
+                         period=self.period, 
+                         initial_temp=self.T0,
+                         max_iter=self.max_iter,
+                         lr=self.lr,
+                         min_temp=1e-6,
+                         verbose=False,
+                         )
+        T = time()-t0
+
+        S = mod.hidden(torch.FloatTensor(X)).detach().numpy()
+
+        return en[-1], S, T
+
+@dataclass
+class KBMF(BMFModel):
+
+    dim_hid: int = None
+    steps: int = 1
+    decay_rate: float = 0.8
+    T0: float = 10
+    period: int = 2
+    sparse_reg: float = 0.0
+    tree_reg: float = 1e-2
+    max_iter: int = None
+
+    def run_model(self, X, h):
+        
+        mod = bae_models.KernelBMF(h, 
+                sparse_reg=self.sparse_reg,
+                tree_reg=self.tree_reg)     
+
+        X_nrm = (X - X.mean(0))
+        X_nrm = X_nrm / np.sqrt(np.mean(X_nrm**2))
+
+        t0 = time()
+        en = mod.fit(X_nrm, decay_rate=self.decay_rate, 
+                                period=self.period, 
+                                initial_temp=self.T0,
+                                max_iter=self.max_iter,
+                                verbose=False)
+        T = time() - t0
+
+        return en[-1], mod.S, T
 
 # @dataclass
 # class Agglom(exp.Model):
 
 #     dim_hid: float = None
-    
 
 @dataclass
-class NMF2(exp.Model):
+class NMF2(BMFModel):
 
     dim_hid: int = None
+    semi: bool = False
     l1_ratio: float = 1
     reg: float = 0
-    squish: bool = False   # whether to force into positive orthant
+    max_iter: int = 10
 
-    def fit(self, X, Strue):
+    def run_model(self, X, h):
 
-        self.metrics = {'loss':[],
-                        'nbs':[],
-                        'hamming':[],
-                        'norm_hamming': [],
-                        'cond_hamming': [],
-                        'norm_cond_hamming': [],
-                        'unique_k': [],
-                        'time':[]}
-
-        for it in range(len(X)):
-
-            if self.dim_hid is None:
-                h = len(Strue[it].T)
-            else:
-                h = int(self.dim_hid*len(Strue[it].T))
-
-            # print('Started fit')
+        t0 = time()
+        if self.semi:
+            # U,s,V = la.svd(X[it], full_matrices=False)
+            # Xpos = np.hstack([(U*(U>0))@np.diag(s), -(U*(U<0))@np.diag(s)])
+            nmf = df_util.SemiNMF(h)
+            nmf.fit(X.T, max_iter=self.max_iter)
+            Z = nmf.Z.T
+            W = nmf.W
+        else:
             nmf = NMF(h, l1_ratio=self.l1_ratio, alpha_W=self.reg)
-            # print('created NMF')
 
-            t0 = time()
-            if self.squish:
-                U,s,V = la.svd(X[it], full_matrices=False)
-                Xpos = np.hstack([(U*(U>0))@np.diag(s), -(U*(U<0))@np.diag(s)])
-            else:
-                Xpos = X[it] - X[it].min()
-                Z = nmf.fit_transform(Xpos)
-                # print('Fit NMF')
-                S = []
-                kmn = KMeans(2, n_init=1)
-                for i in range(Z.shape[1]):
-                    S.append(kmn.fit_predict(Z[:,[i]]))
-                # S.append(k_means(Z[:,[i]], 2)[1])
-                # S.append(1*(Z[:,i] > Z[:,i].mean(0)))
-            self.metrics['time'].append(time()-t0)
-            S = np.array(S).T
+            Xpos = X - X.min()
+            Z = nmf.fit_transform(Xpos)
+            W = nmf.components_.T
+            # print('Fit NMF')
+        S = df_util.binarize(Z)
+        T = time() - t0
 
-            cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
-            mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = df_util.permham(Strue[it], S, norm=True)
-            nbs = util.nbs(X[it], S)
+        ls = np.mean((X - Z@W.T)**2)/np.mean(X**2)
+        if self.semi:
+            Wbin = la.pinv(S-S.mean(0))@(X - X.mean(0))
+            b = X[it].mean(0) - (S@Wbin).mean(0)
+            bls = np.mean((X - S@Wbin - b)**2)/np.mean(X**2)
+        else:
+            bls = 0
+            Wbin = np.zeros(W.shape)
+            for i in range(X.shape[1]):
+                what, rnorm = nnls(S, X[:,i])
+                Wbin[i] = what
+                bls += rnorm/X.shape[1] 
 
-            depth = df_util.porder(Strue[it])
-            minham = df_util.minham(Strue[it], S, sym=True)
-            cham = util.group_mean(minham, depth)
-            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
-
-            self.metrics['norm_hamming'].append(np.mean(norm_ham))
-            self.metrics['hamming'].append(np.mean(mat_ham))
-            self.metrics['cond_hamming'].append(cham)
-            self.metrics['norm_cond_hamming'].append(ncham)
-            self.metrics['loss'].append(cka)
-            self.metrics['nbs'].append(nbs)
-            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
-
+        return (ls, bls), S, T
 
 @dataclass
-class SBMF(exp.Model):
+class SBMF(BMFModel):
 
     dim_hid: int = None
     ortho: bool = True
@@ -285,72 +247,43 @@ class SBMF(exp.Model):
     sparse_reg: float = 0
     tree_reg: float = 0
     pr_reg: float = 0
+    l2_reg: float = 0
     nonneg: bool = False
     max_iter: int = None
 
-    def fit(self, X, Strue):
+    def run_model(self, X, h):
 
-        self.metrics = {'loss':[],
-                        'nbs':[],
-                        'hamming':[],
-                        'norm_hamming': [],
-                        'cond_hamming': [],
-                        'norm_cond_hamming': [],
-                        'unique_k': [],
-                        'time':[]}
+        if self.ortho:
+            mod = bae_models.BiPCA(h, 
+                    sparse_reg=self.sparse_reg, 
+                    tree_reg=self.tree_reg)
+        else:
+            mod = bae_models.SemiBMF(h, 
+                    tree_reg=self.tree_reg,
+                    weight_pr_reg=self.pr_reg,
+                    weight_l2_reg=self.l2_reg,
+                    nonneg=self.nonneg)
 
-        for it in range(len(X)):
+        X_nrm = (X - X.mean(0))
+        X_nrm = X_nrm / np.sqrt(np.mean(X_nrm**2))
 
-            K = X[it]@X[it].T
+        t0 = time()
+        en = mod.fit(X, decay_rate=self.decay_rate, 
+                            period=self.period, 
+                            initial_temp=self.T0,
+                            max_iter=self.max_iter,
+                            verbose=False)
 
-            if self.dim_hid is None:
-                h = len(Strue[it].T)
-            else:
-                h = int(self.dim_hid*len(Strue[it].T))
+        T = time()-t0
+        S = mod.S
 
-            if self.ortho:
-                mod = bae_models.BiPCA(h, 
-                        sparse_reg=self.sparse_reg, 
-                        tree_reg=self.tree_reg)
-            else:
-                mod = bae_models.SemiBMF(h, 
-                        tree_reg=self.tree_reg,
-                        weight_reg=self.pr_reg,
-                        nonneg=self.nonneg)
-
-            t0 = time()
-            en = mod.fit(X[it], decay_rate=self.decay_rate, 
-                                period=self.period, 
-                                initial_temp=self.T0,
-                                max_iter=self.max_iter)
-
-            self.metrics['time'].append(time()-t0)
-
-            S = mod.S
-
-            cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
-            mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = df_util.permham(Strue[it], S, norm=True)
-            nbs = util.nbs(X[it], S)
-
-            depth = df_util.porder(Strue[it])
-            minham = df_util.minham(Strue[it], S, sym=True)
-            cham = util.group_mean(minham, depth)
-            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
-
-            self.metrics['norm_hamming'].append(np.mean(norm_ham))
-            self.metrics['hamming'].append(np.mean(mat_ham))
-            self.metrics['cond_hamming'].append(cham)
-            self.metrics['norm_cond_hamming'].append(ncham)
-            self.metrics['loss'].append(cka)
-            self.metrics['nbs'].append(nbs)
-            self.metrics['unique_k'].append(np.unique((S+S[[0]])%2, axis=1).shape[1])
+        return en[-1], S, T
 
 @dataclass
 class SAE(exp.Model):
     
-    n_hidden_ae: int
-    l1_coeff: float = 0.5
+    dim_hid: int
+    l1_coeff: float = 0.1
     tied_weights: bool = False
     neuron_resample_window: Optional[int] = None
     neuron_resample_scale: float = 0.2
@@ -361,23 +294,27 @@ class SAE(exp.Model):
     lr: float = 1e-3
     lr_scale: Callable[[int, int], float] = spae.constant_lr
 
-    def fit(self, X, Strue, Wtrue=None, verbose=False):
+    def fit(self, X, Strue=None, Wtrue=None, verbose=False):
         """
         X is shape (n_instance, n_item, dim_x)
         S is shape (n_instance, n_item, dim_latent)
         W is shape (n_instance, dim_latent, dim_x)
         """
 
-        self.metrics = {'loss':[],
-                        'mean_hamming':[],
-                        'median_hamming':[],
+        self.metrics = {'train_loss': [],
+                        'loss':[],
+                        'binloss': [],
+                        'hamming':[],
+                        'norm_hamming': [],
                         'cosine':[],
                         'time':[],
+                        'unique_k': [],
+                        'nbs':[],
                         'frac':[]}
 
         cfg = spae.AutoEncoderConfig(n_instances=len(X), 
                                 n_input_ae=len(X[0].T), 
-                                n_hidden_ae=self.n_hidden_ae,
+                                n_hidden_ae=self.dim_hid,
                                 l1_coeff=self.l1_coeff,
                                 tied_weights=self.tied_weights,
                                 neuron_resample_window=self.neuron_resample_window,
@@ -387,7 +324,7 @@ class SAE(exp.Model):
         sae = spae.SparseAutoencoder(cfg)
         sae.init_optimizer(lr=self.lr)
         
-        ptX = torch.FloatTensor(X)
+        ptX = torch.tensor(X, dtype=sae.W_enc.dtype, device=spae.device)
         dl = pt_util.batch_data(ptX.transpose(0,1), 
                                 batch_size=self.batch_size)
         
@@ -400,33 +337,55 @@ class SAE(exp.Model):
                 group['lr'] = step_lr
             
             ## Optimize
-            self.metrics['loss'].append(sae.grad_step(dl))
+            self.metrics['train_loss'].append(sae.grad_step(dl))
 
             ## Active fraction
-            Z = sae.hidden(ptX).detach().numpy()
+            Z = sae.hidden(ptX).cpu().detach().numpy()
             self.metrics['frac'].append((Z>1e-6).mean(-2))
 
         self.metrics['time'].append(time()-t0)
 
+        West = sae.W_dec.cpu().detach().numpy()
         ## Feature recovery
         if Wtrue is not None:
-            West = sae.W_dec.detach().numpy()
             Wtrue = np.array(Wtrue)
             nrmtrue = Wtrue/la.norm(Wtrue, axis=-1, keepdims=True)
             nrmest = West/la.norm(West, axis=-1, keepdims=True)
             dot = np.einsum('ijl,ikl->ijk',nrmtrue,nrmest)
-            self.metrics['cosine'].append(dot.max(-1).mean(-1))
+            self.metrics['cosine'] = dot.max(-1).mean(-1)
             
         ## Binarize the latents
-        Z = sae.hidden(torch.FloatTensor(X))
-        S = 2*(Z.detach().numpy() > 1e-8) - 1  # binarize into 'active' and not
-        
+        Z = sae.hidden(ptX).cpu().detach().numpy()
+        S = df_util.binarize(Z) # binarize into 'active' and not
+        Xhat = sae(ptX).cpu().detach().numpy()
+
         ## Assess ground truth recovery
-        ham = len(X[0]) - (np.abs(S.transpose((0,2,1))@Strue).max(1))
+        # ham = len(X[0]) - (np.abs(S.transpose((0,2,1))@Strue).max(1))
+        for it in range(len(X)):
 
-        self.metrics['mean_hamming'].append(np.mean(ham, axis=-1))
-        self.metrics['median_hamming'].append(np.median(ham, axis=-1))
+            ls = np.mean((X[it] - Xhat[it])**2)/np.mean(X[it]**2)
 
+            Wbin = la.pinv(S[it]-S[it].mean(0))@(X[it] - X[it].mean(0))
+            b = X[it].mean(0) - (S[it]@Wbin).mean(0)
+            bls = np.mean((X[it] - S[it]@Wbin - b)**2)/np.mean(X[it]**2)
+
+            nbs = util.nbs(X[it], S[it])
+
+            if Strue is not None:
+                mat_ham = df_util.permham(Strue[it], S[it])
+                norm_ham = df_util.permham(Strue[it], S[it], norm=True)
+
+            Sunq = np.unique((S[it]+S[it][[0]])%2, axis=1)
+            Sunq = Sunq[:,Sunq.sum(0)>0]
+
+            self.metrics['norm_hamming'].append(np.mean(norm_ham))
+            self.metrics['hamming'].append(np.mean(mat_ham))
+            self.metrics['unique_k'].append(Sunq.shape[1]/Strue[it].shape[1])
+            self.metrics['nbs'].append(nbs)
+            self.metrics['loss'].append(ls)
+            self.metrics['binloss'].append(bls)
+
+        return Z[it], S[it], Xhat[it]
 
 #############################################################################
 ################## Tasks for server interface ###############################
@@ -442,42 +401,18 @@ class CatTask(exp.Task):
     seed: int = 0 
     nonneg: bool = False
 
-    def latents(self):
+    def gen_latents(self):
         return NotImplementedError
 
-    def sample(self):
+    def gen_data(self, S):
 
-        np.random.seed(self.seed)
+        dim = self.ratio*S.shape[1]
 
-        Xs = []
-        Strues = []
-        for it in range(self.samps):
+        W, noise = df_util.noisyembed(S, dim, 
+                    logsnr=self.snr, orth=self.orth, 
+                    nonneg=self.nonneg, scl=1e-4)
 
-            S = self.latents()
-
-            dim = self.ratio*S.shape[1]
-
-            X = df_util.noisyembed(S, dim, 
-                snr=self.snr, orth=self.orth, 
-                nonneg=self.nonneg, scl=1e-4)
-
-            Xs.append(X)
-            Strues.append(S) 
-
-        return {'X': Xs, 'Strue': Strues}
-
-
-@dataclass
-class SparseFeatures(exp.Task):
-
-    samps: int
-    num_points: int 
-    num_feats: int
-    dim_feats: int 
-    sparsity: float = 0.1
-    spaced: bool = True
-    enforce_nz: bool = False
-    seed: int = 0
+        return S@W.T + noise, W
 
     def sample(self):
 
@@ -486,184 +421,128 @@ class SparseFeatures(exp.Task):
         Xs = []
         Strues = []
         Wtrues = []
-        for j in range(self.samps):
+        for it in range(self.samps):
 
-            ## Draw random features, sparse mask, but at least one is active
-            S = np.random.rand(self.num_points, self.num_feats)
-            M = np.random.choice([0,1], 
-                size=(self.num_points, self.num_feats),
-                p=[1-self.sparsity, self.sparsity])
-            if self.enforce_nz:
-                foo = np.eye(self.num_feats)[np.random.choice(np.arange(self.num_feats), self.num_points)]
-                M[M.sum(1)==0] = foo[M.sum(1)==0]
-            S = S*M
+            S = self.gen_latents()
 
-            if self.spaced:
-                W = util.chapultapec(self.num_feats, self.dim_feats)
-            else:
-                W = np.random.randn(self.num_feats, self.dim_feats)/np.sqrt(self.dim_feats)
-            X = S@W
+            X, W = self.gen_data(S)
 
             Xs.append(X)
-            Strues.append(S)
+            Strues.append(S) 
             Wtrues.append(W)
 
         return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
 
-@dataclass
-class SchurCategories(exp.Task):
+
+@dataclass(kw_only=True)
+class SparseFeatures(CatTask):
+
+    num_points: int 
+    num_feats: int
+    dim_feats: int 
+    sparsity: float = 0.1
+    spaced: bool = True
+    enforce_nz: bool = False
+
+    def gen_latents(self):
+
+        S = np.random.rand(self.num_points, self.num_feats)
+        M = np.random.choice([0,1], 
+            size=(self.num_points, self.num_feats),
+            p=[1-self.sparsity, self.sparsity])
+        if self.enforce_nz:
+            foo = np.eye(self.num_feats)[np.random.choice(np.arange(self.num_feats), self.num_points)]
+            M[M.sum(1)==0] = foo[M.sum(1)==0]
+        S = S*M
+
+        return S
+
+@dataclass(kw_only=True)
+class SchurCategories(CatTask):
 
     N: int
-    samps: int
-    snr: float
-    ratio: int = 1
-    orth: bool = True
-    seed: int = 0 
-    nonneg: bool = False
     p: float = 0.5
     r: int = None
 
-    def sample(self):
-
-        np.random.seed(self.seed)
+    def gen_latents(self):
 
         if self.r is None:
             r = int(np.sqrt(2*self.N))
         else:
             r = self.r 
 
-        Xs = []
-        Strues = []
-        for it in range(self.samps):
-
+        S = df_util.schurcats(self.N, self.p, r)
+        it = 0
+        while len(S.T) < r:
             S = df_util.schurcats(self.N, self.p, r)
-            it = 0
-            while len(S.T) < r:
-                S = df_util.schurcats(self.N, self.p, r)
-                it += 1
-                if it > 100:
-                    break
-            S = (1+S)//2
+            it += 1
+            if it > 100:
+                break
 
-            dim = int(self.ratio*S.shape[1])
+        return S
 
-            X = df_util.noisyembed(S, dim, 
-                logsnr=self.snr, orth=self.orth, 
-                nonneg=self.nonneg, scl=1e-4)
-
-            Xs.append(X)
-            Strues.append(S) 
-
-        return {'X': Xs, 'Strue': Strues}
-
-
-@dataclass
-class HierarchicalCategories(exp.Task):
+@dataclass(kw_only=True)
+class HierarchicalCategories(CatTask):
 
     N: int
     bmin: int 
     bmax: int 
-    samps: int
-    snr: float
-    ratio: int = 1
-    orth: bool = True
-    seed: int = 0 
-    nonneg: bool = False
 
-    def sample(self):
+    def gen_latents(self):
 
-        np.random.seed(self.seed)
-
-        Xs = []
-        Strues = []
-        for it in range(self.samps):
-
-            S = df_util.randtree_feats(self.N, self.bmin, self.bmax)
-
-            dim = int(self.ratio*S.shape[1])
-
-            X = df_util.noisyembed(S, dim, 
-                logsnr=self.snr, orth=self.orth, 
-                nonneg=self.nonneg, scl=1e-4)
-
-            Xs.append(X)
-            Strues.append(S) 
-
-        return {'X': Xs, 'Strue': Strues}
+        return df_util.randtree_feats(self.N, self.bmin, self.bmax) 
 
 
-@dataclass
-class CubeCategories(exp.Task):
+@dataclass(kw_only=True)
+class CubeCategories(CatTask):
 
-    samps: int
     bits: int 
-    snr: float
-    seed: int = 0
-    ratio: int = 1
-    orth: bool = True
     perturb: bool = False
 
-    def sample(self):
+    def gen_latents(self):
 
-        np.random.seed(self.seed)
+        return util.F2(bits)
 
-        N = 2**self.bits
 
-        S = util.F2(self.bits)
-        if self.perturb:
-            S = np.hstack([S, np.eye(2**self.bits)])
-
-        dim = int(self.ratio*S.shape[1])
-
-        Xs = []
-        Strue = []
-        for it in range(self.samps):
-
-            Xs.append(df_util.noisyembed(S, dim, self.snr, self.orth, scl=1e-3))
-            Strue.append(S)
-
-        return {'X': Xs, 'Strue': Strue}
-
-@dataclass
-class GridCategories(exp.Task):
+@dataclass(kw_only=True)
+class GridCategories(CatTask):
 
     bits: int 
     values: int
-    samps: int
-    snr: float
-    ratio: int = 1
-    orth: bool = True
-    seed: int = 0 
-    nonneg: bool = False
     isometric: bool = True
 
-    def sample(self):
+    def gen_latents(self):
 
-        np.random.seed(self.seed)
+        return df_util.gridcats(self.values, self.bits)
 
-        N = self.values**self.bits
+    def gen_data(self, S):
 
-        S = df_util.gridcats(self.values, self.bits)
         if self.isometric:
-            Srep = df_util.gridcats(self.values, self.bits)
+            Srep = S
         else:
             Srep = df_util.grid_feats(self.values, self.bits)
 
         dim = int(self.ratio*Srep.shape[1])
 
-        Xs = []
-        Strue = []
-        for it in range(self.samps):
+        W, noise = df_util.noisyembed(Srep, dim, 
+                                    logsnr=self.snr, orth=self.orth, 
+                                    nonneg=self.nonneg, scl=1e-4)
 
-            X = df_util.noisyembed(Srep, dim, 
-                logsnr=self.snr, orth=self.orth, 
-                nonneg=self.nonneg, scl=1e-4)
+        return Srep@W.T + noise, W
 
-            Xs.append(X)
-            Strue.append(S)
 
-        return {'X': Xs, 'Strue': Strue}
+# @dataclass(kw_only=True)
+# class HybridCategories(CatTask):
 
+#     N: int
+#     super_struct: CatTask 
+#     sub_struct: CatTask
+#     ratio: float = 0.5
+
+#     def gen_latents(self):
+
+#         # generate group categories
+#         Sgrp = self.super_struct.gen_latents()
 
 
 ######################################################################

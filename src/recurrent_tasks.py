@@ -1,8 +1,8 @@
-CODE_DIR = '/home/matteo/Documents/github/repler/src/'
+# CODE_DIR = '/home/matteo/Documents/github/repler/src/'
 
 import os, sys
 import pickle
-sys.path.append(CODE_DIR)
+# sys.path.append(CODE_DIR)
 
 import torch
 import torchvision
@@ -19,7 +19,6 @@ import students
 import assistants
 import util
 import grammars as gram
-
 
 class ContextDependent(object):
     def __init__(self, *Ys, min_length=None, max_length=None, ctx_per_trial=1):

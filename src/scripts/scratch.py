@@ -45,6 +45,42 @@ import bae_search
 import plotting as tpl
 
 #%%
+
+n_items = 4
+n_rules = 5 
+
+n_combo = n_items*n_rules
+X = np.eye(n_combo) # conjunctive representation
+
+## Factorized representation (label space)
+I = np.eye(n_items)
+R = np.eye(n_rules)
+
+## combinations 
+i, r = np.where(np.ones((n_items, n_rules)))
+
+## compute similarity of each combination in item/rule space
+di = I[i]@I[i].T
+dr = R[r]@R[r].T
+
+d = 2 - (di + dr)
+
+## generate all allowed pairs (i.e. adjacent points in label space)
+x1, x2 = np.where(d==1)
+n_pairs = len(x1)
+
+## generate quadruplets (i.e. squares in label space)
+squares = (d[x1][:,x1] == 1)*(d[x2][:,x2] == 1)*(d[x2][:,x1]==2)*(d[x1][:,x2]==2)
+p1,p2 = np.where(squares)
+
+## trial labels
+trials = np.stack([x1[p1], x2[p1], x1[p2], x2[p2]]).T
+
+## Split into 
+# train = 
+
+
+#%%
 # from sparse_factorization import *
 from factorization import *
 
@@ -74,38 +110,52 @@ mod2.initialize(X, S0=Sest)
 
 import search
 
-beta = 1e-2
-# beta = 0
+# beta = 1e-2
+beta = 0
 
 Strue = df_util.randtree_feats(2**6, 2, 4)
 S0 = (Strue + np.random.choice([0,1], p=[0.99,0.01], size=Strue.shape))%2
 # S0 = 1*Strue
+S0 = (S0 + (S0.mean(0)>0.5))%2
 
-# sign = np.ones(len(Strue.T))
-sign = np.random.choice([-1,1], size=len(S0.T))
+sign = np.ones(len(Strue.T))
+# sign = np.random.choice([-1,1], size=len(S0.T))
 Sflip = (S0+(sign<0))%2 
 
 S_fl = sprs.csr_array(Sflip)
 X_ = util.pca_reduce(Strue.T, thrs=1)
-X = df_util.noisyembed(X_, 2*X_.shape[1], 30, nonneg=False)
-X = X-X.mean(0)
+# X = df_util.noisyembed(X_, 2*X_.shape[1], 30, nonneg=False)
+# X = X-X.mean(0)
+X = X_ - X_.mean(0)
 
 n,m = Strue.shape
 
 S = search.BiMat(S_fl.indices, S_fl.indptr, m)
-sampler = search.KernelSampler(Sflip.T@Sflip/n, Sflip.T@X/n, 1/n)
+# S = S_fl.todense().astype(int)
+J = S.cov() / n
+# J = S.T@S / n
+W = S.rdot(X.T).T / n
+# W = S.T@X / n
+# sampler = search.KernelSampler(Sflip.T@Sflip/n, Sflip.T@X/n, 1/n)
 
-C1 = sampler.sample(S, X, 1, 1e-7, 0, beta)
+# t0 = time()
+# C1 = sampler.sample(S, X, 1, 1e-7, 0, beta)
+# print(time()-t0)
+t0 = time()
+search.kbmf(S, X, J, W, 1, 1e-7, 0, beta)
+print(time()-t0)
+t0 = time()
 C2 = bae_search.kerbmf(X, 1*S0, 
                        StX=S0.T@X, StS=S0.T@S0, scl=1, N=n, 
                        beta=beta, alpha=0, temp=1e-7)
+print(time() - t0)
 # C3 = bae_search.oldkerbmf(X, Ssp.todense(), 
 #                        StX=S.T@X, StS=S.T@S, scl=mod2.scl, N=mod2.n, 
 #                        beta=mod2.tree_reg, temp=mod2.temp)
 # C2 = mod2.EStep()
-# plt.scatter(C1.flatten(), C2.flatten(), c=util.const(np.arange(n), 1, m).flatten())
-plt.scatter(C1.flatten(), C2.flatten(), c=np.arange(np.prod(C1.shape)).flatten())
-plt.plot(plt.xlim(), plt.xlim())
+# plt.scatter(C1.flatten(), C2.flatten(), c=util.const(np.arange(m), 0, n).flatten())
+# plt.scatter(C1.flatten(), C2.flatten(), c=np.arange(np.prod(C1.shape)).flatten())
+# plt.plot(plt.xlim(), plt.xlim())
 
 #%%
 from spbae import KernelSampler, BiMat

@@ -36,8 +36,8 @@ from networkx.drawing.nx_pydot import graphviz_layout
 # import umap
 from cycler import cycler
 
-from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
-import cvxpy as cvx
+# from pypoman import compute_polytope_vertices, compute_polytope_halfspaces
+# import cvxpy as cvx
 # import polytope as pc
 
 # my code

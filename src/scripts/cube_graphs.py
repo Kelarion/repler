@@ -34,7 +34,7 @@ from matplotlib import cm
 import networkx as nx
 from networkx.drawing.nx_pydot import graphviz_layout
 
-import cvxpy as cvx
+# import cvxpy as cvx
 
 # my code
 import util

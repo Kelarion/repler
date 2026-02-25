@@ -110,13 +110,15 @@ class PTModel(Model):
     opt_args: dict = field(default_factory=dict)
     batch_size: int = 64
     epochs: int = 100
+    initialized: bool = False
 
-    def fit(self, initialized=False, **data):
+    def fit(self, **data):
         
-        if not initialized:
+        if not self.initialized:
             self.metrics = {'train_loss': []}
             self.init_metrics()
             self.net = self.init_network(**data)
+            self.initialized = True
             
         self.net.init_optimizer(**self.opt_args)
 

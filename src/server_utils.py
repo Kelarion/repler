@@ -611,7 +611,7 @@ def send_to_server(task_args, mod_args, run_remote=True, verbose=False):
             script_file.write(sbatch_text)
         tmplt_file.close()
 
-        ####### Run job array
+        ####### Run job array 
         ###########################################
 
         cmd = f"ssh ma3811@ginsburg.rcs.columbia.edu 'sbatch -s' < {SAVE_DIR+'server_cache/job_script.sh'}"
@@ -694,7 +694,7 @@ def pad_to_dense(M):
         
         Z.append(
             np.pad( 
-                row, [(0,s) for s in buff[enu]], mode='constant', constant_values=np.nan 
+                1.0*row, [(0,s) for s in buff[enu]], mode='constant', constant_values=np.nan 
                 )
             )
         
