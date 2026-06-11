@@ -302,9 +302,18 @@ for d in deez:
 
 fils = os.listdir(SAVE_DIR+'/IBL_sessions_lorenzo/')
 
+align_to = 'time_from_onset'
+# align_to = 'time_from_response'
+# align_to = 'time_from_firstmove'
+
+bins = 10
+t0 = 0
+dt = 0.1
+
 neur = {}
 meta = {}
 
+tossed = []
 pids = []
 for fil in fils: 
     
@@ -323,18 +332,32 @@ for fil in fils:
                 'reward':[],
                 'choice':[],
                 'position':[],
-                'contrast':[]}
+                'contrast':[],
+                'response_time':[],
+                }
     
     for dat in data:
-        mask = (dat['time_from_onset'] >= 0)*(dat['time_from_onset'] <= 1)
-        mask *= (dat['response_time'] >= 0.1)*(dat['response_time'] <= 0.8)
+        
+        trl_time = dat[align_to]
+        
+        # mask = (dat[align_to] >= t0)*(dat[align_to] <= t0 + dt)
+        mask = (dat['response_time'] >= 0.1)*(dat['response_time'] <= 0.8)
+        # mask *= (dat['context'] == 0.5)
+        mask *= (dat['context'] < 0.5) | (dat['context'] > 0.5)
         trial = dat['trial'][mask]
         
-        X = util.group_mean(dat['raster'][mask], trial, axis=0)
-        mavg = np.apply_along_axis(np.convolve, 0, X, np.ones(100)/100)
-        deez = mavg[100:-100].min(0) > 0
+        X = []
+        for i in range(bins):
+            times = (trl_time >= t0 + i*dt)*(trl_time <= t0 + (i+1)*dt)
+            X.append(util.group_mean(dat['raster'][mask*times], dat['trial'][mask*times], axis=0))
+        X = np.stack(X).swapaxes(0, 1)
+        # mavg = np.apply_along_axis(np.convolve, 0, X, np.ones(50)/50)
+        # deez = mavg[50:-50].min(0) > 0
         
-        Xsess.append(X[:,deez])
+        # Xsess.append(X[:,deez])
+        # tossed.append(1 - deez.mean())
+        
+        Xsess.append(X)
         
         pids.append(dat['PID'])
         
@@ -346,121 +369,167 @@ for fil in fils:
 
 areas = neur.keys()
 
-#%% Pseudopopulation
-
-all_neur = {}
-which_area = {}
-
-for area, X in neur.items():
-    
-    
 
 #%%
 
-ntrls = []
-nneur = []
-for this_area in neur.values():
-    ntrls.append( [len(foo) for foo in this_area] )
-    nneur.append( [len(foo.T) for foo in this_area] )
-
-ntrls = np.array(ntrls)
-nneur = np.array(nneur)
-
-## how many trials to sample from each condition?
-n_samp = np.round(ntrls.mean(0)).astype(int)
-# n_samp = ntrls.min(0)
-
-pp = {}
-for this_sess in all_neurs.values():
-    for i, (lab, rep) in enumerate(this_sess.items()):
-        
-        ix = np.random.choice(range(len(rep)), n_samp[i])
-        X_cond = rep[ix]
-        
-        if lab in pp.keys():
-            pp[lab] = np.hstack([pp[lab], X_cond])
-        else:
-            pp[lab] = X_cond
-
-
-#%%
-
-this_area = 'MOs'
-this_sess = 0
-
-Xtrn = {}
-Xtst = {}
-Ztrn = {}
-Ztst = {}
+neurons = []
+conditions = []
+area = []
+others = []
+session = []
 
 excl_keys = ['whisking_left', 'whisking_right', 'context','contrast','position']
+# excl_keys = ['whisking_left', 'whisking_right', 'choice','contrast','position']
 zkeys = []
-for this_sess in range(len(neur[this_area])):
+
+for this_area, these_sess in neur.items():
     
-    ## Lorenzo's processing
-    wl = meta[this_area]['whisking_left'][this_sess]
-    wr = meta[this_area]['whisking_right'][this_sess]
-    ctx = meta[this_area]['context'][this_sess]
-    ctr = meta[this_area]['contrast'][this_sess]
-    pos = meta[this_area]['position'][this_sess]
-    
-    Y = np.stack([1*((wl+wr) > np.median(wl+wr)),
-                  1*(ctx>0.5),
-                  1*(pos>0),
-                  1*(ctr>0.13)]).T
-    Z = []
-    for key in meta[this_area].keys():
-        if key not in excl_keys:
-            Z.append(meta[this_area][key][this_sess])
-            if key not in zkeys:
-                zkeys.append(key)
-    Z = np.array(Z).T
-    
-    Yunq, cond, cnt = np.unique(Y, axis=0, return_inverse=True, return_counts=True)
-    
-    excl = (ctx==0.5)*(ctr<0.06)
-    
-    if (len(Yunq) < 16) or np.any(cnt < 5):
-        continue
-    
-    # xtrn = []
-    # xtst = []
-    
-    for thisy, cnd in zip(Yunq, np.unique(cond)):
+    for this_sess, X  in enumerate(these_sess):
         
-        deez = (cond == cnd)*(~excl)
+        ## Lorenzo's processing
+        wl = meta[this_area]['whisking_left'][this_sess]
+        wr = meta[this_area]['whisking_right'][this_sess]
+        ctx = meta[this_area]['context'][this_sess]
+        ctr = meta[this_area]['contrast'][this_sess]
+        pos = meta[this_area]['position'][this_sess]
+        cho = meta[this_area]['choice'][this_sess]
         
-        T = np.sum(deez)
-        idx = np.isin(range(T),np.random.choice(range(T), T//2, replace=False))
+        Y = np.stack([1*((wl+wr) > np.median(wl+wr)),
+                      1*(ctx>0.5),
+                      1*(pos>0),
+                      1*(ctr>0.13),
+                      ]).T
         
-        # xtrn.append(X[this_area][this_sess][deez][idx].mean(0))
-        # xtst.append(X[this_area][this_sess][deez][~idx].mean(0))
+        # Y = np.stack([1*((wl+wr) > np.median(wl+wr)),
+        #               1*(cho>0),
+        #               1*(pos>0),
+        #               1*(ctr>0.13),
+        #               ]).T
         
-        if tuple(thisy) not in Xtrn.keys():
-            Xtrn[tuple(thisy)] = []
-            Xtst[tuple(thisy)] = []
-            Ztrn[tuple(thisy)] = []
-            Ztst[tuple(thisy)] = []
+        Z = []
+        for key in meta[this_area].keys():
+            if key not in excl_keys:
+                Z.append(meta[this_area][key][this_sess])
+                if key not in zkeys:
+                    zkeys.append(key)
+        Z = np.array(Z).T
+        
+        Yunq, cond, cnt = np.unique(Y, axis=0, return_inverse=True, return_counts=True)
+        
+        excl = (ctx==0.5)*(ctr<0.06)
+        # excl = (ctr<0.06)
+        
+        if (len(Yunq) < 16) or np.any(cnt < 5) or X.shape[1] < 1:
+            continue
+        
+        for thisy, cnd in zip(Yunq, np.unique(cond)):
             
-        Xtrn[tuple(thisy)].append(neur[this_area][this_sess][deez][idx].mean(0))
-        Xtst[tuple(thisy)].append(neur[this_area][this_sess][deez][~idx].mean(0))
-        Ztrn[tuple(thisy)].append(Z[deez][idx].mean(0))
-        Ztst[tuple(thisy)].append(Z[deez][~idx].mean(0))
+            deez = (cond == cnd)*(~excl)
+            
+            neurons.append(X[deez])
+            conditions.append(thisy)
+            area.append(this_area)
+            others.append(Z[deez])
+            session.append(this_sess)
+                
+neurons = np.array(neurons, dtype=object)
+conditions = np.array(conditions)
+session = np.array(session)
+area = np.array(area)
+others = np.array(others, dtype=object)
+
+#%%
+
+# pp = util.ppop([np.median(x,axis=0, keepdims=True) for x in neurons], 
+#                conditions, 
+#                session=session,
+#                subsets=area, 
+#                independent=True, 
+#                K=1,
+#                )
+
+pp = util.ppop(neurons, 
+               conditions, 
+               session=session,
+               subsets=area, 
+               independent=True, 
+               K=5,
+               )
+
+
+#%%
+
+## check: ORBvl, RSP, FRP, AId/p/v, PL, VISa
+
+# X_ = pp['data'][...,pp['neur_labels']=='AId']
+X_ = pp['data'][...,pp['neur_labels']=='MOs'].squeeze()
+# X_ = pp['data'][...,pp['neur_labels']=='MOp']
+# X_ = pp['data'][:,pp['neur_labels']=='ACAd']
+# X_ = pp['data'][:,pp['neur_labels']=='PL']
+# X_ = pp['data'][...,pp['neur_labels']=='RSPd']
+
+# kays = [2,3,4,5,10,15,20]
+kays = [2,3,4,5,6,7,8,9,10,11,12,13,14,15]
+# kays = [10]
+
+args = {
+        'nonneg':True,
+        # 'nonneg': False,
+        'weight_pr_reg': 1e-1,
+        # 'weight_pr_reg': 0,
+        'tree_reg': 1e-2,
+        'sparse_reg': 1,
+        # 'tree_reg': 0,
+        # 'weight_l1_reg': 1e-3,
+        # 'weight_l2_reg': 1e-2,
+        # 'fit_intercept': True,
+        # 'fit_intercept': False,
+        }
+
+# args = {
+#         'nonneg':True,
+#         # 'nonneg': False,
+#         'weight_pr_reg': 1e-1,
+#         # 'weight_pr_reg': 0,
+#         'tree_reg': 1e-2,
+#         'sparse_reg': 1e-2,
+#         # 'tree_reg': 0,
+#         # 'weight_l1_reg': 1e-3,
+#         'weight_l1_reg': 0,
+#         # 'weight_l2_reg': 1e-2,
+#         # 'fit_intercept': True,
+#         # 'fit_intercept': False,
+#         'slab_prior': 1,
+#         }
+
+opt_args = {'initial_temp': 10,
+            'decay_rate': 0.9,
+            'period': 10,
+            # 'hot_start': True,
+            'hot_start': False,
+            # 'lr': 1e-1,
+            'min_temp': 1,
+            }
+
+n_run = 20
+
+trn = np.zeros(len(kays))
+tst = np.zeros(len(kays))
+for _ in range(n_run):
+    for i,k in tqdm(enumerate(kays)):
+         
+        mod = bae_models.SemiBMF(k,**args)
+        # mod = bae_models.SpikeNMF(k,**args)
         
-    # Xtrn.append(xtrn)
-    # Xtst.append(xtst)
-    
-# Xtrn = np.hstack(Xtrn)
-# Xtst = np.hstack(Xtst)
-for k in Xtrn.keys():
-    Xtrn[k] = np.concatenate(Xtrn[k])
-    Xtst[k] = np.concatenate(Xtst[k])
-    
-for k in Xtrn.keys():
-    Ztrn[k] = np.mean(Ztrn[k], axis=0)
-    Ztst[k] = np.mean(Ztst[k], axis=0)
-# Ztrn = np.hstack(Ztrn)
-# Ztst = np.hstack(Ztst)
+        # wa,ba = bae_util.impcv(mod, X, verbose=True, **opt_args)
+        # wa,ba = bae_util.impcv(mod, Xpt[singles], verbose=False, **opt_args)
+        wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, n_sample=100, **opt_args)
+        
+        trn[i] += wa / n_run
+        tst[i] += ba / n_run
+
+plt.plot(kays, trn)
+plt.plot(kays, tst, '--')
 
 
 #%%
@@ -468,3 +537,5 @@ for k in Xtrn.keys():
 mod = bae_models.BiPCA(12, center=False, tree_reg=0.1)
 neal = bae_util.Neal(decay_rate=0.98)
 en = neal.fit(mod, Xtrn)
+
+

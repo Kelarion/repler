@@ -1,129 +1,133 @@
+CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/jeff/'
+LOAD_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/swap_errors/data/pickles/'
 
-bits = 4
-beta = 1e-3
+import os, sys, re
+import pickle as pkl
+from time import time
+import math
+import matplotlib.pyplot as plt
 
-# S = util.F2(bits)
-Strue = df_util.btree_feats(bits).T
-W = sts.ortho_group.rvs(Strue.shape[1])
-X = (Strue-Strue.mean(0))@W.T
-b = -Strue.mean(0)@W.T
-
-S = (Strue + np.random.choice([0,1], Strue.shape, p=[0.9,0.1]))%2
-N = len(S)
-
-StS = S.T@S
-StX = S.T@X
-scl = 1
-temp = 1e-6
-steps = 1
-
-n, m = S.shape
+sys.path.append(CODE_DIR)
+sys.path.append(CODE_DIR + 'swap_errors')
 
 
-St1 = 1*np.diag(StS)
+#%%
 
-en = np.zeros((3,n,m))
-# for i in np.random.permutation(np.arange(n)):
-for i in np.arange(n):
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 
-    ## Pick current item
-    t = (N-1)/N
+def _norm_periodic(x):
+    return (x + np.pi) % (2 * np.pi) - np.pi
 
-    x = X[i]
-    s = S[i]
+def _bin_kernel(D, c_row, c_col, row_mask, col_mask, bins):
+    d = D[row_mask][:, col_mask].ravel()
+    dc = _norm_periodic(c_col[col_mask][None, :] - c_row[row_mask][:, None]).ravel()
+    valid = ~np.isnan(d)
+    num, _ = np.histogram(dc[valid], bins, weights=d[valid])
+    cnt, _ = np.histogram(dc[valid], bins)
+    return np.where(cnt > 0, num / cnt, np.nan)
 
-    ## Subtract current item
-    St1 -= s
-    StS -= np.outer(s,s)
-    StX -= np.outer(s,x)
-
-    # Compute the rank-one terms
-    s_ = St1/(N-1)
-    u = 2*s_ - 1
-
-    s_sc_ = s_*(1-s_)
-
-    ## Organize states
-    xtx = np.sum(x**2)
-    Sk = (np.dot(StX, x) + s_*xtx)/t
-    k0 = xtx/(t**2)
-
-    if beta > 1e-6:
-        ## Regularization (more verbose because of numba reasons)
-        D1 = StS
-        D2 = St1[None,:] - StS
-        D3 = St1[:,None] - StS
-        D4 = (N-1) - St1[None,:] - St1[:,None] + StS
-
-        best1 = 1*(D1<D2)*(D1<D3)*(D1<D4)
-        best2 = 1*(D2<D1)*(D2<D3)*(D2<D4)
-        best3 = 1*(D3<D2)*(D3<D1)*(D3<D4)
-        best4 = 1*(D4<D2)*(D4<D3)*(D4<D1)
-
-        R = (best1 - best2 - best3 + best4)*1.0
-        r = (best2.sum(0) - best4.sum(0))*1.0
-                        
-
-    ## Constants
-    # sx = Sx.sum()
-    sx = np.dot(s_, s - s_)
-    ux = 2*sx - s.sum() + s_.sum()
+def compute_kernel_tc(spks, uc, lc, cues, ps, rc=None, p_thr=0.3, n_bins=5, t_ref=None):
+    """
+    spks : (trials, dims, time_points)
+    uc, lc, cues, rc : (trials,)
+    ps   : (trials, n_cats)  — col 0=correct, col 2=guess
+    Returns k_c, k_g, k_rc — each (n_bins, n_time_points) — and bin_cents
+    """
+    bins = np.linspace(-np.pi, np.pi, n_bins + 1) 
+    bin_cents = (bins[:-1] + bins[1:]) / 2
+    n_times = spks.shape[2]
+    k_c, k_g, k_rc = (np.zeros((n_bins, n_times)) for _ in range(3))
+    row_corr = ps[:, 0] > p_thr
     
-    # Form the threshold 
-    h = t*((scl**2)*s_sc_.sum() - scl*k0)*u + 2*scl*Sk 
+    if t_ref is not None:
+        r_ref = spks[...,t_ref]
     
-    # Need to subtract the diagonal and add it back in
-    Jii = 2*(N-1)*s_sc_ + t*u**2
+    for t in range(n_times):
+        r = StandardScaler().fit_transform(spks[:, :, t])
+        if t_ref is None:
+            r_ref = r
+        else:
+            r_ref = StandardScaler().fit_transform(spks[:, :, t_ref])
+        D = r_ref @ r.T
+        np.fill_diagonal(D, np.nan)
 
-    ## Hopfield update of s
-    news = 1*s
-    for step in range(steps):
-        # for j in np.random.permutation(np.arange(m)):
-        for j in range(m): # concept
+        for k_arr, col_ind, c_col_override, same_cue in [
+            (k_c,  0, None, False),
+            (k_g,  2, None, False),
+            (k_rc, 2, rc,   True ),
+        ]:
+            halves = []
+            for cue_val, color in ((1, uc), (0, lc)):
+                col_mask = (ps[:, col_ind] > p_thr) & (cues == cue_val)
+                row_mask = row_corr & (cues == cue_val) if same_cue else row_corr
+                c_col = color if c_col_override is None else c_col_override
+                halves.append(_bin_kernel(D, color, c_col, row_mask, col_mask, bins))
+            k_arr[:, t] = np.nanmean(halves, axis=0)
 
-            en[0,i,j] = 2*Sk[j] - t*k0*u[j]
-            # rows = ridx[rptr[j]:rptr[j+1]]
+    return k_c, k_g, k_rc, bin_cents
 
-            # Compute sparse dot product
-            dot = 2*np.dot(StS[j], news - s_)
-            dot -= 2*(N-1)*s_[j]*sx
-            dot += t*u[j]*ux
-            dot -= Jii[j]*news[j]
-            if beta > 1e-6:
-                dot += beta*(np.dot(R[j], news) + r[j])
-                en[1,i,j] = np.dot(R[j], news) + r[j]
+#%%
 
-            thisS = 1*S
-            thisS[i,j] = 1
-            en[2,i,j] += df_util.treecorr(thisS).sum()/2
-            thisS[i,j] = 0 
-            en[2,i,j] -= df_util.treecorr(thisS).sum()/2
+task = "retro"
 
-            ## Compute currents
-            curr = (h[j] - (scl**2)*Jii[j]/2 - (scl**2)*dot)/temp
+# epoch = 'pre-cue'
+epoch = "post-cue"
+# epoch = "color"
+# epoch = "wheel"
 
-            # en[2,i,j] = curr
+monkey = "elmo"
+# monkey = "waldorf"
 
-            ## Apply sigmoid (overflow robust)
-            if curr < -100:
-                prob = 0.0
-            elif curr > 100:
-                prob = 1.0
-            else:
-                prob = 1.0 / (1.0 + np.exp(-curr))
-            
-            ## Update outputs
-            sj = 1*(np.random.rand() < prob)
-            ds = sj - news[j]
-            news[j] = sj
-            
-            ## Update dot products
-            if np.abs(ds) > 0:
-                sx += ds*s_[j]
-                ux += ds*u[j]
+n_bins = 10
 
-    ## Update 
-    S[i] = news
-    St1 += news
-    StS += np.outer(news, news)
-    StX += np.outer(news, x)
+# t_ref = 18
+t_ref = 12
+# t_ref = None
+
+monk2sess = {"elmo": list(range(13)),
+             "waldorf": list(range(13,23)),
+             }
+
+kerns = []
+for i,sess in enumerate(monk2sess[monkey]):
+    
+    ## get cues first
+    fname = f"lmtc_{task}_all_post-cue-presentation_{sess}.pkl"
+    dat = pkl.load(open(LOAD_DIR + fname, 'rb'))
+    cues = dat['cues']
+    
+    ## Actual data 
+    fname = f"lmtc_{task}_all_{epoch}-presentation_{sess}.pkl"
+    dat = pkl.load(open(LOAD_DIR + fname, 'rb'))
+    
+    k_c, k_g, k_rc, bs = compute_kernel_tc(dat['spks'], 
+                                           dat['uc'], 
+                                           dat['lc'], 
+                                           cues, 
+                                           dat['ps'], 
+                                           rc=dat['rc'],
+                                           n_bins=n_bins,
+                                           t_ref=t_ref,
+                                           )
+    
+    ind0 = np.argmin(np.abs(bs))
+    ind1 = np.argmax(np.abs(bs))
+    
+    kerns.append( np.stack([k_c[ind0] - k_c[ind1], 
+                             k_g[ind0] - k_g[ind1], 
+                             k_rc[ind0] - k_rc[ind1]]))
+    
+    
+#%%
+
+k = np.mean(kerns, axis=0)
+
+cols = ['r', 'b', 'g']
+
+for i in range(3):
+    # plt.plot(dat['other']['xs'], k[i], color=cols[i])
+    plt.plot(dat['other']['xs'], k[i], '--', color=cols[i])
+    # plt.plot(dat['other']['xs'], k[i], '-.', color=cols[i])
+
+

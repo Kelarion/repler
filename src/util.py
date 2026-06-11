@@ -687,15 +687,9 @@ def bures(X, Y):
 
 def nbs(X, Y):
 
-    n,m = X.shape
-    n,l = Y.shape
-
     X_ = X - X.mean(0)
     Y_ = Y - Y.mean(0)
-    # if (n**2 > m*l) or (m != l):
     U,s,V = la.svd(X_.T@Y_, full_matrices=False)
-    # else:
-        # U,s,V = la.svd(X_@Y_.T, full_matrices=False)
 
     return np.sum(s)/np.sqrt(np.sum(X_**2)*np.sum(Y_**2))
 
@@ -1317,6 +1311,124 @@ def depth(graph):
             depths[neighbor] = max(depths[neighbor], depths[node]+1)
 
     return depths
+
+
+def generate_parametric_no_chain_tree(N, rho=1, alpha=1.0):
+    """
+    N: Number of nodes
+    rho: (0, 1] Control for number of internal nodes M.
+    alpha: (>0) Control for branching concentration. 
+           High alpha = uniform branching; Low alpha = hub-heavy.
+           
+    Modified from Gemini
+    """
+    if N < 3:
+        # A tree with N < 3 cannot avoid degree 1 unless it's just a single node.
+        return nx.path_graph(N, create_using=nx.DiGraph())
+
+    # 1. Determine M (Number of internal nodes)
+    # We use a Binomial draw so there is still some variance, centered on rho
+    M_max = (N - 1) // 2
+    M = np.random.binomial(M_max - 1, rho) + 1 # Ensure at least 1 hub
+    
+    # 2. Determine Degrees using Dirichlet-Multinomial
+    # Surplus edges beyond the minimum 2 per internal node
+    surplus_count = (N - 1) - (2 * M)
+    
+    # Generate weights for the M nodes
+    weights = np.random.dirichlet([alpha] * M)
+    
+    # Distribute surplus edges based on weights
+    surplus_dist = np.random.multinomial(surplus_count, weights)
+    internal_degrees = 2 + surplus_dist
+    
+    # 3. Assemble the full degree sequence
+    degrees = np.zeros(N, dtype=int)
+    degrees[:M] = internal_degrees
+    np.random.shuffle(degrees)
+    
+    # 4. Standard Cyclic Lemma + BFS Construction
+    steps = degrees - 1
+    prefix_sums = np.cumsum(steps)
+    shift = (np.argmin(prefix_sums) + 1) % N
+    valid_degrees = np.roll(degrees, -shift)
+    
+    nodes = np.random.permutation(N)
+    G = nx.DiGraph()
+    G.add_nodes_from(nodes)
+    
+    queue = [nodes[0]]
+    child_idx = 1
+    for d in valid_degrees:
+        if not queue: break
+        parent = queue.pop(0)
+        for _ in range(d):
+            if child_idx < N:
+                child = nodes[child_idx]
+                G.add_edge(parent, child)
+                queue.append(child)
+                child_idx += 1
+                
+    return G
+
+def generate_signed_block_matrix(G, tau=0, min_size=2):
+    """
+    Converts a directed tree G into the adjacency matrix of a signed graph.
+    - Each node i in G becomes a clique of size max(1, out_degree(i)).
+    - Internal clique edges are -1.
+    - Directed edges (i -> j) become +1 edges from one node in C_i to all in C_j.
+    
+    Modified from Gemini
+    """
+    # 1. Calculate clique sizes and start indices
+    nodes = list(G.nodes())
+    out_degrees = {u: G.out_degree(u) for u in nodes}
+    
+    clique_sizes = {u: max(min_size, out_degrees[u]+np.random.poisson(tau)) for u in nodes}
+    
+    # Map tree node ID to the start index in the adjacency matrix
+    start_indices = {}
+    current_idx = 0
+    for u in nodes:
+        start_indices[u] = current_idx
+        current_idx += clique_sizes[u]
+    
+    N_total = current_idx
+    adj = np.zeros((N_total, N_total), dtype=int)
+    
+    # 2. Fill cliques with negative edges
+    for u in nodes:
+        size = clique_sizes[u]
+        start = start_indices[u]
+        if size > 1:
+            # Create a clique of -1s
+            for i in range(size):
+                for j in range(i + 1, size):
+                    adj[start + i, start + j] = -1
+                    adj[start + j, start + i] = -1
+                    
+    # 3. Fill directed edges with positive connections
+    for u in nodes:
+        start_u = start_indices[u]
+        # Get successors (children)
+        successors = list(G.successors(u))
+        
+        for k, v in enumerate(successors):
+            # Anchor node is the k-th node in clique C_u
+            anchor_node_idx = start_u + k
+            
+            # Target is the entire clique C_v
+            start_v = start_indices[v]
+            size_v = clique_sizes[v]
+            
+            for m in range(size_v):
+                target_node_idx = start_v + m
+                adj[anchor_node_idx, target_node_idx] = 1
+                adj[target_node_idx, anchor_node_idx] = 1
+                
+    node_map = {k: np.arange(start_indices[k], start_indices[k]+clique_sizes[k]) for k in nodes}
+
+    return adj, node_map
 
 
 ##############################################
@@ -2462,7 +2574,7 @@ def group_mean(X, groups, axis=-1):
     """
 
     ## Organize info
-    grps, inv, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    grps, inv, counts = np.unique(groups, axis=0, return_inverse=True, return_counts=True)
     shp = list(X.shape)
     shp[axis] = len(grps)
 
@@ -2529,3 +2641,192 @@ def grid_vecs(N,d,minx=-1,maxx=1):
     X = np.meshgrid(*((np.linspace(minx,maxx,N),)*d))
     return np.array(X).reshape((d,-1))
 
+
+def ppop_dict(all_neurs, frac=1.0, axis=-1):
+    """
+    Construct pseudopopulation from dictionary of matrices
+
+    all_neurs is a dictionary of dictionaries, organized by 
+    sessions and conditions. 
+    
+    i.e. all_neurs[session][condition] = data
+
+    needs to have the same number of conditions per session
+    """
+
+    ntrls = []
+    for this_sess in all_neurs.values():
+        ntrls.append( [foo.shape[0] for foo in this_sess.values()] )
+
+    these_sess = [n for n in ntrls if len(n) == np.max([len(n) for n in ntrls])]
+
+    ntrls = np.array(these_sess)
+
+    ## how many trials to sample from each condition?
+    ntrnsamp = int(np.round(frac*ntrls.mean())) * np.ones(ntrls.shape[1], dtype=int)
+    ntstsamp = int(np.round((1-frac)*ntrls.mean())) * np.ones(ntrls.shape[1], dtype=int)
+
+    ntrn = np.floor(frac*ntrls).astype(int)
+
+    pp_trn = {}
+    pp_tst = {}
+    for i, this_sess in enumerate(all_neurs.values()):
+        for j, (lab, rep) in enumerate(this_sess.items()):
+            
+            trnset = np.random.choice(range(ntrls[i,j]), ntrn[i,j], replace=False)
+            tstset = np.setdiff1d(range(ntrls[i,j]), trnset)
+            
+            ix_trn = np.random.choice(trnset, ntrnsamp[j])
+            X_trn = rep[ix_trn]
+        
+            ix_tst = np.random.choice(tstset, ntstsamp[j])
+            X_tst = rep[ix_tst]
+            
+            if lab in pp_trn.keys():
+                pp_trn[lab] = np.concatenate([pp_trn[lab], X_trn], axis=axis)
+                pp_tst[lab] = np.concatenate([pp_tst[lab], X_tst], axis=axis)
+            else:
+                pp_trn[lab] = X_trn
+                pp_tst[lab] = X_tst
+
+    return pp_trn, pp_tst
+
+
+def ppop(neurons, conditions, session, subsets=None, axis=-1, jagged=False,
+         K=None, independent=False):
+    """
+    Construct pseudopopulation from list of matrices.
+
+    Each element in `neurons` is a data matrix with trials on axis 0
+    and the neural dimension on `axis` (default: -1). All non-trial,
+    non-neural dimensions must match across recordings.
+
+    `conditions` is the same length as `neurons`, and may be 1-D or 2-D.
+    Each unique condition must appear the same number of times within each
+    subset.
+
+    `session` is the same length as `neurons`, and may likewise be 1-D or
+    2-D. Recordings sharing a session label are guaranteed to appear in the
+    same order along the neural axis for every condition, preserving neuron
+    identity across conditions.
+
+    `subsets` is the same length as `neurons`, and may likewise be 1-D or
+    2-D. Recordings with the same subset label are concatenated along the
+    neural axis; recordings with different labels are kept separate.
+
+    `K`           : if given, draw exactly K trials per condition without
+                    replacement, skipping any recording with fewer than K
+                    trials. If None, sample count is derived from
+                    mean(n_trials) with replacement.
+
+    `independent` : if True, trials are re-sampled independently for each
+                    neuron, breaking within-recording co-variability.
+
+    Returns a dict with fields:
+        'data'          array (jagged=False) or list of arrays (jagged=True),
+                        shape (n_conds*K, ..., n_neurons)
+        'cond_labels'   array or list of arrays, shape (n_conds*K, ...) matching
+                        the row order of 'data'
+        'neur_labels'   (jagged=False only) array of shape (n_neurons, ...),
+                        subset label for each position along the neural axis
+    """
+
+    if subsets is None:
+        subsets = [1] * len(neurons)
+
+    if not isinstance(conditions, np.ndarray):
+        conditions = np.array(conditions)
+
+    session  = np.array(session)
+    subsets  = np.array(subsets)
+    subpops, idx = np.unique(subsets, axis=0, return_inverse=True)
+    label = subpops[idx]
+
+    ntrls   = np.array([x.shape[0] for x in neurons])
+    replace = K is None
+
+    def _nsamples(mean_n):
+        return K if K is not None else int(np.round(mean_n))
+
+    def _sample(rep, n):
+        """Sample n trials from rep, independently per neuron if requested.
+        Returns None if K is set and rep has fewer than K trials."""
+        ntrl = len(rep)
+        if K is not None and ntrl < K:
+            return None
+        if not independent:
+            return rep[np.random.choice(ntrl, n, replace=replace)]
+        ax     = axis % rep.ndim
+        slices = [slice(None)] * rep.ndim
+        pieces = []
+        for ni in range(rep.shape[ax]):
+            slices[ax] = ni
+            pieces.append(
+                rep[tuple(slices)][np.random.choice(ntrl, n, replace=replace)]
+            )
+        return np.stack(pieces, axis=ax)
+
+    if not jagged:
+        nsamples = _nsamples(np.mean(ntrls))
+
+    data_list        = []
+    cond_labels_list = []
+    neur_labels_list = []
+
+    for this_pop in subpops:
+        mask = (label == this_pop)
+
+        if jagged:
+            nsamples = _nsamples(np.mean(ntrls[mask]))
+
+        conds, cond_idx, counts = np.unique(
+            conditions[mask], axis=0, return_inverse=True, return_counts=True
+        )
+        assert np.all(counts == counts[0]), (
+            f"Subset {this_pop!r}: conditions appear {counts} times — must be equal"
+        )
+
+        global_indices = np.where(mask)[0]
+
+        # sort by session so every condition accumulates neurons in the same
+        # order, preserving neuron identity across conditions
+        _, session_idx = np.unique(session[global_indices], axis=0, return_inverse=True)
+        sort_order     = np.argsort(session_idx, kind='stable')
+
+        global_indices = global_indices[sort_order]
+        neurons_here   = [neurons[i] for i in global_indices]
+        cond_idx       = cond_idx[sort_order]
+
+        pp             = {}
+        pp_neur_labels = {}
+
+        for (orig_i, rep), ci in zip(zip(global_indices, neurons_here), cond_idx):
+            X = _sample(rep, nsamples)
+            if X is None:
+                continue
+
+            nl = np.broadcast_to(subsets[orig_i], (X.shape[axis],) + subsets[orig_i].shape)
+
+            if ci in pp:
+                pp[ci]             = np.concatenate([pp[ci], X],  axis=axis)
+                pp_neur_labels[ci] = np.concatenate([pp_neur_labels[ci], nl], axis=0)
+            else:
+                pp[ci]             = X
+                pp_neur_labels[ci] = nl
+
+        data_list.append(np.concatenate([pp[ci] for ci in range(len(conds))], axis=0))
+        cond_labels_list.append(np.repeat(conds, nsamples, axis=0))
+        neur_labels_list.append(pp_neur_labels[0])
+
+    if jagged:
+        return {
+            'data'       : data_list,
+            'cond_labels': cond_labels_list,
+            'neur_labels': subpops,
+        }
+
+    return {
+        'data'       : np.concatenate(data_list, axis=axis),
+        'cond_labels': cond_labels_list[0],
+        'neur_labels': np.concatenate(neur_labels_list, axis=0),
+    }

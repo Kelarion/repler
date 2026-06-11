@@ -154,7 +154,7 @@ def is_isometric(S, G):
 #     out = True
 #     for s in S:        
 
-def fit_J(S):
+def fit_J(S, strict=True):
     
     n, k = S.shape
     aye, jay = np.triu_indices(k)
@@ -169,11 +169,17 @@ def fit_J(S):
     allS_ = util.outers(allS.T)[:,aye,jay]
     S_ = util.outers(S.T)[:,aye,jay]
     
-    c = np.ones(S_.shape[1])
-    bub = -np.ones(len(allS))
+    
+    if strict:
+        c = np.ones(S_.shape[1])
+        bub = -np.ones(len(allS))
+    else:
+        # c = -allS_.sum(0)
+        c = -(1/(allS_.sum(1)+1e-12))@allS_
+        bub = np.zeros(len(allS))
     beq = np.zeros(len(S))
     
-    sol = lp(c, A_ub=-allS_, b_ub=bub, A_eq=S_, b_eq=beq, bounds=(None,None))
+    sol = lp(c, A_ub=-allS_, b_ub=bub, A_eq=S_, b_eq=beq, bounds=(-1,1))
     
     if sol.success:
         J = np.zeros((k,k))
@@ -183,6 +189,7 @@ def fit_J(S):
         return J
     else:
         return None
+
 
 def fixed_points(J):
     """
@@ -197,6 +204,7 @@ def fixed_points(J):
         return None 
     
     return allS[val < 1e-6]
+
 
 #%% Get all partial cubes of dimension n
 
@@ -282,7 +290,7 @@ for G in graphs:
         is_rep.append(True)
         # jays.append(J)
         rep_graphs.append(G)
-        Jgraph = nx.Graph(J - np.diag(np.diag(J)/2))
+        Jgraph = nx.Graph(J - np.diag(np.diag(J)))
         sup_graphs.append(Jgraph)
         jays.append(J)
         
@@ -342,6 +350,7 @@ ng = len(sup_graphs)
 rows = int(np.floor(np.sqrt(ng)))
 cols = int(np.ceil(ng/rows))
 
+plt.figure()
 clr = ['r', 'b']
 sty = ['--', '-']
 for i in range(ng):
@@ -356,7 +365,10 @@ for i in range(ng):
     nx.draw(rep_graphs[i], #style=sty[1*is_rep[i]],
             edge_color=elab, node_size=15,
             node_color='k',
-            width=2, alpha=is_reg[i]*0.6 + 0.4)
+            width=2, 
+            # alpha=is_reg[i]*0.6 + 0.4,
+            alpha=nx.is_chordal(sup_graphs[i])*0.6 + 0.4,
+            )
 
 
 #%% Find J subgraphs

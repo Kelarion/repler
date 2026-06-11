@@ -16,6 +16,7 @@ from itertools import permutations, combinations
 import numpy as np
 import numpy.linalg as nla
 import matplotlib.pyplot as plt
+from matplotlib import cm
 
 import networkx as nx 
 from networkx.drawing.nx_pydot import graphviz_layout
@@ -113,16 +114,65 @@ punqs = punqs[idx]
 
 #%%
 
+aye,jay = np.where(np.tril(util.hamming(F.T) == 1))
+
 nums = ['I', 'II', 'III', 'IV', 'V', 'VI']
 for i in range(len(funqs)):
     ax = plt.subplot(1, len(funqs), i+1, projection='3d')
     
-    tpl.scatter3d(F, ax=ax, c=funqs[i], s=100, cmap='bwr')
+    tpl.scatter3d(F, ax=ax, c=funqs[i], s=100, cmap='bwr', depthshade=False)
     plt.title(nums[i])
     
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_zticks([])
+    for i_,j_ in zip(aye,jay):
+        tpl.plot3d(F[[i_,j_]], ax=ax, linestyle='-', color='k')
+    
+    plt.axis('off')
+    # ax.set_xticks([])
+    # ax.set_yticks([])
+    # ax.set_zticks([])
+
+#%% Dynamics
+
+deez = [0,4,5]
+# deez = [2]
+sig = 1
+T = 50
+
+grps = [[[0,1,2,3,4,5,6,7]],
+        [[0,7],[1,2,3,4,5,6]],
+        [[0,1,6,7],[2,3,4,5]],
+        [[0,4],[1,2,5,6],[3,7]],
+        [[0,1,2,3,4,5,6,7]],
+        [[0,1,2,3,4,5,6,7]]]
+
+
+Kin = (2*F-1)@(2*F-1).T/3
+V = H/np.sqrt(8)
+
+K = df_util.acosker((Kin+sig)/(1+sig))*(1+sig)
+
+l = np.diag(V@K@V)
+t = np.linspace(0,T,100)
+
+
+stys = ['-','--','-.']
+for i_,i in enumerate(deez):
+    
+    
+    fhat = (2*funqs[i]-1)@V
+    h = fhat[:,None]*(1 - np.exp(-l[:,None]*t[None]))
+    yhat = V@h
+    marg = (2*funqs[i]-1)[...,None]*yhat
+    
+    cols = cm.Set2(range(len(grps[i])))
+    for j,grp in enumerate(grps[i]):
+        plt.plot(t, marg[grp].mean(0), color=cols[j], linestyle=stys[i_], linewidth=2)
+        # plt.title(nums[i])
+            
+        # ax.set_xticks([])
+        # ax.set_yticks([])
+        # ax.set_zticks([])
+
 
 #%%
 
@@ -171,7 +221,6 @@ for i in range(len(funqs)):
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_zticks([])
-
 
 #%%
 
@@ -234,17 +283,22 @@ for i,grp in enumerate(gs):
         plt.title('group: ' + str(ss_grp[f]))
         
         j1, j2 = np.where(~trainset[f])[0]
-        ax.text(F[j1,0], F[j1,1], F[j1,2], '1')
-        ax.text(F[j2,0], F[j2,1], F[j2,2], '2')
+        # ax.text(F[j1,0], F[j1,1], F[j1,2], 'i')
+        # ax.text(F[j2,0], F[j2,1], F[j2,2], 'j')
         
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_zticks([])
-        # plt.axis(False)
+        for i_,j_ in zip(aye,jay):
+            tpl.plot3d(F[[i_,j_]], ax=ax, linestyle='-', color='k')
+        
+        plt.axis('off')
+        # ax.set_xticks([])
+        # ax.set_yticks([])
+        # ax.set_zticks([])
+        # # plt.axis(False)
 
 #%% generate different possible geometries
 
-s = np.random.dirichlet(np.ones(4), size=1000)
+# s = np.random.dirichlet(np.ones(4), size=1000)
+s = np.random.dirichlet(np.ones(3), size=1000)
 A = np.array([[1,3,3,1],
               [1,2,1,0],
               [1,1,0,0],
@@ -258,7 +312,7 @@ K = np.array([[1,1,1,1],
               [3,-1,-1,3],
               [1,-1,1,-1]])
 
-ki = s@A
+ki = s@A[1:]
 li = ki@K
 # li = np.random.dirichlet(np.ones(4), size=1000)
 gi = (1/li)@K / 8
@@ -296,6 +350,115 @@ for i,grp in enumerate(gs):
         
         plt.title('group: ' + str(ss_grp[f]))
         
+        
+#%%
+
+import matplotlib.tri as mtri
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
+ 
+ 
+# ---------------------------------------------------------------------------
+# Coordinate helpers
+# ---------------------------------------------------------------------------
+ 
+# Vertices of the reference equilateral triangle in Cartesian space
+V1 = np.array([0.0, 0.0])          # λ₁ = 1  (bottom-left)
+V2 = np.array([1.0, 0.0])          # λ₂ = 1  (bottom-right)
+V3 = np.array([0.5, np.sqrt(3)/2]) # λ₃ = 1  (top)
+ 
+thisf = 2
+
+def bary_to_cart(lam1, lam2, lam3):
+    """Map barycentric coordinates → 2-D Cartesian coordinates."""
+    x = lam1 * V1[0] + lam2 * V2[0] + lam3 * V3[0]
+    y = lam1 * V1[1] + lam2 * V2[1] + lam3 * V3[1]
+    
+    
+    return x, y
+ 
+# ---------------------------------------------------------------------------
+# Function to visualise  (replace with anything you like!)
+# ---------------------------------------------------------------------------
+ 
+def f(s):
+    """
+    Example: a mixture of a Dirichlet-like concentration near λ₂
+    and a sinusoidal modulation.
+    """
+    ki = 1*(s@A[:-1 ]) + 0*(A[-1])
+    li = ki@K
+    gi = (1/li)@K / 8
+
+    denom = (gi[:,-1,None]**2 - gi[:,0,None]**2+1e-12)
+    y1 = (gi[:,0,None]*gi[:,1:]@T1.T - gi[:,-1,None]*gi[:,1:]@T2.T) / denom
+    y2 = (gi[:,0,None]*gi[:,1:]@T2.T - gi[:,-1,None]*gi[:,1:]@T1.T) / denom
+    
+    return y1[:,thisf], y2[:,thisf]
+ 
+# ---------------------------------------------------------------------------
+# Build an evenly-spaced triangular grid
+# ---------------------------------------------------------------------------
+ 
+N = 200  # number of subdivisions along each edge  (more → finer grid)
+
+bary_pts = []
+for i in range(N + 1):
+    for j in range(N + 1 - i):
+        k = N - i - j
+        bary_pts.append((i / N, j / N, k / N))
+ 
+bary_pts = np.array(bary_pts)            # shape (M, 3)
+lam1, lam2, lam3 = bary_pts.T
+ 
+x, y = bary_to_cart(lam1, lam2, lam3)
+z1, z2    = f(np.stack([lam1, lam2, lam3]).T)
+# z    = f(lam1, lam2, lam3)
+
+# Delaunay triangulation of the projected points
+triang = mtri.Triangulation(x, y)
+ 
+# ---------------------------------------------------------------------------
+# Plot
+# ---------------------------------------------------------------------------
+
+
+fig, ax = plt.subplots(1,2,figsize=(7, 6.5))
+
+# levels = 60
+tcf = ax[0].tripcolor(triang, np.sign(z1), shading="gouraud", cmap="bwr", rasterized=True)
+ 
+bx = [V1[0], V2[0], V3[0], V1[0]]
+by = [V1[1], V2[1], V3[1], V1[1]]
+ax[0].plot(bx, by, "k-", linewidth=3, zorder=5)
+
+offset = 0.045
+ax[0].text(V1[0] - offset, V1[1] - offset, r"$s_1 = 1$",
+        ha="center", va="top",  fontsize=11)
+ax[0].text(V2[0] + offset, V2[1] - offset, r"$s_2 = 1$",
+        ha="center", va="top",  fontsize=11)
+ax[0].text(V3[0],           V3[1] + offset, r"$s_3 = 1$",
+        ha="center", va="bottom", fontsize=11)
+ax[0].set_aspect("equal")
+ax[0].axis("off")
+
+# levels = 60
+tcf = ax[1].tripcolor(triang, np.sign(z2), shading="gouraud", cmap="bwr", rasterized=True)
+ 
+bx = [V1[0], V2[0], V3[0], V1[0]]
+by = [V1[1], V2[1], V3[1], V1[1]]
+ax[1].plot(bx, by, "k-", linewidth=3, zorder=5)
+
+offset = 0.045
+ax[1].text(V1[0] - offset, V1[1] - offset, r"$s_1 = 1$",
+        ha="center", va="top",  fontsize=11)
+ax[1].text(V2[0] + offset, V2[1] - offset, r"$s_2 = 1$",
+        ha="center", va="top",  fontsize=11)
+ax[1].text(V3[0],           V3[1] + offset, r"$s_3 = 1$",
+        ha="center", va="bottom", fontsize=11)
+ax[1].set_aspect("equal")
+ax[1].axis("off")
+
 #%%
 
 clf = SVC(kernel='precomputed')
@@ -305,7 +468,7 @@ gs, cnt = np.unique(train_group, return_counts=True)
 nrow = len(gs)
 ncol = np.max(cnt)
 
-cols = cols = cm.ocean(np.arange(64))
+# cols = cols = cm.ocean(np.arange(64))
 
 works = []
 sups = []
@@ -526,10 +689,10 @@ tpl.square_axis()
 
 #%%
 
-def random_isometric_subgraph(G):
-    """
-    Find a subset of columns of S 
-    """
+# def random_isometric_subgraph(G):
+#     """
+#     Find a subset of columns of S 
+#     """
 
 def is_partial_cube(G):
     """

@@ -16,9 +16,11 @@ from dataclasses import dataclass
 import pickle as pkl
 
 import torch
-
+import torch.nn as nn
+import torch.optim as optim
+ 
 from sklearn import svm, discriminant_analysis, manifold, linear_model
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, AgglomerativeClustering
 import scipy.stats as sts
 import scipy.linalg as la
 import scipy.spatial as spt
@@ -47,64 +49,48 @@ import bae_search
 import bae_util
 import plotting as tpl
 
-
 #%%
 
-# dset = '000232'
+dset = '000239'
 # dset = '000628'
-dset = '000019'
-# dset = 
+# dset = '001187' 
+
+phase = 'start_time'
+
 t0 = 0
-t1 = 0.5
+t1 = 1
 
-filter_window = 100
+subj = os.listdir(f"{LOAD_DIR}/{dset}")[2]
 
-phase = 'stimOnset_times'
+# these_sess = np.unique([re.findall('ses-([^_.]+)', sess)[0] for sess in os.listdir(f"{LOAD_DIR}/{dset}/{subj}/")])
 
-subj = os.listdir(f"{LOAD_DIR}/{dset}")[1]
-
-neurs = {}
- 
-
-these_sess = np.unique([re.findall('ses-([^_.]+)', sess)[0] for sess in os.listdir(f"{LOAD_DIR}/{dset}/{subj}/")])
-
-for j,sess in enumerate(these_sess):
+for j,sess in enumerate(os.listdir(f"{LOAD_DIR}/{dset}/{subj}/")):
     
-    # pathtoNWBFile = f"{LOAD_DIR}/{dset}/{subj}/{subj}_ses-{sess}_behavior.nwb"
-    # pathtoNWBFile = f"{LOAD_DIR}/{dset}/{subj}/{subj}_ses-{sess}_image.nwb"
-    pathtoNWBFile = f"{LOAD_DIR}/{dset}/{subj}/{subj}_ses-{sess}.nwb"
+    if 'behavior' not in sess:
+        continue
+    
+    pathtoNWBFile = f"{LOAD_DIR}/{dset}/{subj}/{sess}"
     
     nwbBasePath = Path(pathtoNWBFile)
-    
-    sess_id = re.findall('ses-(\d+)', sess)[0]
-    
+
     io = NWBHDF5IO(str(nwbBasePath), mode='r')
     nwb = io.read()
     
     beh_df = nwb.trials.to_dataframe()
-    # resp = beh_df['response']
-    # legit = resp > 0
-    block = np.unique(beh_df['blockType'], return_inverse=True)[1]
-    trial = np.unique(beh_df['trialType'], return_inverse=True)[1]
-    resp = np.unique(beh_df['response'], return_inverse=True)[1]
-    
-    
     unit_df = nwb.units.to_dataframe()
     
     n_neur = len(nwb.units.id)
     
-    bin_cntr = beh_df[phase]
-    
+    bin_cntr = nwb.trials[phase]
+
     bins = np.array([bin_cntr+t0, bin_cntr+t1]).T.flatten()
     
     X = []
     for neur in range(n_neur):
-        X.append(np.histogram(nwb.units.get_unit_spike_times(neur), bins)[0][::2])
+        X.append(np.histogram(unit_df.spike_times[neur], bins)[0][::2])
     X = np.array(X).T
     
     neurs[sess_id] = {}
     for lab in np.unique(labels[ontri]):
         neurs[sess_id][lab] = X[labels==lab]
 
-        
-        

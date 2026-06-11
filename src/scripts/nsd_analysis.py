@@ -128,7 +128,7 @@ for handle in handles.values():
 fold = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/nsd/nsddata/ppdata/'
 save_dir = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/saves/'
 
-this_roi = 5
+this_roi = 1
 
 # idx = []
 # neurs = []

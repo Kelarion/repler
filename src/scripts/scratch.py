@@ -46,6 +46,31 @@ import plotting as tpl
 
 #%%
 
+S = df_util.randtree_feats(50, bmax=4)
+# S = df_util.btree_feats(3).T
+S_ = df_util.allpaths(S)[1]
+S_ = (S_ + (S_.mean(0)>0.5))%2
+
+R = la.pinv((S_-S_.mean(0)).T@(S_-S_.mean(0)))
+R = R - 2*np.diag(1*(R@S_.mean(0) > 0.5))
+
+J = R - np.diag(np.diag(R))
+h = np.diag(R)/2
+
+W, noise = df_util.noisyembed(S, 2*S.shape[1], 30)
+X = (2*S-1)@W.T + noise
+
+
+
+"""
+dJij < log(1 + exp(-2*si*(Js + hi))) >
+< dJij (1 + exp(-2*si*(Js + hi))) / (1 + exp(-2*si*(Js + hi))) >
+< dJij (-2*si*(Js + hi)) exp(-2*si*(Js + hi))) / (1 + exp(-2*si*(Js + hi))) >
+< -2*si * sj * exp(-2*si*(Js + hi))) / (1 + exp(-2*si*(Js + hi))) >
+"""
+
+#%%
+
 n_items = 4
 n_rules = 5 
 
@@ -78,6 +103,9 @@ trials = np.stack([x1[p1], x2[p1], x1[p2], x2[p2]]).T
 
 ## Split into 
 # train = 
+
+#%%
+
 
 
 #%%

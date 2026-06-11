@@ -1,6 +1,6 @@
 CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
 SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/saves/'
-LOAD_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/tian_data/' 
+LOAD_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/wang_data/' 
 
 import os, sys, re
 import pickle as pkl
@@ -8,7 +8,6 @@ from time import time
 import math
 sys.path.append(CODE_DIR)
 sys.path.append('C:/Users/mmall/OneDrive/Documents/github/sca/')
-sys.path.append(LOAD_DIR + 'code/')
 
 import numpy as np
 import numpy.linalg as nla
@@ -35,8 +34,6 @@ import scipy.io as scio
 import matplotlib.pyplot as plt
 from matplotlib import cm
 
-import h5py
-
 import networkx as nx
 # import cvxpy as cvx
 
@@ -50,9 +47,7 @@ import bae_search
 import bae_util
 import plotting as tpl
 
-
 #%%
-
 
 
 

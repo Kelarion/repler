@@ -39,7 +39,7 @@ import gensim as gs
 from gensim import models as gmod
 from gensim import downloader as gdl
 
-from nltk.corpus import wordnet as wn # natural language toolkit
+# from nltk.corpus import wordnet as wn # natural language toolkit
 
 # import umap
 from cycler import cycler
@@ -124,7 +124,7 @@ cmap = cm.tab10
 
 deez = np.arange(160)#[grp==7]
 
-E,H = df_util.allpaths(S[deez])
+E,H = df_util.allpaths(mod.S[deez])
 
 G = nx.Graph()
 G.add_edges_from(E)
@@ -132,6 +132,7 @@ G.add_edges_from(E)
 # G = nx.maximum_spanning_tree(G)
 
 pos = graphviz_layout(G, prog='dot')
+# pos = graphviz_layout(G, prog='neato')
 
 fig,ax = plt.subplots()
 plt_these = np.isin(G.nodes, range(len(deez)))

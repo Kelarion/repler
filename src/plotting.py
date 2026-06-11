@@ -139,9 +139,11 @@ class SliceViewer(object):
             self.ind = self.leige.ind
         else:
             if event.button == 'up':
-                self.ind = (self.ind + 1) % self.slices
+                # self.ind = (self.ind + 1) % self.slices
+                self.ind = np.min([self.ind + 1,self.slices-1])
             else:
-                self.ind = (self.ind - 1) % self.slices
+                # self.ind = (self.ind - 1) % self.slices
+                self.ind = np.max([self.ind - 1, 0])
         self.update() 
 
 class ImageSlices(SliceViewer):
@@ -709,6 +711,19 @@ class Faces():
 ########### General utility ##################
 ##############################################
 
+def raster(X, autocolor=True, **args):
+    """
+    make a raster plot for an array of timestamps, (n_channel, n_events)
+    """
+
+    n, k = X.shape
+
+    y = np.repeat(np.expand_dims(np.arange(n), -1), k, axis=-1)
+    if autocolor:
+        c = np.repeat(np.expand_dims(np.arange(k), -1), n, axis=-1).T
+
+    plt.scatter(X.flatten(), y.flatten(), c=c.flatten(), **args)
+
 def vecs(x,y, **kwargs):
     """
     My version of quiver where vectors are always at the origin
@@ -723,8 +738,8 @@ def square_axis(ax=None):
         ax = plt.gca()
     newlims = [np.min([ax.get_ylim(), ax.get_xlim()]), np.max([ax.get_ylim(), ax.get_xlim()])]
 
-    plt.axis('equal')
-    plt.axis('square')
+    ax.axis('equal')
+    ax.axis('square')
     ax.set_xlim(newlims)
     ax.set_ylim(newlims)
 
@@ -849,6 +864,8 @@ def matshow(X, ax=None,
             color='k', 
             linewidth=1, 
             linestyle='-',
+            grid_x=None,
+            grid_y=None,
             **im_args):
 
     extent = (0, X.shape[1], X.shape[0], 0)
@@ -867,15 +884,30 @@ def matshow(X, ax=None,
     #         axis=axis, 
     #         linestyle=linestyle)
     if show_grid:
-        plt.hlines(range(X.shape[0]+1), 0, X.shape[1],
+        if grid_x is None:
+            grid_x = range(X.shape[0]+1)
+        if grid_y is None:
+            grid_y = range(X.shape[1]+1)
+        plt.hlines(grid_x, 0, X.shape[1],
             color=color, linewidth=linewidth, linestyle=linestyle)
-        plt.vlines(range(X.shape[1]+1), 0, X.shape[0],
+        plt.vlines(grid_y, 0, X.shape[0],
             color=color, linewidth=linewidth, linestyle=linestyle)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.axis(False)
 
     return im
+
+def cluster_grid(clus, labels=None, **args):
+
+    foo = np.where(np.diff(np.sort(clus), prepend=0))[0] - 0.5
+    foo = np.concatenate([foo, [len(clus)-0.5]])
+
+    plt.vlines(foo, len(clus), 0, 'k')
+    plt.hlines(foo, len(clus), 0, 'k')
+
+    plt.xticks(foo - np.diff(foo, prepend=0)/2, labels=labels)
+    plt.yticks(foo - np.diff(foo, prepend=0)/2, labels=labels)
 
 def hovertext(x, y, labels, offset=1, c=None, cmap=cm.tab10, 
     ax=None, max_ind=10, **scat_args):
@@ -964,5 +996,23 @@ def scatterlabel(x, y, labels, c=None, cmap=cm.tab10, ax=None, offset=1e-2, **sc
                    'edgecolor': 'black', 
                    'alpha': 0.8,
                    'boxstyle': 'round'})
+
+
+def loglog(x, y=None, **kwargs):
+    """
+    A loglog function which doesn't have dumb defaults like pyplot does
+    i.e. if only one vector is supplied, don't set the first x value to 
+    negative infinity!!!!!
+    """
+
+    if y is None:
+        yplot = x
+        xplot = np.arange(1, len(yplot)+1)
+    else:
+        xplot = x
+        yplot = y
+
+    plt.loglog(xplot, yplot, **kwargs)
+
 
 # def triangle(X, )

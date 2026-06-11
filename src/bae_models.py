@@ -12,6 +12,9 @@ import torch.optim as optim
 import torch.distributions as dis
 import torch.linalg as tla
 import torch._dynamo
+from torch.nn.utils import parametrize
+from torch.nn import functional as F
+
 import numpy as np
 from itertools import permutations, combinations
 from tqdm import tqdm
@@ -36,6 +39,7 @@ import math
 
 # my code
 import util
+import df_util
 import pt_util
 import bae_search
 import students
@@ -44,36 +48,51 @@ import students
 ############## Matrix factorization classes ########################
 ####################################################################
 
+class Symmetric(nn.Module):
+    def forward(self, X):
+        return X.triu(1) + X.triu(1).T  # Return a symmetric matrix
+
+    def right_inverse(self, A):
+        return A.triu(1)
+
+class ZeroDiag(nn.Module):
+    def forward(self, X):
+        return X.triu(1) + X.tril(-1)  # Return a symmetric matrix
+
+    def right_inverse(self, A):
+        return A.triu(1) + A.tril(-1)
+
 @dataclass
 class BMF:
 
     def __post_init__(self):
         ## Certain methods expect a temp attribute to exist
         self.temp = 1e-5 
+        self.initialized = False
 
-    def initialize(self, X):
+    def initialize(self, X, **args):
 
-        self.n, self.d = X.shape
-
-        self.init_params(X)
-        self.init_latents(X)
+        self.init_params(X, **args)
+        self.init_latents(X, **args)
+        self.initialized = True
     
     def fit(self, *data, initial_temp=1, decay_rate=0.8, period=2,
-            min_temp=1e-4, max_iter=None, verbose=True):
+            min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
 
         if max_iter is None:
-            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+            max_iter = period*int(np.log(1e-4/initial_temp)/np.log(decay_rate))
 
         if verbose:
             pbar = tqdm(range(max_iter))
 
         en = []
         # mets = []
-        self.initialize(*data)
+        if not self.initialized:
+            self.initialize(*data, **opt_args)
         for it in range(max_iter):
             # print(self.S.sum())
             # print(self.scl)
-            T = initial_temp*(decay_rate**(it//period))
+            T = min_temp + initial_temp*(decay_rate**(it//period))
             self.temp = T
             en.append(self.grad_step(*data))
 
@@ -82,23 +101,39 @@ class BMF:
 
         return en
 
-    def sample(self, X, temp=None, n_samp=1, burnin=5):
+    def sample(self, X, temp=None, n_samp=1, burnin=10, **args):
         """
         Generate posterior samples of S, given X and current parameters
         """
         if temp is not None:
             self.temp = temp
 
-        samps = np.zeros((n_samp,) + self.S.shape)
-        S = 1*self.S
+        samps = np.zeros((n_samp,len(X),self.dim_hid))
+
+        S = 1.0*np.random.choice([0,1], size=(len(X), self.dim_hid))
         i = 0
         for n in range(n_samp*burnin):
-            S = self.EStep(S, X)
+            samp = self.EStep(S, X, inplace=False, **args)
             if not np.mod(n, burnin):
-                samps[i] = 1*S
+                samps[i] = 1*samp
                 i += 1
 
         return samps
+
+    def impute(self, X, mask):
+        """
+        Draw from posterior predictive of unmasked X values
+        """
+
+        Zhat = self.sample(X)
+
+    def loglikelihood(self, X, Xhat):
+        """
+        The log-likelihood given the current parameters
+
+        default is MSE
+        """
+        return np.mean((Xhat - X)**2)
 
     def EStep(self, S, X):
         """
@@ -106,7 +141,7 @@ class BMF:
         """
         return NotImplementedError
 
-    def MStep(self, E, X):
+    def MStep(self, S, X):
         """
         Update of the continuous parameters
         """
@@ -118,7 +153,6 @@ class BMF:
         """
 
         newS = self.EStep(self.S, X)
-        self.S = newS
         loss = self.MStep(newS,X)
 
         return loss
@@ -146,6 +180,7 @@ class BiPCA(BMF):
 
     def init_params(self, X):
 
+        self.d = X.shape[1]
         if self.d < self.dim_hid: # then the rows are orthogonal
             self.tranpose = True
 
@@ -153,8 +188,8 @@ class BiPCA(BMF):
             Ux,sx,Vx = la.svd(X, full_matrices=False)
             self.W = Vx[:self.dim_hid].T
         else:
-            s1 = np.max([self.d, dim_hid])
-            s2 = np.min([self.d, dim_hid])
+            s1 = np.max([self.d, self.dim_hid])
+            s2 = np.min([self.d, self.dim_hid])
             self.W = sts.ortho_group.rvs(s1)[:,:s2]
             if self.transpose:
                 self.W = self.W.T
@@ -165,11 +200,13 @@ class BiPCA(BMF):
     def init_latents(self, X):
 
         coding_level = np.random.beta(self.alpha_pr, self.beta_pr, self.dim_hid)/2
-        self.prior_logits = -np.log(coding_level/(1-coding_level))
+        # self.prior_logits = -np.log(coding_level/(1-coding_level))
+        self.prior_logits = np.ones(self.dim_hid)
 
-        self.S = 1*(X@self.W - self.b@self.W > 0.5**self.scl)
+        self.S = 1.0*(X@self.W - self.b@self.W > 0.5**self.scl)
+        self.StS = self.S.T@self.S
 
-    def EStep(self, S, X):
+    def EStep(self, S, X, inplace=True):
         """
         Compute expectation of log-likelihood over S 
 
@@ -178,16 +215,10 @@ class BiPCA(BMF):
 
         XW = (X@self.W - self.b@self.W)
 
-        if self.tree_reg > 1e-6:
-            StS = 1.0*S.T@S
-            newS = bae_search.bpca(XW, 1.0*S, self.scl, 
-                StS=StS, N=self.n, 
-                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp,
-                prior_logits=self.prior_logits)
-        else:
-            newS = bae_search.bpca(XW, 1.0*S, self.scl, 
-                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp,
-                prior_logits=self.prior_logits)
+        newS = bae_search.bpca(XW, S, self.scl, 
+            StS=self.StS, N=len(S), 
+            alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp,
+            prior_logits=self.prior_logits)
 
         return newS
 
@@ -201,10 +232,10 @@ class BiPCA(BMF):
         if self.fit_intercept:
             self.b = X.mean(0) - self.scl*self.W@ES.mean(0)
 
-        return self.scl*np.sqrt(np.sum(ES**2))/np.sqrt(np.sum((X-self.b)**2))
+        return np.mean((X - self.scl*ES@self.W.T - self.b)**2)
 
-    def __call__(self):
-        return self.scl*self.S@self.W.T + self.b
+    def __call__(self, S):
+        return self.scl*S@self.W.T + self.b
 
     def loss(self, X, mask=None):
         if mask is None:
@@ -225,45 +256,41 @@ class SemiBMF(BMF):
     tree_reg: float = 1e-2
     weight_pr_reg: float = 1e-2
     weight_l2_reg: float = 1e-2
+    weight_l1_reg: float = 0.0
 
-    def __call__(self):
-        return self.S@self.W.T + self.b
+    def __call__(self, S):
+        return S@self.W.T + self.b
 
-    def initialize(self, X, S0=None, hot=False, W_lr=0.1, b_lr=0.1, weight_algo='exact'):
+    def init_params(self, X,  W_lr=0.1, b_lr=0.1, scl_lr=0, hot_start=False):
 
         self.n, self.d = X.shape
-        self.data = X/np.sqrt(np.mean(X**2))
 
         self.W_lr = W_lr
         self.b_lr = b_lr
 
+        self.sigma_x = 1
+        self.scl_lr = scl_lr
+
         self.b = np.zeros(self.d) # Initialize b
-
-        if hot: # Initialize with NMF
-            if self.nonneg:
-                nmf = NMF(self.dim_hid, l2_ratio=1, alpha_W=self.weight_l2_reg)
-
-                Z = nmf.fit_transform(self.data - self.data.min())
-                self.W = nmf.components_.T
-            else:
-                nmf = df_util.SemiNMF(self.dim_hid)
-                nmf.fit(self.data.T)
-                Z = nmf.Z.T
-                self.W = nmf.W
-
-            self.S = df_util.binarize(Z)
+        if hot_start:
+            nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
+            nmf.fit(X)
+            self.W = nmf.components_.T
 
         else:
-            ## Initialize W
             self.W = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
             if self.nonneg:
                 self.W[self.W < 0] = 0
 
-            ## Initialize S 
-            Mx = self.data@self.W
-            self.S = 1*(Mx >= 0.5)
+    def init_latents(self, X, **args):
 
-    def EStep(self, S, X):
+            ## Initialize S 
+            Mx = X@self.W
+            self.S = 1.0*(Mx >= 0.5)
+
+            self.StS = self.S.T@self.S
+
+    def EStep(self, S, X, inplace=True):
 
         # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
         #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)
@@ -271,16 +298,14 @@ class SemiBMF(BMF):
         XW = (X@self.W - self.b@self.W)
         WtW = self.W.T@self.W
 
-        if self.tree_reg > 1e-6:
-            StS = 1.0*S.T@S
-            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
-                StS=StS, N=self.n, 
-                beta=self.tree_reg, alpha=self.sparse_reg,
-                temp=self.temp)
-        else:
-            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
-                beta=self.tree_reg, alpha=self.sparse_reg,
-                temp=self.temp)
+        newS = bae_search.sbmf(
+            XW/self.sigma_x, 
+            S, 
+            WtW/self.sigma_x, 
+            StS=self.StS, N=self.n, 
+            beta=self.tree_reg, alpha=self.sparse_reg,
+            temp=self.temp,
+            inplace=inplace)
 
         return newS
 
@@ -298,12 +323,14 @@ class SemiBMF(BMF):
             # dReg = self.gamma*self.W@np.sign(self.W.T@self.W)
             eta = np.trace(WTW)/np.sum(WTW**2)
             dReg = self.weight_pr_reg*(self.W - eta*self.W@WTW)
+            dReg -= self.weight_l2_reg*self.W
+            dReg -= self.weight_l1_reg*np.sign(self.W)
 
-            dW = dXhat.T@ES/len(self.data)
+            dW = dXhat.T@ES/len(X)
             self.W += self.W_lr*(dW + dReg)
 
             if self.fit_intercept:
-                db = dXhat.sum(0)/len(self.data)
+                db = dXhat.sum(0)/len(X)    
                 self.b += self.b_lr*db
 
             if self.nonneg:
@@ -311,32 +338,33 @@ class SemiBMF(BMF):
                 self.b[self.b<0] = 0
 
             err = np.mean(dXhat**2)
+            self.sigma_x += self.scl_lr*(err - self.sigma_x)
 
         elif self.nonneg:
             err = 0
             for i in range(self.d):
-                what, rnorm = nnls(ES, self.data[:,i]-self.b[i])
+                what, rnorm = nnls(ES, X[:,i]-self.b[i])
                 self.W[i] = what
                 err += rnorm/self.d 
 
         else:            
             if self.fit_intercept:
                 S_ = ES-ES.mean(0)
-                X_ = self.data - self.data.mean(0)
+                X_ = X - X.mean(0)
             else:
                 S_ = ES
-                X_ = self.data
+                X_ = X
 
             U,s,V = la.svd(S_, full_matrices=False)
             shat = s/(s**2 + self.weight_l2_reg**2)
             self.W = X_.T@U@np.diag(shat)@V
 
             if self.fit_intercept:
-                self.b = self.data.mean(0) - ES.mean(0)@self.W.T
+                self.b = X.mean(0) - ES.mean(0)@self.W.T
 
-            err = np.mean((self.data - self())**2)
+            err = np.mean((X - self())**2)
 
-        return err
+        return [err, 1*ES, err/self.sigma_x + np.log(self.sigma_x)]
 
     def loss(self, X, mask=None):
         if mask is None:
@@ -344,6 +372,143 @@ class SemiBMF(BMF):
         N = self.S@self.W.T + self.b
         return np.mean((X[mask] - N[mask])**2)
 
+
+@dataclass
+class SpikeNMF(BMF):
+    """
+    NMF with spike-and-slab prior
+    """
+
+    dim_hid: int
+    nonneg: bool = True
+    fit_intercept: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    slab_prior: float = 1 
+    weight_pr_reg: float = 1e-1
+    weight_l1_reg: float = 0
+    weight_l2_reg: float = 1e-2
+    m_iters: int = 1
+
+    def __call__(self, S):
+        with torch.no_grad():
+            Xhat = self.W(torch.FloatTensor(S)).numpy()
+        return Xhat
+
+    def init_params(self, X, hot_start=False, scl_lr=0, **opt_args):
+
+        self.n, self.d = X.shape
+
+        if hot_start:
+            nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
+            nmf.fit(X)
+            Winit = nmf.components_.T
+
+            dead = Winit.sum(0) == 0
+            newW = np.random.randn(self.d, dead.sum())/np.sqrt(self.d)
+            newW[newW < 0] = 0
+            Winit[:,dead] = newW
+
+        else:
+            Winit = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
+            if self.nonneg:
+                Winit[Winit < 0] = 0
+
+        self.sigma_x = 1 
+        self.scl_lr = scl_lr
+
+        self.W = nn.Linear(self.dim_hid, self.d, bias=self.fit_intercept)
+        self.W.weight.data.copy_(torch.FloatTensor(Winit))
+        if self.fit_intercept:
+            self.W.bias.data.copy_(torch.zeros(self.d))
+
+        self.optimizer = optim.SGD(self.W.parameters(), lr=0.1, **opt_args)
+
+    def init_latents(self, X, **args):
+
+        with torch.no_grad():
+            Z = X@self.W.weight.numpy()
+        self.S = 1.0*(Z > 0)
+        self.Z = Z*self.S  ## Rectify multipliers
+
+        self.StS = self.S.T@self.S
+
+    def EStep(self, S, X, inplace=True, slab=True):
+
+        with torch.no_grad():
+            W = self.W.weight.numpy()
+            b = self.W.bias.numpy()
+            XW = (X@W - b@W)
+            WtW = W.T@W
+
+        newS, newZ = bae_search.snmf(
+                               XW=XW, 
+                               S=S,
+                               Z=self.Z,
+                               WtW=WtW, 
+                               StS=self.StS, N=self.n, 
+                               tau=self.slab_prior,
+                               beta=self.tree_reg, 
+                               alpha=self.sparse_reg,
+                               sigma2=self.sigma_x,
+                               temp=self.temp,
+                               inplace=inplace
+                               )
+
+        if slab:
+            return newS*newZ
+        else:
+            return newS
+
+    def MStep(self, ES, X):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
+
+        Spt = torch.FloatTensor(ES)
+        Xpt = torch.FloatTensor(X)
+        ls = []
+        for _ in range(self.m_iters):
+            
+            self.optimizer.zero_grad()
+            
+            Xhat = self.W(Spt)
+            loss = torch.sum((Xpt - Xhat)**2)/len(Xpt)
+            
+            ls.append(loss.item())
+
+            ## Regularization on W
+            WtW = self.W.weight.T@self.W.weight
+            loss -= self.weight_pr_reg*((torch.trace(WtW)**2)/torch.sum(WtW**2))#/self.dim_hid
+            loss += self.weight_l1_reg*torch.sum(torch.abs(self.W.weight))#/self.dim_hid
+            loss += self.weight_l2_reg*torch.trace(WtW)#/self.dim_hid
+            
+            loss.backward()
+            
+            self.optimizer.step()
+
+            if self.nonneg:
+                with torch.no_grad():
+                    self.W.weight[self.W.weight<0] = 0
+                    self.W.bias[self.W.bias<0] = 0
+
+                    ## resample dead weights
+                    dead = self.W.weight.sum(0) == 0
+                    newW = torch.randn(self.d, dead.sum())/np.sqrt(self.d)
+                    newW[newW < 0] = 0
+                    self.W.weight[:,dead] = newW
+
+        with torch.no_grad():
+            new_sig = np.mean((X - Xhat.numpy())**2)
+            self.sigma_x += self.scl_lr*(new_sig - self.sigma_x)
+
+        return new_sig
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        N = self.S@self.W.T + self.b
+        return np.mean((X[mask] - N[mask])**2)
 
 # class SemiBMF(BMF):
 #     """
@@ -488,29 +653,36 @@ class KernelBMF(BMF):
     dim_hid: int
     sparse_reg: float = 0
     tree_reg: float = 1e-2
-    scl_lr: float = 1
     # alpha_pr: float = 2
     # beta_pr: float = 2
+    uniform_scale: bool = True
     kernel_input: bool = False  # should we expect a kernel as input
-                                # or a feature matrix
 
-    def init_params(self, X):
+    def init_params(self, X, scl_lr=1):
 
         # K = self.X@self.X.T
         # notI = (1 - np.eye(self.n))/(self.n-1) 
         # self.data = (K - K@notI - (K*notI).sum(0) + ((K@notI)*notI).sum(0)).T 
 
+        self.n, self.d = X.shape
+        self.scl_lr = scl_lr
         if self.kernel_input:
             X_ = util.center(X)
             # self.scl = np.mean(X_**2)
-            self.scl = 1
+            if self.uniform_scale:
+                self.scl = 1
+            else:
+                self.scl = np.ones(self.dim_hid)
             self.data_norm = np.sum(X_**2)
         else:
             X_ = X - X.mean(0)
-            self.scl = np.mean(X_**2)
+            if self.uniform_scale:
+                self.scl = np.mean(X_**2)
+            else:
+                self.scl = np.mean(X_**2) * np.ones(self.dim_hid)
             self.data_norm = np.sum((X_.T@X_)**2)
 
-    def init_latents(self, X):
+    def init_latents(self, X, **kwargs):
 
         # coding_level = np.random.beta(self.alpha_pr, self.beta_pr, self.dim_hid)/2
         # num_active = np.floor(coding_level*len(X)).astype(int)
@@ -528,9 +700,9 @@ class KernelBMF(BMF):
         self.StS = self.S.T@self.S
         self.StX = self.S.T@X
 
-    def __call__(self):
+    def __call__(self, S):
 
-        return self.scl*util.center(self.S@self.S.T)
+        return self.scl*util.center(S@S.T)
 
     def loss(self, X):
         """
@@ -549,20 +721,19 @@ class KernelBMF(BMF):
             Knrm = np.sum(X_.T@X_**2)
 
         Qnrm = (self.scl**2)*np.sum(StS**2)
-    
-        
+            
         return (Qnrm + Knrm - 2*dot)/Knrm
     
     def EStep(self, S, X, inplace=True):
 
         if self.kernel_input: # the input is a kernel matrix
-            newS = bae_search.kerbmf2(X, 1.0*S, scl=self.scl, 
+            newS = bae_search.kerbmf2(X, S, scl=self.scl, 
                 StS=self.StS, N=self.n, inplace=inplace,
                 alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
 
         else: # the input is a feature matrix
-            newS = bae_search.kerbmf(X, 1.0*S, scl=self.scl, 
-                StS=self.StS, StX = self.StX, N=self.n, inplace=inplace,
+            newS = bae_search.kerbmf(X, S, scl=self.scl, 
+                StS=self.StS, StX=self.StX, N=self.n, inplace=inplace,
                 alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
 
         return newS
@@ -585,6 +756,832 @@ class KernelBMF(BMF):
         self.scl += self.scl_lr*(dot/nrm - self.scl)
         
         return 1 + ((self.scl**2)*nrm - 2*self.scl*dot)/self.data_norm
+
+
+@dataclass
+class KernelBMF2(BMF):
+    
+    dim_hid: int
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    uniform_scale: bool = True
+    l1_reg: float = 0.0        # only if non-uniform
+    kernel_input: bool = False  # should we expect a kernel as input
+
+    def init_params(self, X, scl_lr=1):
+        self.n, self.d = X.shape
+        self.scl_lr = scl_lr
+        
+        if self.kernel_input:
+            X_ = util.center(X)
+            # Always initialize as a 1D array to satisfy the Numba signature
+            self.scl = np.ones(self.dim_hid)
+            self.data_norm = np.sum(X_**2)
+        else:
+            X_ = X - X.mean(0)
+            # Always initialize as a 1D array to satisfy the Numba signature
+            self.scl = np.ones(self.dim_hid)
+            self.data_norm = np.sum((X_.T@X_)**2)
+
+    def init_latents(self, X, **kwargs):
+        if self.kernel_input:
+            l, V = la.eigh(X)
+            Mx = np.diag(np.sqrt(l+1e-6))@V@np.random.randn(self.d, self.dim_hid)
+        else:
+            Mx = X@np.random.randn(self.d, self.dim_hid)
+
+        self.S = np.array(1.0*(Mx >= 0.5)) 
+        self.StS = self.S.T@self.S
+        self.StX = self.S.T@X
+
+    def __call__(self, S):
+        # Matrix representation of S D S' centered
+        return np.einsum('...ik,k,...jk->...ij', S, self.scl, S)
+
+    def loss(self, X):
+        S = self.S 
+        StS = self.StS - np.outer(np.diag(self.StS), np.diag(self.StS))/len(X)
+        
+        if self.kernel_input:
+            V_dot = np.diag(S.T @ util.center(X) @ S)
+            Knrm = np.sum(util.center(X)**2)
+        else:
+            V_dot = np.sum((S.T@X)**2, axis=1)
+            X_ = X - X.mean(0)
+            Knrm = np.sum(X_.T@X_**2)
+
+        # Generalized inner products for diagonal D layout
+        dot = np.sum(self.scl * V_dot)
+        Qnrm = self.scl @ (StS**2) @ self.scl
+            
+        return (Qnrm + Knrm - 2*dot)/Knrm
+    
+    def EStep(self, S, X, inplace=True):
+        if self.kernel_input: 
+            newS = bae_search.kerbmf2(
+                X, 
+                S, scl=self.scl, 
+                StS=self.StS, N=self.n, inplace=inplace,
+                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
+        else: 
+            newS = bae_search.kerbmf3(
+                X, 
+                S, 
+                scl=self.scl, 
+                StS=self.StS, StX=self.StX, N=self.n, inplace=inplace,
+                alpha=self.sparse_reg, beta=self.tree_reg, temp=self.temp)
+        return newS
+
+    def MStep(self, ES, X):
+            """
+            Optimally scale S, enforcing non-negativity on the weights.
+            """
+            S_ = ES - ES.mean(0)
+            StS = self.StS - np.outer(np.diag(self.StS), np.diag(self.StS))/len(X)
+            StX = self.StX - np.outer(np.diag(self.StS), X.mean(0))
+
+            if self.kernel_input:
+                V_dot = np.diag(S_.T @ X @ S_)
+            else:
+                V_dot = np.sum(StX**2, axis=1)
+                
+            G = StS**2
+            
+            if self.uniform_scale:
+                dot = np.sum(V_dot)
+                nrm = np.sum(G)
+                # V_dot and G are strictly positive, but defensive clipping is safe
+                target = np.full(self.dim_hid, max(0.0, dot / nrm))
+            else:
+                # --- Projected Gradient Step with Exact Line Search ---
+                # 1. Compute the gradient dL/dw
+                grad = G @ self.scl - V_dot + self.l1_reg
+                
+                # 2. Compute the exact optimal step size for the quadratic form
+                # Added 1e-8 to prevent division by zero if gradient is completely flat
+                eta = np.dot(grad, grad) / (np.dot(grad, G @ grad) + 1e-8)
+                
+                # 3. Take the step and project onto the non-negative orthant
+                target = np.maximum(0.0, self.scl - eta * grad)
+            
+            # Exponential Moving Average update using your existing scl_lr
+            # (This mathematically preserves non-negativity since target >= 0 and scl_lr <= 1)
+            self.scl += self.scl_lr * (target - self.scl)
+            
+            # Compute exact multi-feature normalization matching the loss surface
+            Qnrm = self.scl @ G @ self.scl
+            dot_total = np.sum(self.scl * V_dot)
+            
+            return 1 + (Qnrm - 2*dot_total)/self.data_norm
+
+
+@dataclass
+class CorrBMF(BMF):
+    """
+    Correlated BMF
+    """
+
+    dim_hid: int
+    nonneg: bool = False
+    fit_intercept: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    pr_reg: float = 1e-2
+    l2_reg: float = 1e-2
+    m_iters: float = 1
+    J_l1_reg: float = None 
+    J_loss: str = 'rple'
+
+    def __call__(self, S):
+        return S@self.W.T + self.b
+
+    def init_params(self, X, J_lr=1e-2, **opt_args):
+
+        self.n, self.d = X.shape
+
+        if self.J_l1_reg is None:
+            self.J_l1_reg = np.sqrt(np.log(self.dim_hid**2 / 1e-3)/self.n)
+            if self.J_loss == 'rple':
+                self.J_l1_reg *= 0.2
+            else:
+                self.J_l1_reg *= 0.8
+
+        self.b = nn.Parameter(torch.zeros(self.d)) # Initialize b
+
+        ## Initialize W
+        W = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
+        if self.nonneg:
+            W[W < 0] = 0
+        self.W = nn.Parameter(torch.FloatTensor(W))
+
+        ## Initialize J
+        self.J = nn.Linear(self.dim_hid, self.dim_hid)
+        self.J.weight.data.copy_(torch.zeros(self.dim_hid, self.dim_hid))
+        self.J.bias.data.copy_(torch.zeros(self.dim_hid))
+        parametrize.register_parametrization(self.J, "weight", ZeroDiag())
+
+        # self.optimizer = optim.Adam([{"params":[self.W]},
+        #                              {"params":self.J.parameters(), "lr":J_lr}], 
+        #                              **opt_args)
+        self.optimizer = optim.SGD([{"params":[self.W]},
+                                    {"params":self.J.parameters(), "lr":J_lr}], 
+                                    **opt_args)
+
+    def init_latents(self, X, **args):
+        ## Initialize S 
+        Mx = (X@self.W).detach().numpy()
+        self.S = 1*(Mx >= 0.5)
+
+    def EStep(self, S, X, inplace=True):
+
+        # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
+        #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)
+
+        with torch.no_grad():
+            XW = (X@self.W - self.b@self.W)
+            WtW = self.W.T@self.W
+
+            XW = XW.detach().numpy()
+            WtW = WtW.detach().numpy()
+
+            J = self.J.weight.detach().numpy()
+            h = self.J.bias.detach().numpy()
+            J = (J + J.T) / 2
+            J = 4*J + 2*np.diag(h - 2*J.sum(1))
+
+        if self.tree_reg > 1e-6:
+            StS = 1.0*(S.T@S)
+            newS = bae_search.sbmf(XW, 1.0*S, WtW + J, 
+                StS=StS, N=self.n, 
+                beta=self.tree_reg, alpha=self.sparse_reg,
+                temp=self.temp)
+        else:
+            newS = bae_search.sbmf(XW, 1.0*S, WtW + J,
+                beta=self.tree_reg, alpha=self.sparse_reg,
+                temp=self.temp)
+
+        return newS
+
+    def MStep(self, ES, X):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
+
+        Spt = torch.FloatTensor(ES)
+        Srbm = 2*Spt - 1
+        ls = []
+        for _ in range(self.m_iters):
+            
+            self.optimizer.zero_grad()
+            
+            Xhat = Spt@self.W.T + self.b
+            loss = torch.sum((X - Xhat)**2)/len(X)
+            
+            ls.append(loss.item())
+
+            ## Regularization on W
+            WtW = self.W.T@self.W
+            loss -= self.pr_reg*((torch.trace(WtW)**2)/torch.sum(WtW**2))/self.dim_hid
+            loss += self.l2_reg*torch.trace(WtW)/self.dim_hid
+
+            ## Inverse Ising via log-RISE
+            pred = self.J(Srbm)
+            if self.J_loss == 'logrise':
+                loss += torch.sum(torch.logsumexp(-pred*Srbm, 1)) / len(X)
+            else:
+                loss += torch.sum(nn.Softplus()(-2*pred*Srbm)) / len(X)
+            loss += self.J_l1_reg*torch.sum(torch.abs(self.J.weight))
+
+            loss.backward()
+            
+            self.optimizer.step()
+
+            if self.nonneg:
+                with torch.no_grad():
+                    self.W[self.W<0] = 0
+                    self.b[self.b<0] = 0
+
+        return [ls[-1], self.J.weight.detach().numpy(), self.J.bias.detach().numpy()]
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        N = self.S@self.W.T + self.b
+        return np.mean((X[mask] - N[mask])**2)
+
+
+@dataclass
+class SCPD(BMF):
+    """
+    Sparse canonical polyadic decomposition
+    """
+
+    dim_hid: int
+    nonneg: bool = False
+    fit_intercept: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    pr_reg: float = 1e-2
+    l1_reg: float = 1e-2
+    m_iters: int = 1            # how many gradient steps
+    nmf_init: bool = False
+
+    def __call__(self):
+        with torch.no_grad():
+            U = self.U.detach().numpy()
+            V = self.V.detach().numpy()
+            b = self.b.detach().numpy()
+
+        Xhat = np.einsum('ck,tk,nk->ctn', self.S, U, V) + b
+        return Xhat
+
+    def initialize(self, X, **opt_args):
+
+        self.n, self.t, self.d = X.shape # X is a 3d tensor
+        X_ = X.numpy()
+
+        if self.nmf_init: # Initialize with NMF
+            U = np.zeros((self.t, self.dim_hid))
+            V = np.zeros((self.d, self.dim_hid))
+            if self.nonneg:
+                nmf = NMF(self.dim_hid, l2_ratio=1, alpha_W=self.weight_l2_reg)
+
+                Z = nmf.fit_transform(self.data - self.data.min())
+            else:
+                nmf = df_util.SemiNMF(self.dim_hid)
+                nmf.fit(X_.reshape((self.n, -1)).T)
+                Z = nmf.Z.T
+                for k in range(self.dim_hid):
+                    Wk = nmf.W[:,k].reshape((self.t, self.d))
+                    Upca,s,Vpca = la.svd(Wk,full_matrices=False)
+                    U[:,k] = Upca[:,0] * np.sqrt(s[0])
+                    V[:,k] = Vpca[0]
+
+            self.S = df_util.binarize(Z)
+
+        else:
+            ## Initialize W
+            U = np.random.randn(self.t, self.dim_hid)/np.sqrt(self.t)
+            V = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
+
+            ## Initialize S 
+            XW = (U[None]*((X_-X_.mean(0))@V)).sum(1)
+            self.S = 1*(XW >= 0.5)
+
+        if self.nonneg:
+            U[U < 0] = 0
+            V[V < 0] = 0
+
+        self.U = nn.Parameter(torch.tensor(U))
+        self.V = nn.Parameter(torch.tensor(V))
+
+        self.b = nn.Parameter(X.mean(0))
+
+        self.optimizer = optim.Adam([self.U,self.V,self.b], **opt_args)
+
+    def EStep(self, S, X):
+
+        # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
+        #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)
+
+        with torch.no_grad():
+            XW = (self.U[None]*((X-self.b)@self.V)).sum(1)
+            WtW = (self.U.T@self.U)*(self.V.T@self.V)
+
+            XW = XW.detach().numpy()
+            WtW = WtW.detach().numpy()
+
+        if self.tree_reg > 1e-6:
+            StS = 1.0*S.T@S
+            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
+                StS=StS, N=self.n, 
+                beta=self.tree_reg, alpha=self.sparse_reg,
+                temp=self.temp)
+        else:
+            newS = bae_search.sbmf(XW, 1.0*S, WtW, 
+                beta=self.tree_reg, alpha=self.sparse_reg,
+                temp=self.temp)
+
+        return newS
+
+    def MStep(self, ES, X):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
+
+        Spt = torch.tensor(ES)
+        # ls = []
+        for _ in range(self.m_iters):
+            
+            self.optimizer.zero_grad()
+            
+            Xhat = torch.einsum('ck,tk,nk->ctn', Spt, self.U, self.V)
+            loss = torch.sum((X - Xhat - self.b)**2)/len(X)
+            
+            # ls.append(loss.item())
+            
+            VtV = self.V.T@self.V
+            loss -= self.pr_reg*((torch.trace(VtV)**2)/torch.sum(VtV**2))/self.dim_hid
+            loss += self.l1_reg*torch.sum(torch.abs(self.V))/self.dim_hid
+            loss += self.l1_reg*torch.sum(torch.abs(self.U))/self.dim_hid
+
+            loss.backward()
+            
+            self.optimizer.step()
+
+            if self.nonneg:
+                with torch.no_grad():
+                    self.V[self.V<0] = 0
+                    self.U[self.U<0] = 0
+                    self.b[self.b<0] = 0
+
+        return loss.item()
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        return np.mean((X[mask] - self()[mask])**2)
+
+@dataclass
+class ConvBMF(BMF):
+    """
+    Convolutional BMF
+    """
+
+    dim_hid: int
+    kernel_size: int
+    # rank: int = None
+    nonneg: bool = False
+    fit_intercept: bool = True
+    sparse_reg: float = 1e-2
+    seq_reg: float = 1e-2
+    time_sparsity: float = 1e-1
+    feature_sparsity: float = 1e-1
+    pr_reg: float = 1e-2
+    ker_reg: float = 1e-2
+    gp_width: float = 0.1
+    m_iters: int = 1            # how many gradient steps
+
+    def __call__(self):
+        with torch.no_grad():
+            K = self.K.flip([2]).detach().numpy()
+            b = self.b.detach().numpy()
+
+            Xhat = F.conv1d(self.S, self.K.flip([2]), padding=self.pad) + self.b
+        
+        return Xhat
+
+    def init_params(self, X, **opt_args):
+
+        self.n, self.d, self.t = X.shape # X is a 3d tensor
+        
+        self.pad = self.kernel_size-1
+
+        ## Initialize kernels
+        t = np.linspace(0, 1, self.kernel_size)
+        ker = util.RBF(self.gp_width)
+
+        ## Initialize convolutions from GP
+        K = util.gaussian_process(t[:,None], (self.d, self.dim_hid), ker)
+        K /= np.sqrt(self.d*self.dim_hid)
+
+        if self.nonneg:
+            K[K < 0] = 0
+
+        self.K = nn.Parameter(torch.FloatTensor(K))
+        if self.fit_intercept:
+            self.b = nn.Parameter(X.mean(0))
+            self.optimizer = optim.Adam([self.K,self.b], **opt_args)
+
+        else:
+            self.b = torch.zeros(self.d, self.t)
+            self.optimizer = optim.Adam([self.K], **opt_args)
+
+    def init_latents(self, X, **opt_args):
+
+        XW = F.conv1d(X-self.b, self.K.transpose(0,1), padding=0)
+        self.S = 1*(XW >= 0)
+
+    def EStep(self, S, X):
+
+        with torch.no_grad():
+            Kt = self.K.transpose(0,1)
+            XW = F.conv1d(X-self.b, Kt, padding=0)
+            WtW = F.conv1d(Kt, Kt, padding=self.pad)
+
+            XW = XW.detach().numpy()
+            WtW = WtW.detach().numpy()
+
+            # filt =  np.ones(2*self.kernel_size-1)
+            # XWreg = np.apply_along_axis(np.convolve, 0, XW, filt, mode='same')
+            filt = np.ones(2 * self.kernel_size - 1)
+            XW_smooth = np.apply_along_axis(
+                lambda x: np.convolve(x, filt, mode='same'), 2, XW)   # axis 2 = time
+            XWreg = XW_smooth.sum(axis=1, keepdims=True) - XW_smooth  # sum over c'≠c
+
+            S_ = S.detach().numpy()
+
+        newS = bae_search.convbmf(XW, S_, WtW, 
+            beta=self.feature_sparsity, 
+            alpha=self.time_sparsity,
+            l1_reg=self.sparse_reg,
+            temp=self.temp)
+
+        return torch.FloatTensor(newS)
+
+    def MStep(self, ES, X):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
+
+        ls = []
+        for _ in range(self.m_iters):
+            
+            self.optimizer.zero_grad()
+
+            Xhat = F.conv1d(ES, self.K.flip([2]), padding=self.pad) + self.b
+            loss = torch.sum((X - Xhat)**2)/len(X)
+            
+            ls.append(1*loss.item())
+
+            ## Orthogonality regularization on primitives
+            ## Based on seq-NMF regularizer from Alex's paper
+            filt = torch.ones(2*self.kernel_size-1)
+            XW = F.conv1d(X-self.b, self.K.transpose(0,1), padding=0)
+            Sfilt = F.conv1d(ES.T, filt.flip(), padding=self.pad)
+            loss += self.seq_reg*torch.sum(torch.abs(XW@Sfilt))
+
+            ls.append(1*loss.item())
+
+            loss.backward()
+            
+            self.optimizer.step()
+
+            if self.nonneg:
+                with torch.no_grad():
+                    self.K[self.K<0] = 0
+                    self.b[self.b<0] = 0
+
+        return [ls[-2]-ls[-1], ls[-2]]
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        return np.mean((X[mask] - self()[mask])**2)
+
+
+@dataclass
+class RRBMF(BMF):
+    """
+    Reduced rank BMF
+    """
+
+    dim_hid: int
+    rank: int 
+    nonneg: bool = False
+    fit_intercept: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    pr_reg: float = 1e-2
+    l1_reg: float = 0.0
+    l2_reg: float = 1e-2
+    m_iters: int = 1            # how many gradient steps
+
+    def __call__(self, S):
+        with torch.no_grad():
+        #     U = self.U.detach().numpy()
+        #     V = self.V.detach().numpy()
+        #     b = self.b.detach().numpy()
+
+            beta = self.V@self.U.T
+            Xhat = torch.einsum('...ck,knt->...ctn', torch.tensor(S), beta) + self.b
+        return Xhat
+
+    def init_params(self, X, U=None, scl_lr=0.0, opt_alg=optim.SGD, **opt_args):
+
+        self.n, self.t, self.d = X.shape # X is a 3d tensor
+        X_ = X.numpy()
+
+        ## Initialize W
+        if U is None:
+            U = np.random.randn(self.t, self.rank)/np.sqrt(self.t*self.rank)
+            fit_U = True
+        else:
+            fit_U = False
+        V = np.random.randn(self.dim_hid, self.d, self.rank)/np.sqrt(self.d*self.rank)
+        if self.nonneg:
+            U[U < 0] = 0
+            V[V < 0] = 0
+        b = X_.mean(0)
+
+        self.sigma_x = 1.0
+        self.scl_lr = scl_lr
+
+        if fit_U:
+            self.U = nn.Parameter(torch.tensor(U))
+        else:
+            self.U = torch.tensor(U)
+        self.V = nn.Parameter(torch.tensor(V))
+        self.b = nn.Parameter(torch.tensor(b))
+
+        if fit_U:
+            params = [self.U,self.V,self.b]
+        else:
+            params = [self.V,self.b]
+
+        self.optimizer = opt_alg(params,**opt_args)
+
+    def init_latents(self, X, **kwargs):
+
+        with torch.no_grad():
+        ## Initialize S 
+            XW = np.einsum('kdt,ntd->nk',self.V@self.U.T,X-self.b)
+        self.S = 1.0*(XW > 0)
+        self.StS = self.S.T@self.S
+
+    def EStep(self, S, X, inplace=False):
+
+        # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
+        #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)
+
+        with torch.no_grad():
+            beta = self.V@self.U.T
+
+            XW = torch.einsum('kdt,ntd->nk',beta,X-self.b)
+            WtW = torch.einsum('kdt,cdt', beta,beta)
+
+            XW = XW.detach().numpy()
+            WtW = WtW.detach().numpy()
+
+        newS = bae_search.sbmf(
+            XW / self.sigma_x,
+            S,
+            WtW / self.sigma_x,
+            StS=self.StS, N=self.n, 
+            beta=self.tree_reg, alpha=self.sparse_reg,
+            temp=self.temp,
+            inplace=inplace,
+            )
+
+        return newS
+
+    def MStep(self, ES, X):
+        """
+        Maximise log-likelihood conditional on S, with p.r. regularization
+        """
+
+        Spt = torch.tensor(ES)
+        # ls = []
+        for _ in range(self.m_iters):
+            
+            self.optimizer.zero_grad()
+            
+            beta = self.V@self.U.T
+            Xhat = torch.einsum('ck,knt->ctn', Spt, beta) + self.b
+            loss = torch.sum((X - Xhat)**2) / (self.d * self.t)
+            
+            new_sig = loss.item() / len(X)
+                
+            VtV = self.V.swapaxes(1,2)@self.V
+            trace = torch.einsum('kii->k', VtV)
+            norm = torch.sum(VtV**2, axis=(1,2))
+            loss -= self.pr_reg*torch.sum((trace**2)/norm) / (self.rank*self.dim_hid)
+            loss += self.l1_reg*torch.mean(torch.abs(self.V))
+            loss += self.l2_reg*torch.mean(beta**2)
+
+            loss.backward()
+            
+            self.optimizer.step()
+
+            with torch.no_grad():
+                self.sigma_x += self.scl_lr*(new_sig - self.sigma_x)
+                if self.nonneg:
+                    self.V[self.V<0] = 0
+                    self.U[self.U<0] = 0
+                    self.b[self.b<0] = 0
+
+        return new_sig
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        return np.mean((X[mask] - self()[mask])**2) / np.mean(X[mask]**2)
+
+@dataclass
+class SpikeRRNMF(BMF):
+    """
+    Reduced rank NMF with spike-and-slab prior on S.
+    Continuous slab multipliers Z replace the hard binary activations
+    passed to the M-step, leaving the decoder math identical.
+    """
+
+    dim_hid: int
+    rank: int
+    nonneg: bool = False
+    fit_intercept: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    slab_prior: float = 1.0      # <-- tau: prior rate on slab magnitude
+    pr_reg: float = 1e-2
+    l1_reg: float = 0.0
+    l2_reg: float = 0.0
+    m_iters: int = 1
+
+    def __call__(self, SZ):
+        with torch.no_grad():
+            beta = self.V @ self.U.T
+            Xhat = torch.einsum('...ck,knt->...ctn', torch.tensor(SZ), beta) + self.b
+        return Xhat
+
+    def init_params(self, X, U=None, **opt_args):
+
+        self.n, self.t, self.d = X.shape
+        X_ = X.numpy()
+
+        if U is None:
+            U = np.random.randn(self.t, self.rank) / np.sqrt(self.t * self.rank)
+            fit_U = True
+        else:
+            fit_U = False
+
+        V = np.random.randn(self.dim_hid, self.d, self.rank) / np.sqrt(self.d * self.rank)
+        if self.nonneg:
+            U[U < 0] = 0
+            V[V < 0] = 0
+
+        if fit_U:
+            self.U = nn.Parameter(torch.tensor(U))
+        else:
+            self.U = torch.tensor(U)
+        self.V = nn.Parameter(torch.tensor(V))
+        self.b = nn.Parameter(torch.tensor(X_.mean(0)))
+
+        if fit_U:
+            self.optimizer = optim.Adam([self.U, self.V, self.b], **opt_args)
+        else:
+            self.optimizer = optim.Adam([self.V, self.b], **opt_args)
+
+    def init_latents(self, X, **args):
+
+        X_ = X.numpy()
+        with torch.no_grad():
+            beta = self.V @ self.U.T
+            XW = np.einsum('kdt,ntd->nk', beta.numpy(), X_ - self.b.numpy())
+
+        self.S = 1.0 * (XW >= 0.5)
+        self.Z = XW * self.S
+        self.StS = self.S.T @ self.S
+
+    def EStep(self, S, X, slab=True):
+
+        with torch.no_grad():
+            beta = self.V @ self.U.T
+            XW  = torch.einsum('kdt,ntd->nk', beta, X - self.b).detach().numpy()
+            WtW = torch.einsum('kdt,cdt->kc', beta, beta).detach().numpy()
+
+        newS, newZ = bae_search.snmf(XW=XW, 
+                                    S=S,
+                                    Z=self.Z,
+                                    WtW=WtW,
+                                    tau=self.slab_prior,
+                                    beta=self.tree_reg,
+                                    alpha=self.sparse_reg,
+                                    temp=self.temp,
+                                    StS=self.StS, 
+                                    N=self.n)
+
+        self.Z = newZ  # keep slab state in sync
+
+        return newS * newZ if slab else newS
+
+    # MStep and loss are identical to RRBMF — no changes needed
+    def MStep(self, ES, X):
+        Spt = torch.tensor(ES)
+        ls = []
+        for _ in range(self.m_iters):
+            self.optimizer.zero_grad()
+            beta = self.V @ self.U.T
+            Xhat = torch.einsum('ck,knt->ctn', Spt, beta)
+            loss = torch.sum((X - Xhat - self.b) ** 2)
+            ls.append(loss.item())
+            VtV   = self.V.swapaxes(1, 2) @ self.V
+            trace = torch.einsum('kii->k', VtV)
+            norm  = torch.sum(VtV ** 2, dim=(1, 2))
+            loss -= self.pr_reg * torch.sum((trace ** 2) / norm) / self.rank
+            loss += self.l1_reg * torch.sum(torch.abs(self.V))
+            loss += self.l2_reg * torch.sum(beta ** 2)
+            loss.backward()
+            self.optimizer.step()
+            if self.nonneg:
+                with torch.no_grad():
+                    self.V[self.V < 0] = 0
+                    self.U[self.U < 0] = 0
+                    self.b[self.b < 0] = 0
+        return ls[-1]
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        return np.mean((X[mask] - self()[mask]) ** 2) / np.mean(X[mask] ** 2)
+
+@dataclass
+class Buffet(BMF):
+    """
+    Linear gaussian binary feature model
+    """
+
+    dim_hid: int = np.inf
+    ibp_alpha: float = 1.0
+    sigma_x: float = 1.0
+    sigma_w: float = 1.0
+    sparse_reg: float = 0
+    l1_reg: float = 0.1
+
+    def __call__(self):
+        return self.S@self.W
+
+    def initialize(self, X):
+
+        self.n, self.d = X.shape
+        self.data = X #/np.sqrt(np.mean(X**2))
+
+        if self.dim_hid < np.inf:
+            self.infinite = False
+        else:
+            self.infinite = True
+            k_init = np.random.poisson(self.ibp_alpha*np.sum(1/np.arange(1,self.n+1)))
+            self.dim_hid = k_init
+
+        ## Initialize W
+        self.W = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
+
+        ## Initialize S 
+        Mx = self.data@self.W
+        self.S = 1*(Mx >= 0.5)
+
+        ## Initial posterior over W (i.e. ridge regression)
+        self.covW = la.inv(self.S.T@self.S/self.sigma_x**2 + np.eye(self.dim_hid) / self.sigma_w**2)
+        self.meanW = self.covW@(self.S.T@self.data / self.sigma_x**2)
+
+    def EStep(self, S, X):
+
+        newS = bae_search.gauss_bern(X, 1.0*S, self.covW, self.meanW,
+            sigma_x=self.sigma_x, alpha=self.sparse_reg, temp=self.temp)
+
+        return newS
+
+    def MStep(self, ES, X):
+        """
+        There's no M-step because we maintain a posterior over W
+        """
+        self.W = self.meanW
+        return np.mean((ES@self.W - X)**2)
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        N = self.S@self.W.T + self.b
+        return np.mean((X[mask] - N[mask])**2)
 
 
 ####################################################################
@@ -622,7 +1619,7 @@ class BAE(students.NeuralNet):
             min_temp=1e-4, max_iter=None, verbose=True, **opt_args):
 
         if max_iter is None:
-            max_iter = period*int(np.log(min_temp/initial_temp)/np.log(decay_rate))
+            max_iter = period*int(np.log(1e-4/initial_temp)/np.log(decay_rate))
 
         if verbose:
             pbar = tqdm(range(max_iter))
@@ -702,7 +1699,7 @@ class BAE(students.NeuralNet):
         qls = nn.BCEWithLogitsLoss()(C0, S)
         pls = self.MStep(S, batch[0])
 
-        return pls + self.beta*qls 
+        return pls + self.beta*qls
 
 @dataclass(eq=False)
 class BinaryAutoencoder(BAE):
@@ -949,3 +1946,5 @@ class BernVAE(BAE):
 #             StS += np.outer(S[i], S[i]) 
 
 #     return S #, en
+
+

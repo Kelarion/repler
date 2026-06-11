@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torchvision
 import torch.optim as optim
+from torch.nn.utils import parametrize
+
 import numpy as np
 import numpy.linalg as nla
 import matplotlib.pyplot as plt
@@ -147,8 +149,8 @@ def krusty(X, Y):
 
 def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, nonneg=False, **opt_args):
 
-    m,n = X.shape
-    l,n = Y.shape
+    n,m = X.shape
+    n,l = Y.shape
 
     k = min(m,l)
 
@@ -158,9 +160,11 @@ def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, nonneg=False, **opt_args):
     Y_ = torch.FloatTensor(Y)
     nrm = torch.mean(Y_**2)
 
-    W = nn.Parameter(torch.rand(l,m))
+    # W = nn.Parameter(torch.rand(l,m))
+    W = nn.Linear(m, l)
 
-    optimizer = optim.Adam([W], **opt_args)
+    # optimizer = optim.Adam([W], **opt_args)
+    optimizer = optim.Adam(W.parameters(), **opt_args)
 
     ls = []
     pr = []
@@ -168,21 +172,26 @@ def softkrusty(X, Y, lam=1e-2, gam=1e-2, iters=100, nonneg=False, **opt_args):
 
         optimizer.zero_grad()
 
-        loss = nn.MSELoss()(W@X_, Y_)
+        loss = nn.MSELoss()(W(X_), Y_)
+        # loss = nn.MSELoss()(W@X_, Y_)
         ls.append(loss.item()/nrm)
 
-        WtW = W.T@W
+        # WtW = W.T@W
+        WtW = W.weight.T@W.weight
         loss -= gam*((torch.trace(WtW)**2)/torch.sum(WtW**2))/k
-        loss += lam*torch.mean(W**2)
+        # loss += lam*torch.mean(W**2)
+        loss += lam*torch.trace(WtW) / k 
 
         loss.backward()
         optimizer.step()
 
         if nonneg:
             with torch.no_grad():
-                W[W<0] = 0
+                # W[W<0] = 0
+                W.weight[W.weight<0] = 0
+                W.bias[W.bias<0] = 0
 
-    return W.detach().numpy(), ls
+    return W.weight.detach().numpy(), W.bias.detach().numpy(), ls
 
 def minpr(W, lr=1e-2, nonneg=False, iters=100, beta=1e-2):
 
@@ -256,6 +265,33 @@ def permham(S, Z, norm=False):
     aye,jay = util.unbalanced_assignment(dH, one_sided=True)
 
     return (dH[aye,jay])[np.argsort(aye)]
+
+def permham_idx(S, Z, norm=False):
+    """
+    Compute the permutation-invariant hamming distance between S and Z
+
+    S is (num_item, num_S_features)
+    Z is (num_item, num_Z_features)
+
+    outputs an (num_S_features,)-sized vector of hamming distances
+    """
+
+    if np.all(np.abs(S**2 - S) < 1e-6):
+        S_ = 2*S-1
+    else:
+        S_ = S
+    if np.all(np.abs(Z**2 - Z) < 1e-6):
+        Z_ = 2*Z-1
+    else:
+        Z_ = Z
+
+    dH = len(S) - np.abs(S_.T@Z_)
+    if norm:
+        dH = dH/(np.sum(S>0,axis=0)[:,None])
+    aye,jay = util.unbalanced_assignment(dH, one_sided=True)
+
+    return aye,jay
+
 
 def porder(S):
     """
@@ -342,7 +378,8 @@ def porthant(c):
 
 def acosker(c):
     "from Cho and Saul (2009)"
-    return 1 - np.arccos(c)/np.pi
+    th = np.arccos(c)
+    return (np.sin(th) + (np.pi - th)*c)/np.pi
 
 def recenter(K):
     "recenter kernel so that first point is the origin"
@@ -603,6 +640,21 @@ def sparse_feats(num_feats, num_data, sparsity=0.1):
 
     return S*C
 
+
+def empty_graph(K):
+
+    return np.zeros((K, K)), np.zeros(K)
+
+def random_tree_couplings(K, rho=1, alpha=1, beta=0):
+
+    G = util.generate_parametric_no_chain_tree(K)
+    J, idx = util.generate_signed_block_matrix(G, alpha=beta)
+
+    h = -1 * np.ones(K)
+    source = next(nx.topological_sort(G))
+    h[idx[source]] = 0
+
+    return J, h
 
 #####################################
 ##### NMF ###########################
@@ -1724,7 +1776,7 @@ def allpaths(S, verbose=False, separate_duplicates=True, ovlp=None, thr=1e-3):
     """
 
     ## Only unique non-zero columns
-    S_ = np.unique(np.mod(S+S[[0]],2),axis=1)
+    S_, sidx = np.unique(np.mod(S+S[[0]],2),axis=1, return_inverse=True)
     S_ = S_[:,S_.sum(0)>0]
 
     ## Identify unique rows
@@ -1919,6 +1971,179 @@ def path(S, i, j):
 
     return np.array(edges).T, np.array(H[N:])
 
+
+class Symmetric(nn.Module):
+    def forward(self, X):
+        return X.triu(1) + X.triu(1).T  # Return a symmetric matrix
+
+    def right_inverse(self, A):
+        return A.triu(1)
+
+class ZeroDiag(nn.Module):
+    def forward(self, X):
+        return X.triu(1) + X.tril(-1)  # Return a symmetric matrix
+
+    def right_inverse(self, A):
+        return A.triu(1) + A.tril(-1)
+
+class MaxEnt(nn.Module):
+
+    def __init__(self, N, method='logrise'):
+        super().__init__()
+
+        self.N = N
+        self.method = method
+
+        self.J = nn.Linear(N,N)
+        self.J.weight.data.copy_(torch.zeros(N, N))
+        self.J.bias.data.copy_(torch.zeros(N))
+        # parametrize.register_parametrization(self.J, "weight", Symmetric())
+        parametrize.register_parametrization(self.J, "weight", ZeroDiag())
+
+    def fit(self, S, max_iter=100, l1_reg=None, **opt_args):
+
+        M = len(S)
+
+        if l1_reg is None:
+            if self.method == 'logrise':
+                l1_reg = 0.8*np.sqrt(np.log(self.N**2 / 1e-3)/M)
+            else:
+                l1_reg = 0.2*np.sqrt(np.log(self.N**2 / 1e-3)/M)
+                
+        optimizer = optim.Adam(self.J.parameters(), **opt_args)
+        
+        Spt = torch.FloatTensor(S)
+        ls = []
+        for _ in range(max_iter):
+            
+            optimizer.zero_grad()
+
+            pred = self.J(Spt)
+            if self.method == 'logrise':
+                loss = torch.sum(torch.logsumexp(-pred*Spt, 1)) / M
+            elif self.method == 'rple':
+                loss = torch.sum(nn.Softplus()(-2*pred*Spt)) / M
+
+            loss += l1_reg*torch.sum(torch.abs(self.J.weight)) / self.N
+            # loss += l1_reg*torch.sum(torch.abs(self.J.bias)) / self.N
+
+            loss.backward()
+
+            ls.append(loss.item())
+            
+            optimizer.step()
+
+        return ls
+
+def bazinga(S,mean,cov,l1_reg=None,method='rple',max_iter=100):
+    """
+    Solve inverse ising problem with gradient descent
+    """
+
+    N, M = S.shape
+
+    cov_ = cov - np.eye(M)
+    mean_ = (1-np.eye(M))*mean[None]
+
+    J = np.zeros(cov.shape)
+    h = np.zeros(mean.shape)
+
+    if l1_reg is None:
+        if method == 'logrise':
+            l1_reg = 0.8*np.sqrt(np.log(N**2 / 1e-3)/M)
+        else:
+            l1_reg = 0.2*np.sqrt(np.log(N**2 / 1e-3)/M)
+
+    ls = []
+    for _ in range(max_iter):
+
+        pred = np.tanh(S@J + h)
+
+        dJ = pred.T@S/M - cov_ + l1_reg*np.sign(J)
+        dh = pred.mean(0) - mean_
+
+
+
+def fit_J(S, strict=True):
+    
+    n, k = S.shape
+    aye, jay = np.triu_indices(k)
+    
+    allS = util.F2(k)
+    allS = allS[minham(allS.T, S.T)>0]
+    
+    if len(allS) == 0:
+        return np.zeros((k,k))
+    
+    ## vec'd matrices
+    allS_ = util.outers(allS.T)[:,aye,jay]
+    S_ = util.outers(S.T)[:,aye,jay]
+    
+    if strict:
+        c = np.ones(S_.shape[1])
+        # c = -allS_.sum(0)
+        bub = -np.ones(len(allS))
+    else:
+        # c = np.ones(S_.shape[1])
+        c = -allS_.sum(0)
+        # c = -(1/(allS_.sum(1)+1e-12))@allS_
+        bub = np.zeros(len(allS))
+    beq = np.zeros(len(S))
+    
+    sol = lp(c, A_ub=-allS_, b_ub=bub, A_eq=S_, b_eq=beq, bounds=(-1,1))
+    
+    if sol.success:
+        J = np.zeros((k,k))
+        J[aye,jay] = sol.x
+        J += J.T
+        
+        return J
+    else:
+        return None
+
+def meanfield(S):
+
+    R = la.pinv((S-S.mean(0)).T@(S-S.mean(0)))
+    # R = (R > 1e-6) - 1*(R < -1e-6) + np.eye(len(S.T))
+    # r = 1*(R@S.mean(0)>0.5)
+    # J_ = R - 2*np.diag(r)
+    r = R@S.mean(0)
+
+    return R - np.diag(np.diag(R)), r
+
+def fixed_points(J):
+    """
+    Returns a set of fixed points if J is a valid matrix, None otherwise
+    """
+    
+    k = len(J)
+    allS = util.F2(k)
+    
+    val = util.qform(J, allS).squeeze()
+    if np.any(val < -1e-6):
+        return None 
+    
+    return allS[val < 1e-6]
+
+def boltzman(J, h, temp=1, n_samp=1, burn=10):
+
+    n = len(h)
+    s = np.random.choice([0,1], size=(n, n_samp))
+    for _ in range(burn):
+        for i in range(n):
+            p = spc.expit((J[i]@s + h[i]) / temp)
+            s[i] = 1*(np.random.rand(n_samp) < p)
+
+    return s
+
+def signdraw(G, **args):
+
+    edges,weights = zip(*nx.get_edge_attributes(G,'weight').items())
+    edge_col = [['r','b'][int(this)] for this in (np.array(weights)+1)//2]
+
+    pos = graphviz_layout(G)
+    
+    nx.draw(G, pos, edge_color=edge_col, **args)
 
 def plotgraph(S, type='neato', labels=None, **scat_args):
 

@@ -172,7 +172,7 @@ def fpcv(model, X, train_items, train_feats, classifier=svm.LinearSVC, **opt_arg
     model.S = Spred
     return ls, model.loss(B)
 
-def impcv(model, X, mask='random', folds=10, 
+def impcv(model, X, mask='random', folds=10, n_sample=1, 
             initial_temp=1, decay_rate=0.8, period=2,
             min_temp=1e-4, max_iter=None, verbose=False, **init_args):
     """
@@ -189,32 +189,36 @@ def impcv(model, X, mask='random', folds=10,
     if verbose:
         pbar = tqdm(range(max_iter))
 
-    n,d = X.shape
-    idx = np.arange(n*d).reshape((n,d))
-    ntest = int(n*d/folds)
+    # n,d = X.shape
+    # idx = np.arange(n*d).reshape((n,d))
+    ntest = int(np.prod(X.shape)/folds)
 
     Z = 1*X
 
-    these_idx = np.random.choice(idx.flatten(), ntest, replace=False)
-    M = np.isin(idx, these_idx)
+    # these_idx = np.random.choice(idx.flatten(), ntest, replace=False)
+    # M = np.isin(idx, these_idx)
+    foo = np.random.randn(*X.shape)
+    M = (foo < np.sort(foo.flatten())[ntest])
 
     ## Initialize masked values from `empirical distribution`
     Z[M] = np.random.choice(Z[~M], M.sum())
+    # Z[M] = torch.tensor(np.random.choice(Z[~M], M.sum()))
 
     model.initialize(Z, **init_args)
     en = []
     for it in range(max_iter):
         T = initial_temp*(decay_rate**(it//period))
         model.temp = T
-        en.append(model.grad_step(Z))
-        Z[M] = model()[M]
+        en.append(model.grad_step(Z))   # one E and M step
+        Z[M] = model(model.S)[M]               # optimize wrt masked values
 
         if verbose:
             pbar.update()
 
-    pred = model()
-    test = np.mean((X[M] - pred[M])**2)/np.mean(X[M]**2)
-    train = np.mean((X[~M] - pred[~M])**2)/np.mean(X[~M]**2)
+    pred = model(model.sample(X, n_samp=n_sample))
+
+    test = model.loglikelihood(X[M], pred[:,M])  #/(X[M]**2).mean()
+    train = model.loglikelihood(X[~M], pred[:,~M]) #/(X[~M]**2).mean()
 
     return train, test
 
@@ -262,8 +266,8 @@ def kerimpcv(model, X, mask='random', folds=10, diag=False,
         en.append(model.grad_step(util.center(Z)))
 
     pred = model()
-    test = np.mean((K[M] - pred[M])**2)/np.mean(K[M]**2)
-    train = np.mean((K[~M] - pred[~M])**2)/np.mean(K[~M]**2)
+    test = np.mean((K[M] - pred[M])**2) #/np.mean(K[M]**2)
+    train = np.mean((K[~M] - pred[~M])**2) #/np.mean(K[~M]**2)
 
     return train, test
 
@@ -407,6 +411,54 @@ def bernoulli(nat):
 @njit
 def enby(nat):
     return -np.log(1-np.exp(nat))
+
+#############################################################
+###### Numba helpers ########################################
+#############################################################
+
+@njit
+def log_ndtr(x: float) -> float:
+    """Robust log standard normal CDF for Numba."""
+    if x > -5.0:
+        return math.log(0.5 * math.erfc(-x / math.sqrt(2.0)))
+    else:
+        return -0.5 * x**2 - math.log(-x) - 0.5 * math.log(2 * math.pi)
+
+@njit
+def sample_trunc_norm(mu: float, nu: float) -> float:
+    """Samples from a normal distribution truncated to [0, inf)."""
+    if mu >= 0.0:
+        while True:
+            z = mu + nu * np.random.randn()
+            if z >= 0.0:
+                return z
+    else:
+        alpha_opt = (-mu + math.sqrt(mu**2 + 4 * nu**2)) / (2 * nu**2)
+        while True:
+            z = np.random.exponential(1.0 / alpha_opt)
+            log_rho = -(z - mu)**2 / (2 * nu**2) + alpha_opt * z
+            z_max = mu + alpha_opt * nu**2
+            log_rho_max = -(z_max - mu)**2 / (2 * nu**2) + alpha_opt * z_max
+            if math.log(np.random.rand()) <= log_rho - log_rho_max:
+                return z
+
+@njit
+def mode_trunc_norm(mu: float, nu: float) -> float:
+    """Mode of a normal distribution truncated to [0, inf)."""
+    if mu >= 0.0:
+        return mu
+    else:
+        return 0.0
+
+@njit
+def mean_trunc_norm(mu: float, nu: float) -> float:
+    """Mean of a normal distribution truncated to [0, inf)."""
+    
+    alpha = mu / nu
+
+    Z = math.sqrt(2 * math.pi) * 0.5 * ( 1 + math.erf(alpha / math.sqrt(2.0)))
+    return mu + nu * math.exp(-0.5 * alpha**2) / Z
+
 
 #############################################################
 ###### Custom distributions #################################

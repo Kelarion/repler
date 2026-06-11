@@ -280,6 +280,43 @@ class SBMF(BMFModel):
         return en[-1], S, T
 
 @dataclass
+class IBP(BMFModel):
+
+    dim_hid: int = None
+    decay_rate: float = 0.9
+    T0: float = 10
+    period: int = 2
+    sparse_reg: float = 0
+    sigma_x: float = 1.0
+    sigma_w: float = 1.0
+    alpha: float = 1.0
+    max_iter: int = None
+
+    def run_model(self, X, h):
+
+        mod = bae_models.Buffet(h, 
+                ibp_alpha=self.alpha,
+                sigma_x=self.sigma_x,
+                sigma_w=self.sigma_w,
+                sparse_reg=self.sparse_reg)
+
+        X_nrm = (X - X.mean(0))
+        X_nrm = X_nrm / np.sqrt(np.mean(X_nrm**2))
+
+        t0 = time()
+        en = mod.fit(X, decay_rate=self.decay_rate, 
+                            period=self.period, 
+                            initial_temp=self.T0,
+                            max_iter=self.max_iter,
+                            verbose=False)
+
+        T = time()-t0
+        S = mod.S
+
+        return en[-1], S, T
+
+
+@dataclass
 class SAE(exp.Model):
     
     dim_hid: int
@@ -432,6 +469,33 @@ class CatTask(exp.Task):
             Wtrues.append(W)
 
         return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
+
+
+@dataclass(kw_only=True)
+class SparseStructured(CatTask):
+
+    K: int          # number of concepts
+    N: int          # number of observations
+    temp: float     # temperature of boltzmann distribution
+    struct: str     # structure of graph
+    kwargs: dict    # parameters of random structure
+    slab: bool = False
+
+    def gen_latents(self):
+
+        if self.struct == 'none':
+            J,h = df_util.empty_graph(self.K)
+
+        elif self.struct == 'tree':
+            J,h = df_util.random_tree_couplings(self.K, **self.kwargs)
+
+        elif self.struct == 'categorical':
+            J,h = df_util.random_category_couplings(self.K, **self.kwargs)
+
+        S = df_util.boltzmann(J,h, temp=self.temp, n_samp=self.N)
+        Z = np.random.exponential(size=S.shape)
+
+        return S*Z
 
 
 @dataclass(kw_only=True)

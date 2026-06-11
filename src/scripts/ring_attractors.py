@@ -45,12 +45,21 @@ class RadialBoyfriend:
         else:
             self.shift = 0
         
+        self.denom = (np.exp(self.kap) - spc.i0(self.kap))
+
     def __call__(self, error, quantile=1e-4):
         """
         compute k(x,y) = k(x-y) ... so input x-y
         """
         denom = (np.exp(self.kap) - spc.i0(self.kap))
         return (np.exp(self.kap*np.cos(error)) - self.shift)/denom
+
+    def eigs(self, freq):
+        """
+        Eigenvalue at a particular integer frequency
+        """
+        
+        return spc.iv(freq, self.kap) / self.denom 
 
     def curv(self, x):
         """
@@ -85,6 +94,36 @@ class RadialBoyfriend:
 
 #%%
 
+def brute_force_proj(F, T, alpha, beta, dt=0.05, x0=None):
+    """
+    F is a concatenation of target representations 
+    """
+    
+    # x = 1*F[0]
+    if x0 is None:
+        x0 = 1*F[0]
+    
+    x = 1*x0
+    xs = [1*x]
+    thetas = [0]
+    for t in range(T):
+        theta = np.argmin(util.yuke(x[None], F))
+        dw = np.random.randn(*x.shape)
+        dx = alpha*(F[theta] - x) + beta*dw
+        
+        x += dt*dx
+        
+        xs.append(1*x)
+        thetas.append(1*theta)
+    
+    return np.array(xs), np.array(thetas)
+   
+# def theoretical(pop, T, alpha, beta, dt=0.05, th0=0):
+    
+    
+    
+#%%
+
 class softplus:
     
     def __init__(self, beta=2, axis=None):
@@ -111,7 +150,7 @@ class erf:
     def inv(self,x):
         return spc.erfinv(x-1)*2/(np.sqrt(np.pi)*self.beta)
 
-def rnn(J, x0, T, dt, phi=softplus, c=0):
+def rnn(J, x0, T, dt, phi=softplus, c=0, alpha=1, std=0):
     """
     Simulate an rnn up to time T with interval dt
     """
@@ -120,11 +159,34 @@ def rnn(J, x0, T, dt, phi=softplus, c=0):
     xs = [x0]
     for _ in range(T):
         p = phi(x)
-        x = (1-dt)*x + dt*(J@p - c*(p.mean(0) - 1))
+        dx = (J@p - c*(p.mean(0) - 1))
+        x = (1-dt)*x + dt*(alpha*dx + np.random.randn(*x.shape)*std)
         
         xs.append(1*x)
         # t += dt
     
+    return np.array(xs)
+
+def stoch_rnn(J, x0, T, dt, phi, c=0, alpha=1, std=0):
+    """
+    Simulate an RNN up to total time T with interval dt using Euler-Maruyama.
+    """
+    x = np.copy(x0)
+    xs = [np.copy(x0)]
+    
+    num_steps = int(T / dt)
+    
+    noise_scale = std * np.sqrt(dt)
+    
+    for _ in range(num_steps):
+        p = phi(x)
+        
+        network_input = J @ p - c * (p.mean(axis=0) - 1)
+        
+        x = (1 - dt) * x + dt * (alpha * network_input) + noise_scale * np.random.randn(*x.shape)
+        
+        xs.append(np.copy(x))
+        
     return np.array(xs)
 
 #%%
@@ -138,7 +200,6 @@ def classic_ring(N, width):
     theta = np.linspace(-np.pi, np.pi, N, endpoint=False)
     
     return kern(theta[None,:] - theta[:,None])
-
 
 def clark_ring(Phi, X, lam=1e-7):
     """
@@ -159,9 +220,12 @@ def clark_ring(Phi, X, lam=1e-7):
 N = 1000
 N_theta = 500
 width = 1
-act = 'soft'
-# act = 'erf'
+# act = 'soft'
+act = 'erf'
 classic = False
+
+# init_std = 1
+init_std = 0
 
 theta = np.linspace(-np.pi, np.pi, N_theta, endpoint=False)
 diff = theta[None] - theta[:,None]
@@ -178,7 +242,7 @@ else:
         phi = softplus(2)
         Phi = phi(X)
         Phi = Phi / Phi.mean(1, keepdims=True)
-        c = 10
+        c = 1
         
     else:
         phi = erf(2)
@@ -187,19 +251,20 @@ else:
 
 X = phi.inv(Phi)
 
-J = np.sqrt(6)*np.cos(diff)/N_theta
-# J = clark_ring(Phi, X, lam=1e-6)
+# J = np.sqrt(6)*np.cos(diff)/N_theta
+J = clark_ring(Phi, X, lam=1e-6)
 # J = X.T@la.pinv(Phi.T)
 
 # x0 = np.random.randn(len(J), 200) + X.mean(0)[:,None]
-x0 = X[::10].T + np.random.randn(*X[::10].T.shape)*5
+x0 = X[::10].T + np.random.randn(*X[::10].T.shape)*init_std
 
-X_t = rnn(J, x0, 1000, 0.05, phi=phi, c=c)
+# X_t = rnn(J, x0, 500, 0.05, phi=phi, c=c, std=0, alpha=1)
+X_t = stoch_rnn(J, x0, 50, 1e-2, phi=phi, c=c, std=1, alpha=np.sqrt(2))
 
 #%%
 
 U, S, _ = la.svd(Phi.T-Phi.T.mean(1)[:,None], full_matrices=False)
-pcs = Phi.T.T@U[:,:3]@np.diag(S[:3]/np.sum(S[:3]))
+pcs = Phi.T.T@U[:,:3]#@np.diag(S[:3]/np.sum(S[:3]))
 # pcs = phi(-X).T.T@U[:,:3]@np.diag(S[:3]/np.sum(S[:3]))
 
 plt.figure()
@@ -207,17 +272,23 @@ ax = plt.subplot(111, projection='3d')
 scat = ax.scatter3D(pcs[:,0],pcs[:,1],pcs[:,2], c='k', s=1)
 
 # pcs = phi(X_t[0]).T@U[:,:3]
-pcs = phi(X_t[-1]).T@U[:,:3]@np.diag(S[:3]/np.sum(S[:3]))
-scat = ax.scatter3D(pcs[:,0],pcs[:,1],pcs[:,2])
+# pcs = phi(X_t[-1]).T@U[:,:3]@np.diag(S[:3]/np.sum(S[:3]))
+pcs = U[:,:3].T@phi(X_t)
+# scat = ax.scatter3D(pcs[:,0],pcs[:,1],pcs[:,2])
+tpl.plot3d(pcs[...,0], ax=ax, color='k')
 
 tpl.set_axes_equal(ax)
 
 #%%
 
-dot = np.einsum('ijk,lj->ilk', phi(X_t), Phi)
-dist = (Phi**2).sum(1,keepdims=True) + (phi(X_t)**2).sum(1,keepdims=True) - 2*dot
+dot = np.einsum('ijk,lj->ilk', phi(X_t)[::10], Phi)
+dist = (Phi**2).sum(1,keepdims=True) + (phi(X_t[::10])**2).sum(1,keepdims=True) - 2*dot
 
 plt.plot(dist.min(1))
+
+#%%
+
+plt.plot(util.circ_err(theta[dist.argmin(1)], theta[::10]))
 
 #%%
 
@@ -245,15 +316,17 @@ plt.plot(np.unique(diff), kern(np.unique(diff)))
 
 # X_t = rnn(J + chi, x0, 1000, 0.05, phi=phi, c=c)
 
-g = 1
+g = 0
 
-J = 3 * np.cos(diff) / N_theta
+# J = 3 * np.cos(diff) / N_theta 
+J = 7 * np.cos(diff) - 10 
 chi = g*np.random.randn(*J.shape)/np.sqrt(N_theta)
 
 # x0 = np.random.randn(N_theta,1)
 x0 = np.cos(diff[:,::5]) #+ np.random.randn(N_theta, 100)
 
-X_t = rnn(J + chi, x0, 1000, 0.01, phi=erf(2), c=0)
+# X_t = rnn(J + chi, x0, 1000, 0.01, phi=erf(2), c=0)
+X_t = rnn(J + chi, x0, 1000, 0.01, phi=softplus(), c=0)
 
 # plt.plot(theta[Phi.argmax(0)][X_t.argmax(1).squeeze()])
 # plt.imshow(phi(X_t[...,-1]).T)

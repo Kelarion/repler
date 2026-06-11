@@ -32,13 +32,8 @@ import util
 
 #%%
 
-
-## Simulations
-### check lower norm on guess trials
-
-#%%
-
 class RadialBoyfriend:
+    
     """
     Gaussian process receptive fields with RBF kernel
     """
@@ -1038,11 +1033,11 @@ mse = []
 nsamp = 100_000
 n_col = 500
 
-kaps = 2**np.linspace(-8,8,10)
+kaps = 2**np.linspace(-3,3,5)
 # kaps = np.array([0.1, 10, 100])
 # noises = np.array([0.1, 0.5, 1, 2])
 # noises = np.linspace(0.1,2,50)
-noises = 2**np.linspace(-3,1,50)
+noises = 2**np.linspace(-1,3,50)
 
 pt_cond = np.zeros((len(noises), len(kaps)))
 
@@ -1086,14 +1081,14 @@ for i, noise_std in tqdm(enumerate(noises)):
         thiscvthresh.append([np.mean(np.cos(thhat[guess])),
                              np.mean(np.sin(thhat[guess]))])
 
-        # vmm = VMM(k=1, pic=0.1, kmax=300)
-        # lik = vmm.fit(thhat, iters=50)
+        vmm = VMM(k=1, pic=0.1, kmax=300)
+        lik = vmm.fit(thhat, iters=50)
         
-        # thispg.append(1-vmm.pic)
-        # thiskest.append(vmm.k*1)
-        # thisppi.append(vmm.pcorr(np.pi))
+        thispg.append(1-vmm.pic)
+        thiskest.append(vmm.k*1)
+        thisppi.append(vmm.pcorr(np.pi))
         
-        # thisll.append(np.mean(np.log(vmm.p(thhat))))
+        thisll.append(np.mean(np.log(vmm.p(thhat))))
         
         pt_cond[i,j] = np.mean(guess[np.abs(th[e.argmax(0)])> crit])
         
@@ -1134,6 +1129,9 @@ llest = np.array(llest)
 
 #%%
 
+## <n> = L/2pi exp(-snr^2 / 2) sqrt(r'' / r)
+## p_corr = exp(- <n>) (shady)
+
 # pncv = np.pi/(8*noises**2)*np.exp(-1/(2*noises**2))*(spc.i0(1/(4*noises**2)) + spc.i1(1/(4*noises**2)))**2
 beta = 1 / (4*noises**2)
 pncv = np.sqrt(2*np.pi*beta)*np.exp(-beta)*(spc.i0(beta) + spc.i1(beta)) / 2
@@ -1149,48 +1147,57 @@ pg_approx = (1-sts.gamma(a=alf_approx[None]/2, scale=2*noises[:,None]**2).cdf(th
 pt_approx = (pl_approx[None]*pg_approx*(1-crit[None]/np.pi))
 # pt_approx = (pg_approx*(1-crit[None]/np.pi))
 
-pcorr = np.exp(-kpred)/(2*np.pi*spc.i0(kpred))
-pgest = (pt_approx/(2*(np.pi-crit)) - pcorr)/(1/(2*np.pi) - pcorr)
+# pcorr = np.exp(-kpred)/(2*np.pi*spc.i0(kpred))
+# pgest = (pt_approx/(2*(np.pi-crit)) - pcorr)/(1/(2*np.pi) - pcorr)
 # pgest = (pt/(2*(np.pi-crit)) - pcorr)/(1/(2*np.pi) - pcorr)
 # Phi = sts.vonmises(kpred).cdf(-crit)
 # pgest = (pt_approx - 2*Phi)/((1-crit/np.pi) - 2*Phi)
+pgest = 1-foo
 
 curv = kaps*np.exp(kaps)/(np.exp(kaps)-spc.i0(kaps))
 FI = curv[None]/(noises**2)[:,None]
 
 cmap = cm.spring
-for i in range(len(kaps)):
-    plt.plot(-np.log(noises), -spc.logit((1-pgest[:,i])/np.sqrt(1+1/FI[:,i])), c=cmap(i/len(kaps)))
-
-for i in range(len(kaps)):
-    plt.scatter(-np.log(noises[::4]), -spc.logit(cv[::4,i,0]), c=cmap(i/len(kaps)))
-    
 # for i in range(len(kaps)):
-#     # plt.plot(-np.log(noises), spc.logit(pt[:,i]/(1 - crit[i]/np.pi)), c=cmap(i/len(kaps)))
-#     # plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]), c=cmap(i/len(kaps)))
+#     plt.plot(-np.log(noises), -spc.logit((1-pgest[:,i])/np.sqrt(1+1/FI[:,i])), c=cmap(i/len(kaps)))
+
+# for i in range(len(kaps)):
+#     plt.scatter(-np.log(noises[::4]), -spc.logit(cv[::4,i,0]), c=cmap(i/len(kaps)))
+
+
+# for i in range(len(kaps)):
+#     plt.plot(-np.log(noises), spc.logit(pt[:,i]/(1 - crit[i]/np.pi)), c=cmap(i/len(kaps)))
+#     plt.plot(-np.log(noises), spc.logit(pt[:,i]/(1 - crit[i]/np.pi)), c=cmap(i/len(kaps)))
+    
+    # plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]), c=cmap(i/len(kaps)))
 #     plt.plot(-np.log(noises), spc.logit(pt[:,i]), c=cmap(i/len(kaps)))
 #     # plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]*(1 - crit[i]/np.pi)),'--', c=cmap(i/len(kaps)))
 
+for i in range(len(kaps)):
+    plt.plot(1-cvloc[:,i], pgest[:,i], c=cmap(i/len(kaps)))
+
+# plt.semilogy()
+# plt.semilogx()
 
 #%%
 
 cmap = cm.spring
 for i in range(len(kaps)):
-    plt.plot(-np.log(noises), -spc.logit(cv[:,i,0]), c=cmap(i/len(kaps)))
+    # plt.plot(-np.log(noises), -spc.logit(cv[:,i,0]), c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), 1 - 1/(1+1/FI[:,i]),  c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), pt[:,i], c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), pg_approx[:,i], c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), spc.erfc(thresh[i]/(np.sqrt(2)*noises))/2, c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), sts.norm(0,1).cdf(-thresh[i]/noises), c=cmap(i/len(kaps)))
     # plt.plot(np.log(noises), pg_approx[:,i], c=cmap(i/len(kaps)))
-    # plt.plot(np.log(noises), pt_approx[:,i], '--', c=cmap(i/len(kaps)))
+    plt.plot(np.log(noises), pt_approx[:,i], '--', c=cmap(i/len(kaps)))
 
 plt.legend(np.round(np.log(kaps),2), title='log k')
 
 # for i in range(len(kaps)):
 #     plt.plot(-np.log(noises), -spc.logit(jeff_mse(1/noises, 1/kaps[i])), '-.', c=cmap(i/len(kaps)))
 
-plt.plot(-np.log(noises), -spc.logit(pncv), 'k--')
+# plt.plot(-np.log(noises), -spc.logit(pncv), 'k--')
 # plt.xlabel('log std')
 plt.xlabel('log snr')
 # plt.ylabel('p(threshold)')
