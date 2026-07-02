@@ -28,9 +28,23 @@ finger movements (Lt,Li,Lm,Lr,Lp,Rt,Ri,Rm,Rr,Rp) and reproduces:
               averaged over the 10 sessions.
     Fig 8(b)  matching (same finger-type, different hand) vs non-matching
               finger-pair distances.
-    Fig 8(d)  2-D MDS of the representation, per session, aligned across
-              sessions with Generalized Procrustes analysis (with scaling),
-              with S.E. ellipses across sessions.   <-- the panel of interest.
+    Fig 8(d)  2-D MDS of the representation, showing the factorized geometry
+              (parallel left->right hand vectors), with S.E. ellipses.
+              <-- the panel of interest.
+
+              IMPORTANT reproduction note: the paper's literal recipe is
+              "MDS each session, then Generalized Procrustes to align across
+              sessions".  That does NOT reproduce the published geometry from
+              these single-session distances -- the left<->right (hand) offset
+              is a small, sign-unstable fraction of each session's variance, so
+              independent per-session 2D MDS fixes that weak axis by noise and
+              GPA averaging cancels it, collapsing the hand dimension to ~0.
+              The distances themselves are fine (Fig 8a reproduces); the
+              structure only survives when MDS is run on the session-AVERAGED
+              RDM (which is what Fig 8d "corresponds to distances (a)" means).
+              We therefore take the consensus geometry from the mean RDM and
+              estimate the S.E. ellipses with a leave-one-session-out jackknife.
+              See `mds_consensus`.
 
 Methods details used (from the paper):
   * Movement-execution ("Go") analysis window = the 500 ms window starting
@@ -199,7 +213,19 @@ def crossnobis_rdm(X, labels, folds, n_cond=10):
 
 
 # ---------------------------------------------------------------------------
-# MDS + Generalized Procrustes alignment across sessions
+# MDS + cross-session alignment
+#
+# NOTE on reproducing Fig 8(d) faithfully -- see the module docstring / the
+# `mds_consensus` docstring below.  The paper's literal recipe ("MDS on each
+# session, then Generalized Procrustes to align") does NOT reproduce the
+# published geometry from these single-session distances, because the hand
+# (left<->right) offset is a small, sign-unstable fraction of each session's
+# variance.  Independent per-session 2D MDS fixes that weak axis by noise, and
+# GPA averaging then cancels it, collapsing the hand dimension to ~0.  The
+# factorized geometry only survives when MDS is computed on the *session-
+# averaged* RDM (which is what Fig 8d "corresponds to distances (a)" means).
+# We therefore take the consensus geometry from the mean RDM and estimate the
+# S.E. ellipses with a leave-one-session-out jackknife.
 # ---------------------------------------------------------------------------
 
 def rdm_to_mds(D, n_comp=2, seed=0):
@@ -207,7 +233,7 @@ def rdm_to_mds(D, n_comp=2, seed=0):
     dist = np.sqrt(np.clip(D, 0, None))
     np.fill_diagonal(dist, 0.0)
     mds = MDS(n_components=n_comp, dissimilarity='precomputed',
-              random_state=seed, normalized_stress=False, n_init=8, max_iter=500)
+              random_state=seed, normalized_stress=False, n_init=12, max_iter=800)
     return mds.fit_transform(dist)
 
 
@@ -218,47 +244,48 @@ def _standardize(Y):
     return Y / n if n > 0 else Y
 
 
-def generalized_procrustes(configs, n_iter=50, tol=1e-9):
+def procrustes_align(Y, ref):
+    """Align config Y to reference `ref` with rotation/reflection + isotropic scale."""
+    Y = _standardize(Y)
+    R, _ = orthogonal_procrustes(Y, ref)      # min ||Y R - ref||, R orthogonal (incl. reflection)
+    Yr = Y @ R
+    denom = np.sum(Yr * Yr)
+    sc = np.sum(Yr * ref) / denom if denom > 0 else 1.0
+    return Yr * sc
+
+
+def mds_consensus(mean_rdm, per_session_rdms, seed=0):
     """
-    Generalized Procrustes analysis with scaling (and reflection) for a list of
-    (n_points, dim) configurations sharing the same point ordering.
+    Consensus 2-D geometry (Fig 8d) with leave-one-session-out jackknife S.E.
 
-    Returns (aligned_list, mean_config).
+    Returns
+        consensus  : (n_cond, 2) MDS of the session-averaged RDM (the template).
+        jack       : (n_sess, n_cond, 2) jackknife embeddings, each = MDS of the
+                     mean RDM over all-but-one session, aligned to `consensus`.
+        se         : (n_cond, 2) jackknife standard error per point/axis.
     """
-    aligned = [_standardize(Y) for Y in configs]
-    ref = _standardize(np.mean(aligned, 0))
-    prev = np.inf
-    for _ in range(n_iter):
-        new = []
-        for Y in aligned:
-            R, s = orthogonal_procrustes(Y, ref)   # min ||Y R - ref||, R orthogonal (incl. reflection)
-            Yr = Y @ R
-            # optimal isotropic scale to match ref
-            denom = np.sum(Yr * Yr)
-            sc = np.sum(Yr * ref) / denom if denom > 0 else 1.0
-            new.append(Yr * sc)
-        aligned = new
-        ref_new = _standardize(np.mean(aligned, 0))
-        err = nla.norm(ref_new - ref)
-        ref = ref_new
-        if abs(prev - err) < tol:
-            break
-        prev = err
-    return aligned, ref
+    consensus = _standardize(rdm_to_mds(mean_rdm, seed=seed))
+    rdms = np.asarray(per_session_rdms)
+    n = len(rdms)
+    jack = np.stack([procrustes_align(rdm_to_mds(np.delete(rdms, i, 0).mean(0), seed=seed),
+                                      consensus)
+                     for i in range(n)])
+    # jackknife S.E.:  sqrt( (n-1)/n * sum_i (x_i - xbar)^2 )
+    se = np.sqrt((n - 1) / n * np.sum((jack - consensus) ** 2, 0))
+    return consensus, jack, se
 
 
-def cov_ellipse(xy, ax, n_std=1.0, **kw):
-    """Draw an ellipse for the covariance of a set of 2-D points (S.E. => pass S.E. points)."""
-    if len(xy) < 2:
-        return
-    cov = np.cov(xy.T)
-    vals, vecs = nla.eigh(cov)
+def cov_ellipse(mean_xy, points, ax, **kw):
+    """Draw the (jackknife) S.E. ellipse for one point from its jackknife cloud."""
+    d = points - mean_xy
+    n = len(points)
+    cse = (n - 1) / n * (d.T @ d)             # jackknife covariance of the mean
+    vals, vecs = nla.eigh(cse)
     order = vals.argsort()[::-1]
     vals, vecs = vals[order], vecs[:, order]
     ang = np.degrees(np.arctan2(vecs[1, 0], vecs[0, 0]))
-    w, h = 2 * n_std * np.sqrt(np.maximum(vals, 0))
-    e = Ellipse(xy.mean(0), w, h, angle=ang, **kw)
-    ax.add_patch(e)
+    w, h = 2 * np.sqrt(np.maximum(vals, 0))
+    ax.add_patch(Ellipse(mean_xy, w, h, angle=ang, **kw))
 
 
 # ---------------------------------------------------------------------------
@@ -274,29 +301,26 @@ if __name__ == '__main__':
 
     sessions = []      # per-session dicts
     rdms = []          # per-session 10x10 crossnobis RDM
-    embeds = []        # per-session 2-D MDS embedding (10x2)
 
     for sess, path in files:
         S = load_session(path)
         D = crossnobis_rdm(S['X'], S['finger'], S['run'], n_cond=len(FINGER_ORDER))
-        emb = rdm_to_mds(D, seed=0)
 
         # condition-mean representation (10 x n_units): the "neural representation"
         cond_mean = np.stack([S['X'][S['finger'] == c].mean(0)
                               for c in range(len(FINGER_ORDER))])
 
-        S.update(sess=sess, rdm=D, mds=emb, cond_mean=cond_mean)
+        S.update(sess=sess, rdm=D, cond_mean=cond_mean)
         sessions.append(S)
         rdms.append(D)
-        embeds.append(emb)
         print(f"  {sess}: {S['n_units']} PPC units, {len(S['finger'])} trials")
 
     rdms = np.array(rdms)
     mean_rdm = rdms.mean(0)
 
-    # align embeddings across sessions (Fig 8d)
-    aligned, mean_emb = generalized_procrustes(embeds)
-    aligned = np.array(aligned)         # (n_sess, 10, 2)
+    # consensus geometry for Fig 8d, with leave-one-session-out jackknife S.E.
+    # (see mds_consensus docstring for why this replaces literal per-session GPA)
+    mds_mean, mds_jack, mds_se = mds_consensus(mean_rdm, rdms, seed=0)
 
     # package the representation for downstream use
     representation = {
@@ -307,8 +331,9 @@ if __name__ == '__main__':
         'cond_mean': [s['cond_mean'] for s in sessions],  # list of (10, n_units); n_units varies by session
         'rdm_per_session': rdms,
         'rdm_mean': mean_rdm,
-        'mds_aligned': aligned,       # (n_sess,10,2), GPA-aligned
-        'mds_mean': mean_emb,         # (10,2)
+        'mds_mean': mds_mean,         # (10,2) consensus MDS of the mean RDM
+        'mds_jack': mds_jack,         # (n_sess,10,2) leave-one-out jackknife embeddings
+        'mds_se': mds_se,             # (10,2) jackknife S.E. per point/axis
     }
     with open(f"{SAVE_DIR}/guan_fig8_NS-PPC.pkl", 'wb') as f:
         pkl.dump(representation, f)
@@ -359,42 +384,40 @@ if __name__ == '__main__':
     fig.savefig(f"{SAVE_DIR}/guan_fig8b_pairs.png", dpi=150)
 
     # -----------------------------------------------------------------------
-    #%%  Figure 8(d): MDS of the NS-PPC representation (GPA aligned)
+    #%%  Figure 8(d): consensus MDS geometry of the NS-PPC representation
     # -----------------------------------------------------------------------
-    n_sess = aligned.shape[0]
-    # standard error across sessions (per finger, per axis)
-    se = aligned.std(0, ddof=1) / np.sqrt(n_sess)
+    # The paper plots only index/middle/ring "for visual clarity"; set
+    # PLOT_FINGERS to FINGER_TYPES to show all ten.
+    PLOT_FINGERS = ['i', 'm', 'r']
 
-    colors = {'t': '#d62728', 'i': '#1f77b4', 'm': '#2ca02c',
-              'r': '#9467bd', 'p': '#ff7f0e'}
-    fig, ax = plt.subplots(figsize=(5.5, 5.5))
+    colors = {'t': '#d62728', 'i': '#00bfff', 'm': '#2ca02c',
+              'r': '#e6b800', 'p': '#ff7f0e'}
+    fig, ax = plt.subplots(figsize=(5.2, 6))
 
-    # draw hand subspace vectors (left->right) and finger-type structure
-    for i, f in enumerate(FINGER_ORDER):
-        ft = f[1]
-        pts = aligned[:, i, :]                 # per-session locations of this finger
-        ax.scatter(*mean_emb[i], s=120,
-                   marker='o' if f[0] == 'L' else 's',
-                   color=colors[ft], edgecolor='k', zorder=3)
-        cov_ellipse(pts, ax, n_std=1.0, facecolor=colors[ft], alpha=0.25, edgecolor='none')
-        ax.annotate(f, mean_emb[i], textcoords='offset points',
-                    xytext=(6, 6), fontsize=9)
+    for ft in PLOT_FINGERS:
+        for hnd, marker in [('L', '^'), ('R', 'o')]:   # triangle=L, circle=R (paper convention)
+            i = FINGER_IDX[hnd + ft]
+            ax.scatter(*mds_mean[i], s=200, marker=marker,
+                       color=colors[ft], edgecolor='k', zorder=3)
+            cov_ellipse(mds_mean[i], mds_jack[:, i, :], ax,
+                        facecolor=colors[ft], alpha=0.25, edgecolor='none')
+            ax.annotate(hnd + ft, mds_mean[i], textcoords='offset points',
+                        xytext=(7, 5), fontsize=10)
 
-    # left->right vectors per finger-type (should look parallel/identical if factorized)
-    for ft in FINGER_TYPES:
+    # left->right (hand) vectors per finger-type: parallel/identical => factorized
+    for ft in PLOT_FINGERS:
         l = FINGER_IDX['L' + ft]; r = FINGER_IDX['R' + ft]
-        ax.annotate('', xy=mean_emb[r], xytext=mean_emb[l],
-                    arrowprops=dict(arrowstyle='->', color=colors[ft], lw=1.5, alpha=.7))
+        ax.annotate('', xy=mds_mean[l], xytext=mds_mean[r],
+                    arrowprops=dict(arrowstyle='->', color=colors[ft], lw=2))
 
     ax.set_aspect('equal')
-    ax.set_title('Fig 8(d)  NS-PPC finger representation (2-D MDS)\n'
-                 'circles=left hand, squares=right hand; ellipses=S.E. over sessions')
+    ax.set_title('Fig 8(d)  NS-PPC\nconsensus MDS; triangles=L, circles=R; '
+                 'ellipses=jackknife S.E.')
     ax.set_xlabel('MDS 1'); ax.set_ylabel('MDS 2')
-    # legend
     from matplotlib.lines import Line2D
     handles = [Line2D([0], [0], marker='o', color='w', markerfacecolor=colors[ft],
                       markeredgecolor='k', markersize=10, label=NICE_LABEL[ft])
-               for ft in FINGER_TYPES]
+               for ft in PLOT_FINGERS]
     ax.legend(handles=handles, loc='best', fontsize=8)
     fig.tight_layout()
     fig.savefig(f"{SAVE_DIR}/guan_fig8d_mds.png", dpi=150)
