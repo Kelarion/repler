@@ -289,6 +289,160 @@ def cov_ellipse(mean_xy, points, ax, **kw):
 
 
 # ---------------------------------------------------------------------------
+# pseudo-population (Fig 8e decoding / CCGP)
+#
+# Paper methods (§2.7 neuron-dropping, §2.11 factorized coding): neurons are
+# aggregated across sessions into a "pseudo-population".  Because the two hands
+# / ten fingers are the *same* conditions in every session, single trials are
+# combined *by within-finger order* -- e.g. each session's first right-thumb
+# trial is combined into one pseudo-trial, each session's second right-thumb
+# trial into the next, and so on.  Neurons from all sessions are concatenated
+# along the unit axis.  For NS this yields 100 pseudo-trials (10 fingers x 10
+# reps) x 1114 units.  If sessions had unequal trial counts, only the first
+# min-over-sessions trials of each finger are used (their "first 96 trials"
+# rule).
+# ---------------------------------------------------------------------------
+
+def build_pseudopop(sessions, n_cond=10, rng=None):
+    """
+    Aggregate neurons across sessions into a pseudo-population.
+
+    Parameters
+    ----------
+    sessions : list of per-session dicts with keys 'X' (n_trials, n_units),
+               'finger' (n_trials,) canonical finger idx, and 'sess'.
+    rng      : optional int seed or np.random.Generator.  If given, the
+               within-finger trial order of *each* session is permuted before
+               pooling -> one random pseudo-population resample.  (The trial
+               pairing across sessions is arbitrary, so drawing different
+               permutations is how you generate many pseudo-population
+               instantiations for resampling / the permutation null.)  If None,
+               trials are pooled in their natural within-session appearance
+               order (the paper's literal recipe).
+
+    Returns dict:
+        X            : (n_cond*reps, n_units_total) pseudo-population firing rates
+        finger       : (n_cond*reps,) canonical finger index 0..n_cond-1
+        hand         : (n_cond*reps,) 0 = Left, 1 = Right
+        ftype        : (n_cond*reps,) finger-type index 0..4  (t,i,m,r,p)
+        rank         : (n_cond*reps,) within-finger trial rank; use as the CV
+                       fold id so each physical trial stays in one fold.
+        n_units      : int, total pooled units
+        unit_session : (n_units_total,) session index each unit came from
+        sessions     : list of session ids
+    """
+    if rng is not None and not isinstance(rng, np.random.Generator):
+        rng = np.random.default_rng(rng)
+
+    n_sess = len(sessions)
+
+    # within-finger trial indices per session (optionally permuted)
+    sel = []                      # sel[s][c] = array of trial rows for finger c
+    reps = np.inf
+    for s in sessions:
+        per_c = []
+        for c in range(n_cond):
+            idx = np.where(s['finger'] == c)[0]        # appearance order
+            if rng is not None:
+                idx = idx[rng.permutation(len(idx))]
+            per_c.append(idx)
+            reps = min(reps, len(idx))
+        sel.append(per_c)
+    reps = int(reps)
+
+    # pool
+    finger = np.repeat(np.arange(n_cond), reps)
+    rank = np.tile(np.arange(reps), n_cond)
+    rows = []
+    for c in range(n_cond):
+        for r in range(reps):
+            rows.append(np.concatenate([sessions[s]['X'][sel[s][c][r]]
+                                        for s in range(n_sess)]))
+    X = np.asarray(rows)
+
+    unit_session = np.concatenate([np.full(s['X'].shape[1], i)
+                                   for i, s in enumerate(sessions)])
+    return {
+        'X': X,
+        'finger': finger,
+        'hand': (finger >= n_cond // 2).astype(int),   # first half = Left
+        'ftype': finger % (n_cond // 2),
+        'rank': rank,
+        'n_units': X.shape[1],
+        'unit_session': unit_session,
+        'sessions': [s['sess'] for s in sessions],
+    }
+
+
+# ---------------------------------------------------------------------------
+# CCGP (Fig 8e): cross-condition generalization of hand / finger-type decoders
+# ---------------------------------------------------------------------------
+
+def _fit_acc(Xtr, ytr, Xte, yte, C=1.0):
+    """Linear-SVM train/test accuracy (fresh z-scoring from the training set)."""
+    from sklearn.svm import LinearSVC
+    mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-8
+    clf = LinearSVC(C=C, dual='auto', max_iter=5000)
+    clf.fit((Xtr - mu) / sd, ytr)
+    return clf.score((Xte - mu) / sd, yte)
+
+
+def finger_ccgp(pp, C=1.0):
+    """
+    Finger-type CCGP: train the 5-way finger-type decoder on one hand, test on
+    the other hand (both train/test directions, averaged).  High accuracy =>
+    finger-type code is shared across hands (factorized).
+    """
+    X, ft, hand = pp['X'], pp['ftype'], pp['hand']
+    accs = []
+    for htr, hte in [(0, 1), (1, 0)]:
+        accs.append(_fit_acc(X[hand == htr], ft[hand == htr],
+                             X[hand == hte], ft[hand == hte], C))
+    return np.mean(accs)
+
+
+def hand_ccgp(pp, C=1.0):
+    """
+    Hand CCGP: train the Left-vs-Right decoder on a subset of finger-types and
+    test on the held-out finger-type (leave-one-finger-type-out, averaged).
+    High accuracy => hand code generalizes across fingers (factorized).
+    """
+    X, ft, hand = pp['X'], pp['ftype'], pp['hand']
+    accs = []
+    for t in np.unique(ft):
+        tr, te = ft != t, ft == t
+        accs.append(_fit_acc(X[tr], hand[tr], X[te], hand[te], C))
+    return np.mean(accs)
+
+
+def ccgp_permtest(pp, stat_fn, n_perm=1001, C=1.0, seed=0):
+    """
+    Permutation null for a CCGP statistic (paper: N=1001 label shuffles).
+    Returns (observed, null_samples, p_value).  Labels are shuffled *within*
+    the grouping the decoder generalizes across so the null respects structure:
+    finger_ccgp shuffles finger-type within hand; hand_ccgp shuffles hand
+    within finger-type.
+    """
+    rng = np.random.default_rng(seed)
+    obs = stat_fn(pp, C=C)
+    if stat_fn is finger_ccgp:
+        lab, grp = 'ftype', 'hand'
+    else:
+        lab, grp = 'hand', 'ftype'
+    null = np.empty(n_perm)
+    for i in range(n_perm):
+        sh = dict(pp)
+        y = pp[lab].copy()
+        for gv in np.unique(pp[grp]):
+            m = pp[grp] == gv
+            y[m] = rng.permutation(y[m])
+        sh[lab] = y
+        null[i] = stat_fn(sh, C=C)
+    p = (1 + np.sum(null >= obs)) / (1 + n_perm)
+    return obs, null, p
+
+
+# ---------------------------------------------------------------------------
 # main pipeline
 # ---------------------------------------------------------------------------
 
@@ -422,5 +576,41 @@ if __name__ == '__main__':
     fig.tight_layout()
     fig.savefig(f"{SAVE_DIR}/guan_fig8d_mds.png", dpi=150)
     print(f"saved figures -> {SAVE_DIR}/guan_fig8[a,b,d]_*.png")
+
+    # -----------------------------------------------------------------------
+    #%%  pseudo-population + Figure 8(e): hand / finger-type CCGP
+    # -----------------------------------------------------------------------
+    pp = build_pseudopop(sessions, n_cond=len(FINGER_ORDER))
+    print(f"pseudo-population: {pp['X'].shape[0]} pseudo-trials x "
+          f"{pp['n_units']} units (pooled over {len(pp['sessions'])} sessions)")
+
+    # Fig 8e: CCGP (cross-hand finger-type; cross-finger hand) with perm-test null
+    f_obs, f_null, f_p = ccgp_permtest(pp, finger_ccgp, n_perm=1001)
+    h_obs, h_null, h_p = ccgp_permtest(pp, hand_ccgp,  n_perm=1001)
+    print(f"Fig 8e  finger-type CCGP = {f_obs:.3f}  (chance~{1/5:.2f}, "
+          f"null mean {f_null.mean():.3f}, p={f_p:.4f})")
+    print(f"Fig 8e  hand CCGP        = {h_obs:.3f}  (chance~0.50, "
+          f"null mean {h_null.mean():.3f}, p={h_p:.4f})   paper: hand CCGP ~perfect")
+
+    representation['pseudopop'] = pp
+    representation['ccgp'] = {'finger': f_obs, 'hand': h_obs,
+                             'finger_p': f_p, 'hand_p': h_p}
+    with open(f"{SAVE_DIR}/guan_fig8_NS-PPC.pkl", 'wb') as f:
+        pkl.dump(representation, f)
+
+    fig, ax = plt.subplots(figsize=(4.4, 4.4))
+    for x, (obs, null, lbl) in enumerate([(h_obs, h_null, 'hand'),
+                                           (f_obs, f_null, 'finger-type')]):
+        ax.scatter(np.full_like(null, x) + np.random.uniform(-.12, .12, len(null)),
+                   null, s=4, alpha=.25, color='gray')
+        ax.scatter([x], [obs], s=120, color='tab:red', zorder=3, label='observed' if x == 0 else None)
+    ax.axhline(0.5, ls=':', color='k', lw=1)
+    ax.set_xticks([0, 1]); ax.set_xticklabels(['hand', 'finger-type'])
+    ax.set_ylabel('CCGP (accuracy)'); ax.set_ylim(0, 1.02)
+    ax.set_title('Fig 8(e)  NS-PPC CCGP\n(red = observed, gray = shuffle null)')
+    ax.legend(loc='lower right', fontsize=8)
+    fig.tight_layout()
+    fig.savefig(f"{SAVE_DIR}/guan_fig8e_ccgp.png", dpi=150)
+    print(f"saved -> {SAVE_DIR}/guan_fig8e_ccgp.png")
 
     plt.show()
