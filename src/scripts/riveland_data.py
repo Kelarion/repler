@@ -75,10 +75,17 @@ from instructRNN.tasks.task_criteria import isCorrect
 from instructRNN.analysis.model_analysis import (get_task_reps, get_rule_reps,
                                                  get_instruct_reps, reduce_rep,
                                                  get_reps_from_tasks)
-from instructRNN.plotting.plotting import get_task_color
+# NB: do NOT `from instructRNN.plotting.plotting import ...` -- that module mutates
+# global plt.rcParams (serif font, dpi 300, no top/right spines) at import time.
+# get_task_color is inlined below to avoid that side effect.
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 DEVICE = torch.device(0) if torch.cuda.is_available() else torch.device('cpu')
+
+
+def get_task_color(task):
+    """Inlined from instructRNN.plotting.plotting to avoid its rcParams side effects."""
+    return plt.get_cmap('Paired')(TASK_LIST.index(task) % 8)
 
 # The four DM-modality tasks of Fig 3, and their 2x2 factor labels
 FIG3_TASKS = ['DMMod1', 'AntiDMMod1', 'DMMod2', 'AntiDMMod2']
