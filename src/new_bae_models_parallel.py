@@ -37,7 +37,7 @@ import numpy as np
 from dataclasses import dataclass, field
 
 from new_bae_priors_parallel import ParallelLatentPrior
-from new_bae_weights_parallel import ParallelAffineOperator
+from new_bae_weights_parallel import ParallelAffineOperator, ParallelProcrustes
 
 
 @dataclass
@@ -165,6 +165,8 @@ class ParallelLinearGaussianBMF(ParallelBMF):
         lp, op = self.latent_prior, self.operator
         lp.S, lp.Z, lp.StS = lp.S[c], lp.Z[c], lp.StS[c]
         op.W, op.b = op.W[c], op.b[c]
+        if hasattr(op, 'scl'):                   # Procrustes carries a per-chain scale
+            op.scl = float(np.atleast_1d(op.scl)[c])
         self.sigma_x = float(np.atleast_1d(self.sigma_x)[c])
         self.n_chains = 1
         return self
@@ -193,6 +195,42 @@ class ParallelSemiBMF(ParallelLinearGaussianBMF):
         self.latent_prior = ParallelLatentPrior(n_chains=self.n_chains,
                                                 sparse_reg=self.sparse_reg,
                                                 tree_reg=self.tree_reg)
+
+
+@dataclass
+class ParallelBiPCA(ParallelLinearGaussianBMF):
+    """Parallel-chains BiPCA: ParallelProcrustes (orthonormal W + scalar scale) +
+    ParallelLatentPrior.  Mirrors new_bae_models.BiPCA with an added n_chains.
+
+    Same story as ParallelSemiBMF -- the chains are a leading axis and the winner
+    is picked at the end -- but the operator is the Procrustes one, so every chain
+    keeps orthonormal weights and rides the shared binary link with diag_gram=True.
+    sigma_x IS the modelled noise variance sigma^2 handed to the search: fixed at 1
+    by default (scl_lr=0), estimated from residual MSE if init/fit is given
+    scl_lr > 0.  The chains differ because init_params seeds a shared PCA hot-start
+    and jitters+re-orthonormalizes each chain's W independently.
+
+    Only the plain (J_lr == 0) LatentPrior path is prototyped; the Boltzmann prior
+    would drop in as ParallelBoltzmannPrior exactly like the serial BiPCA, with a
+    per-chain coupling axis (see new_bae_priors_parallel's note)."""
+
+    sparse_reg: float = 1e-2
+    tree_reg: float = 0
+    fit_intercept: bool = True
+    fit_scl: bool = True
+    slab: bool = False
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = ParallelProcrustes(n_chains=self.n_chains,
+                                           fit_intercept=self.fit_intercept,
+                                           fit_scl=self.fit_scl)
+        self.latent_prior = ParallelLatentPrior(n_chains=self.n_chains,
+                                                sparse_reg=self.sparse_reg,
+                                                tree_reg=self.tree_reg,
+                                                slab=self.slab,
+                                                slab_prior=self.slab_prior)
 
 
 # ===========================================================================

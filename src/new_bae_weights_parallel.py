@@ -23,6 +23,7 @@ per-chain W.
 
 import numpy as np
 import scipy.linalg as la
+import scipy.stats as sts
 from dataclasses import dataclass
 
 import new_bae_search_parallel as nbsp
@@ -119,3 +120,107 @@ class ParallelAffineOperator:
         if self.nonneg:
             self.W[self.W < 0] = 0
             self.b[self.b < 0] = 0
+
+
+@dataclass
+class ParallelProcrustes:
+    """Parallel-chains variant of new_bae_weights.Procrustes (backs ParallelBiPCA).
+
+    L_c(S) = scl_c * S W_c^T + b_c with W_c ORTHONORMAL (W_c^T W_c = I), for C
+    chains at once.  Like the serial one it is deliberately NOT a LinearOperator:
+    orthonormal W has a fixed spectrum (no pr/l1/l2 penalty) and cannot be
+    non-negative.  It duck-types the operator interface and carries a per-chain
+    scalar scale scl (C,).
+
+      W    (C, d, m)   per-chain orthonormal weights
+      b    (C, d)      per-chain intercept
+      scl  (C,)        per-chain scale
+
+    It rides the SHARED binary link exactly as the serial Procrustes: drive and
+    gram pre-scale by scl / scl^2 so the scaffold's (E - 0.5 wjj)/sigma2 is the
+    exact linear-Gaussian flip log-odds, and orthonormal W -> diagonal gram means
+    the parallel kernel is compiled with diag_gram=True (neighbour loop skipped).
+    The M-step is the closed-form orthogonal-Procrustes SVD solve, batched over
+    chains via np.linalg.svd (which vectorizes over leading axes)."""
+
+    n_chains: int = 8
+    fit_intercept: bool = True
+    fit_scl: bool = True
+    init_jitter: float = 0.1     # per-chain perturbation of the shared hot-start
+
+    # ---- faces (chain-batched) --------------------------------------------
+    # Same batched-matmul discipline as ParallelAffineOperator: the leading chain
+    # axis broadcasts and each chain dispatches to BLAS.  The only extra is the
+    # per-chain scalar scl, which enters as scl[:, None, None] (drive/forward) or
+    # scl[:, None, None]**2 (gram) -- the pre-scaling the shared binary link needs.
+    def forward(self, S):
+        return self.scl[:, None, None] * (S @ self.Wt) + self.b[:, None, :]
+
+    def drive(self, X):
+        bW = self.b[:, None, :] @ self.W                   # (C,1,d)@(C,d,m)->(C,1,m)
+        return self.scl[:, None, None] * (X @ self.W - bW)  # scl * XW  -> (C,n,m)
+
+    def gram(self):
+        return (self.scl[:, None, None] ** 2) * (self.Wt @ self.W)   # scl^2 * WtW
+
+    @property
+    def Wt(self):
+        return self.W.transpose(0, 2, 1)                   # (C, m, d)
+
+    # ---- init: shared hot-start + independent per-chain jitter -------------
+    # W must be orthonormal PER CHAIN, so jitter is followed by a polar projection
+    # (nearest orthonormal frame = U V^T of its SVD).  The chain loop here is a
+    # one-shot init cost, not the per-iteration hot path, so it stays a plain loop.
+    def init_params(self, X, dim_hid, hot_start=True, lr=1.0):
+        C = self.n_chains
+        self.dim_hid = dim_hid
+        self.d = d = X.shape[1]
+        transpose = d < dim_hid                            # rows orthonormal instead
+        b0 = X.mean(0)
+        W = np.empty((C, d, dim_hid))
+        if hot_start:
+            _, _, Vx = la.svd(X, full_matrices=False)
+            W0 = Vx[:dim_hid].T                            # (d, m), orthonormal cols
+            for c in range(C):
+                Wj = W0 + self.init_jitter * np.random.randn(*W0.shape) / np.sqrt(d)
+                U, _, V = la.svd(Wj, full_matrices=False)  # polar factor -> orthonormal
+                W[c] = U @ V
+        else:
+            s1, s2 = max(d, dim_hid), min(d, dim_hid)
+            for c in range(C):
+                Wc = sts.ortho_group.rvs(s1)[:, :s2]
+                W[c] = Wc.T if transpose else Wc
+        self.W = W
+        self.lr = lr
+        self.b = np.repeat(b0[None], C, axis=0)            # (C, d)
+        if self.fit_scl:
+            self.scl = np.full(C, np.sqrt(np.mean((X - b0) ** 2)))
+        else:
+            self.scl = np.ones(C)
+
+    # ---- the discrete E-step scaffold (diagonal gram -> skip neighbour loop)
+    def build_search(self, link, prior, debug=False):
+        self._kernel = nbsp.make_parallel_dense_search(*link, prior,
+                                                       diag_gram=True, debug=debug)
+
+    def search(self, XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+               Jc, hc, inplace=True, out=None):
+        return self._kernel(XW, S, Z, WtW, StS, N, temp, alpha, beta,
+                            tau, sigma2, Jc, hc, inplace, out)
+
+    # ---- M-step: closed-form orthogonal Procrustes, batched over chains ----
+    def backward(self, S, X):
+        ES = S                                             # (C, n, m)
+        XtES = np.matmul(X.T[None], ES)                    # (1,d,n)@(C,n,m)->(C,d,m)
+        bOuter = self.b[:, :, None] * ES.sum(1)[:, None, :]   # b_c (sum_i ES_c)^T
+        XS = XtES - bOuter + 1e-6 * np.eye(self.d, self.dim_hid)[None]
+        U, s, V = np.linalg.svd(XS, full_matrices=False)   # batched over chains
+        self.W = U @ V                                     # (C, d, m), orthonormal
+        if self.fit_scl:
+            self.scl += self.lr * (s.sum(1) / (ES ** 2).sum((1, 2)) - self.scl)
+        if self.fit_intercept:
+            WeS = (self.W @ ES.mean(1)[:, :, None])[:, :, 0]   # (C, d)
+            self.b += self.lr * (X.mean(0)[None] - self.scl[:, None] * WeS - self.b)
+        # grouped as (scl*ES)@W^T so the returned residual -- and the model's
+        # mean(resid**2) energy -- matches the serial Procrustes per chain.
+        return X[None] - self.scl[:, None, None] * (ES @ self.Wt) - self.b[:, None, :]
