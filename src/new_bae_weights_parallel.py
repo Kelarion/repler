@@ -106,7 +106,11 @@ class ParallelAffineOperator:
         return dReg
 
     def backward(self, S, X):
-        resid = X[None] - self.forward(S)                      # (C, n, d)
+        # X is the SHARED data (n, d) in the normal fit, or a PER-CHAIN working copy
+        # (C, n, d) when the model is imputing masked entries (each chain fills its
+        # own holes).  Broadcasting handles both once X carries a leading axis.
+        Xb = X if X.ndim == 3 else X[None]                     # (C, n, d) or (1, n, d)
+        resid = Xb - self.forward(S)                           # (C, n, d)
         n = S.shape[1]
         dW = S.transpose(0, 2, 1) @ resid                      # (C,m,n)@(C,n,d)->(C,m,d)
         dW = dW.transpose(0, 2, 1) / n                         # VJP wrt W, per chain
@@ -211,7 +215,13 @@ class ParallelProcrustes:
     # ---- M-step: closed-form orthogonal Procrustes, batched over chains ----
     def backward(self, S, X):
         ES = S                                             # (C, n, m)
-        XtES = np.matmul(X.T[None], ES)                    # (1,d,n)@(C,n,m)->(C,d,m)
+        # X shared (n, d) or per-chain (C, n, d) when imputing; unify the three data
+        # summaries the solve needs so both shapes flow through by broadcasting.
+        if X.ndim == 3:
+            Xt, Xmean, Xb = X.transpose(0, 2, 1), X.mean(1), X          # (C,d,n)/(C,d)/(C,n,d)
+        else:
+            Xt, Xmean, Xb = X.T[None], X.mean(0)[None], X[None]         # (1,d,n)/(1,d)/(1,n,d)
+        XtES = np.matmul(Xt, ES)                           # (C,d,m)
         bOuter = self.b[:, :, None] * ES.sum(1)[:, None, :]   # b_c (sum_i ES_c)^T
         XS = XtES - bOuter + 1e-6 * np.eye(self.d, self.dim_hid)[None]
         U, s, V = np.linalg.svd(XS, full_matrices=False)   # batched over chains
@@ -220,7 +230,7 @@ class ParallelProcrustes:
             self.scl += self.lr * (s.sum(1) / (ES ** 2).sum((1, 2)) - self.scl)
         if self.fit_intercept:
             WeS = (self.W @ ES.mean(1)[:, :, None])[:, :, 0]   # (C, d)
-            self.b += self.lr * (X.mean(0)[None] - self.scl[:, None] * WeS - self.b)
+            self.b += self.lr * (Xmean - self.scl[:, None] * WeS - self.b)
         # grouped as (scl*ES)@W^T so the returned residual -- and the model's
         # mean(resid**2) energy -- matches the serial Procrustes per chain.
-        return X[None] - self.scl[:, None, None] * (ES @ self.Wt) - self.b[:, None, :]
+        return Xb - self.scl[:, None, None] * (ES @ self.Wt) - self.b[:, None, :]
