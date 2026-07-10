@@ -63,7 +63,7 @@ def _build_parallel_dense_search(score, aux_update, prior, diag_gram=False, debu
 
     @njit(parallel=True)
     def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-               Jc, hc, inplace=True, out=None):
+               Jc, hc, inplace=True, out=None, prior_temp=1.0):
         C, n, m = S.shape
         regularize = beta > 1e-6
 
@@ -88,7 +88,9 @@ def _build_parallel_dense_search(score, aux_update, prior, diag_gram=False, debu
                     logodds, mu, nu = score(E, WtW[c, j, j], tau, sig2)
 
                     # PRIOR on S: the shared plugin, on chain c's spike/coupling.
-                    lp = prior(S[c], i, j, StS[c], N, Jc[c], hc[c], alpha, beta)
+                    # prior_temp (the prior temperature) is a shared scalar across
+                    # chains -- the structured coupling is divided by it, same as serial.
+                    lp = prior(S[c], i, j, StS[c], N, Jc[c], hc[c], alpha, beta, prior_temp)
 
                     if debug:
                         out[c, i, j] = logodds + lp

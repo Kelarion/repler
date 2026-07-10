@@ -89,9 +89,9 @@ class ParallelAffineOperator:
         self._kernel = nbsp.make_parallel_dense_search(*link, prior, debug=debug)
 
     def search(self, XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-               Jc, hc, inplace=True, out=None):
+               Jc, hc, inplace=True, out=None, prior_temp=1.0):
         return self._kernel(XW, S, Z, WtW, StS, N, temp, alpha, beta,
-                            tau, sigma2, Jc, hc, inplace, out)
+                            tau, sigma2, Jc, hc, inplace, out, prior_temp)
 
     # ---- M-step: one gradient step per chain (broadcast VJP + reg) ---------
     def _reg_grad(self):
@@ -204,9 +204,9 @@ class ParallelProcrustes:
                                                        diag_gram=True, debug=debug)
 
     def search(self, XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-               Jc, hc, inplace=True, out=None):
+               Jc, hc, inplace=True, out=None, prior_temp=1.0):
         return self._kernel(XW, S, Z, WtW, StS, N, temp, alpha, beta,
-                            tau, sigma2, Jc, hc, inplace, out)
+                            tau, sigma2, Jc, hc, inplace, out, prior_temp)
 
     # ---- M-step: closed-form orthogonal Procrustes, batched over chains ----
     def backward(self, S, X):

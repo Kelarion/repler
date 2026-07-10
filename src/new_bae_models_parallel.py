@@ -126,7 +126,8 @@ class ParallelLinearGaussianBMF(ParallelBMF):
         Jc, hc = lp.coupling()                   # (C, m, m), (C, m)
         self.operator.search(
             XW, S, Z, WtW, lp.StS, self.n, self.temp,
-            lp.sparse_reg, lp.tree_reg, lp.slab_prior, self.sigma_x, Jc, hc, True, None)
+            lp.sparse_reg, lp.tree_reg, lp.slab_prior, self.sigma_x, Jc, hc,
+            True, None, lp.temp)                 # trailing prior_temp (shared scalar)
         return Z if lp.slab else S
 
     def grad_step(self, X, mask=None):

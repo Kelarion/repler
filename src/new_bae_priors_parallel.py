@@ -34,6 +34,10 @@ class ParallelLatentPrior:
     tree_reg: float = 1e-2
     slab: bool = False           # prototype: no-slab only (see note at bottom)
     slab_prior: float = 1.0
+    temp: float = 1.0            # prior temperature (shared across chains); scales
+                                 # the structured coupling. Inert for a plain prior,
+                                 # but threaded so the kernel API matches the serial
+                                 # one (new_bae_priors.LatentPrior.temp).
 
     @property
     def link(self):
