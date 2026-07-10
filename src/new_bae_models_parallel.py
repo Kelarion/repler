@@ -36,7 +36,9 @@ temp[c].  Left out here to keep the prototype simple.)
 import numpy as np
 from dataclasses import dataclass, field
 
-from new_bae_priors_parallel import ParallelLatentPrior
+from typing import Optional
+
+from new_bae_priors_parallel import ParallelLatentPrior, ParallelBoltzmannPriorNP
 from new_bae_weights_parallel import ParallelAffineOperator, ParallelProcrustes
 
 
@@ -211,14 +213,20 @@ class ParallelBiPCA(ParallelLinearGaussianBMF):
     scl_lr > 0.  The chains differ because init_params seeds a shared PCA hot-start
     and jitters+re-orthonormalizes each chain's W independently.
 
-    Only the plain (J_lr == 0) LatentPrior path is prototyped; the Boltzmann prior
-    would drop in as ParallelBoltzmannPrior exactly like the serial BiPCA, with a
-    per-chain coupling axis (see new_bae_priors_parallel's note)."""
+    Optional structured (Boltzmann/Ising) prior, matching serial BiPCA: leave
+    J_lr == 0 for the plain per-chain LatentPrior, or set J_lr > 0 to swap in
+    ParallelBoltzmannPriorNP, which learns an independent Ising coupling per chain
+    (each chain fits the prior to its own spike configuration).  The chains all
+    ride the same PRIOR_BOLTZMANN kernel -- it already reads Jc[c] / hc[c]."""
 
     sparse_reg: float = 1e-2
     tree_reg: float = 0
     fit_intercept: bool = True
     fit_scl: bool = True
+
+    J_l1_reg: Optional[float] = None
+    J_loss: str = 'rple'
+    J_lr: float = 0
     slab: bool = False
     slab_prior: float = 1.0
 
@@ -227,11 +235,23 @@ class ParallelBiPCA(ParallelLinearGaussianBMF):
         self.operator = ParallelProcrustes(n_chains=self.n_chains,
                                            fit_intercept=self.fit_intercept,
                                            fit_scl=self.fit_scl)
-        self.latent_prior = ParallelLatentPrior(n_chains=self.n_chains,
-                                                sparse_reg=self.sparse_reg,
-                                                tree_reg=self.tree_reg,
-                                                slab=self.slab,
-                                                slab_prior=self.slab_prior)
+        if self.J_lr == 0:                       # plain per-chain Bernoulli prior
+            self.latent_prior = ParallelLatentPrior(n_chains=self.n_chains,
+                                                    sparse_reg=self.sparse_reg,
+                                                    tree_reg=self.tree_reg,
+                                                    slab=self.slab,
+                                                    slab_prior=self.slab_prior)
+        else:                                    # structured Ising prior per chain
+            self.latent_prior = ParallelBoltzmannPriorNP(
+                n_chains=self.n_chains,
+                sparse_reg=self.sparse_reg,
+                tree_reg=self.tree_reg,
+                J_l1_reg=self.J_l1_reg,
+                J_loss=self.J_loss,
+                J_lr=self.J_lr,
+                slab=self.slab,
+                slab_prior=self.slab_prior,
+                sampler='gibbs')
 
 
 # ===========================================================================
