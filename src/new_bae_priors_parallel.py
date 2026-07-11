@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import new_bae_search_parallel as nbsp
+import new_bae_priors as nbp                 # serial priors: collapse (to_serial) targets
 from new_bae_priors import _sigmoid          # reuse the verified stable logistic
 
 
@@ -73,6 +74,14 @@ class ParallelLatentPrior:
 
     def learn(self, ES):
         return None
+
+    # ---- collapse to the winning chain's serial prior ----------------------
+    def to_serial(self, c):
+        """Return chain c as an ordinary new_bae_priors.LatentPrior (2-D state)."""
+        lp = nbp.LatentPrior(sparse_reg=self.sparse_reg, tree_reg=self.tree_reg,
+                             slab=self.slab, slab_prior=self.slab_prior, temp=self.temp)
+        lp.S, lp.Z, lp.StS = self.S[c].copy(), self.Z[c].copy(), self.StS[c].copy()
+        return lp
 
 
 @dataclass
@@ -227,6 +236,23 @@ class ParallelBoltzmannPriorNP(ParallelLatentPrior):
         sig = np.random.choice([-1.0, 1.0], size=(C, n_samp, m))
         self._advance(sig, burn)
         return (sig + 1.0) / 2.0
+
+    # ---- collapse to the winning chain's serial prior ----------------------
+    def to_serial(self, c):
+        """Return chain c as an ordinary new_bae_priors.BoltzmannPriorNP: the 2-D
+        latent state and that chain's learned coupling J_W / J_h (and MLE particles)."""
+        lp = nbp.BoltzmannPriorNP(
+            sparse_reg=self.sparse_reg, tree_reg=self.tree_reg, slab=self.slab,
+            slab_prior=self.slab_prior, temp=self.temp, J_l1_reg=self.J_l1_reg,
+            J_loss=self.J_loss, J_lr=self.J_lr, mle_n_samp=self.mle_n_samp,
+            mle_gibbs_steps=self.mle_gibbs_steps, sampler=self.sampler)
+        lp.S, lp.Z, lp.StS = self.S[c].copy(), self.Z[c].copy(), self.StS[c].copy()
+        lp.J_W, lp.J_h = self.J_W[c].copy(), self.J_h[c].copy()
+        if self.J_loss == 'mle':
+            lp.sigma = self.sigma[c].copy()
+            lp.model_mean = self.model_mean[c].copy()
+            lp.model_cov = self.model_cov[c].copy()
+        return lp
 
 
 # ---------------------------------------------------------------------------
