@@ -159,19 +159,27 @@ class BMF:
             self.chain_loss = np.asarray(en[-1])
         return en
 
-    def sample(self, X, temp=None, n_samp=1, burnin=10, **args):
-        if temp is not None:
-            self.temp = temp
-
+    def sample(self, X, temp=None, n_samp=1, burnin=10, per_chain=False, **args):
         # Fresh chain state, shaped to the rows of X (NOT the prior's persistent
         # S/Z, which are sized to the training set).  EStep updates S and Z in
         # place every sweep (inplace=False only freezes the prior's StS), so this
         # walks a single Gibbs chain from a random init; Z starts as a binary copy
         # and, for a slab, the search fills in continuous magnitudes as it sweeps.
+        #
         # With n_chains > 1 every state carries a leading chain axis, so all chains
-        # are sampled at once and samps is (n_samp, C, len(X), dim_hid).
+        # are sampled at once.  By DEFAULT only the best chain's draws are returned,
+        # shape (n_samp, len(X), dim_hid) -- the same contract as a single-chain
+        # model, so downstream code (e.g. new_bae_experiments.NewBMF, which scores
+        # `sample` output and reconstructs `self(samps)`) works unchanged.  Pass
+        # per_chain=True to keep every chain's draws, (n_samp, C, len(X), dim_hid)
+        # -- needed when the caller wants each chain's samples (e.g. to score a
+        # per-chain imputation).
+        if temp is not None:
+            self.temp = temp
+
         C = getattr(self, 'n_chains', 1)
-        if C > 1:
+        multi = C > 1
+        if multi:
             samps = np.zeros((n_samp, C, len(X), self.dim_hid))
             S = 1.0 * np.random.choice([0, 1], size=(C, len(X), self.dim_hid))
         else:
@@ -185,6 +193,8 @@ class BMF:
                 samps[i] = 1 * samp
                 i += 1
 
+        if multi and not per_chain:
+            return samps[:, self.best_chain()]        # (n_samp, len(X), dim_hid)
         return samps
 
     def grad_step(self, X, mask=None):
@@ -235,16 +245,30 @@ class LinearGaussianBMF(BMF):
         return self.latent_prior.S
 
     # ---- shared reconstruction / loss / likelihood ------------------------
-    # (the intercept b lives on the operator now, so forward/drive take only S/X)
+    # The PUBLIC single-model faces -- __call__ (reconstruction), loglikelihood and
+    # sample -- present the BEST chain when multi, so downstream code that treats the
+    # model as one winner (e.g. new_bae_experiments.NewBMF: self(samps),
+    # loglikelihood(X, self(samps))) works whether it was fit with 1 chain or many.
+    # `loss` is the one exception -- it stays PER-CHAIN so best_chain can rank them --
+    # and the internal fit path uses operator/prior directly, never __call__.
     def __call__(self, S):
-        return self.operator.forward(S)
+        if not self._multi:
+            return self.operator.forward(S)
+        return self._best_operator().forward(S)   # best chain's serial reconstruction
+
+    def _best_operator(self):
+        """The winning chain as a serial operator (cached), for best-chain forward."""
+        b = self.best_chain()
+        if getattr(self, '_best_op', None) is None or self._best_op_c != b:
+            self._best_op, self._best_op_c = self.operator.to_serial(b), b
+        return self._best_op
 
     def loss(self, X, mask=None):
         """MSE reconstruction loss.  Single chain -> scalar (unchanged); multi-chain
         -> per-chain (C,).  A boolean `mask` (matching X's shape) scores only the
         selected entries.  The reduction spans every axis but the chain axis, so it
         works for 2-D data (n,d) and 3-D data (n,t,d) alike."""
-        N = self(self.S)
+        N = self.operator.forward(self.S)          # PER-CHAIN when multi (not __call__)
         if not self._multi:
             if mask is None:
                 mask = np.ones(X.shape) > 0
@@ -255,16 +279,13 @@ class LinearGaussianBMF(BMF):
         return sq[:, mask].mean(1)
 
     def loglikelihood(self, X, Xhat):
-        if not self._multi:
-            dot = 0.5 * ((Xhat - X) ** 2) / self.sigma_x
-            lnrm = 0.5 * np.log(self.sigma_x) + 0.5 * np.log(2 * np.pi)
-            return -(dot + lnrm)
-        # multi-chain: sigma_x is (C,); broadcast it over the per-chain reconstruction
-        Xb = X if X.ndim == Xhat.ndim else X[None]
-        sig = self.sigma_x.reshape((-1,) + (1,) * (Xhat.ndim - 1))
-        dot = 0.5 * ((Xhat - Xb) ** 2) / sig
-        lnrm = (0.5 * np.log(self.sigma_x) + 0.5 * np.log(2 * np.pi))
-        lnrm = lnrm.reshape((-1,) + (1,) * (Xhat.ndim - 1))
+        """Per-element Gaussian log-likelihood.  `Xhat` is a single-model
+        reconstruction (from __call__, i.e. the best chain when multi), so this uses
+        that chain's scalar noise variance -- the shapes match a serial model."""
+        sig = self.sigma_x if not self._multi else \
+            float(np.atleast_1d(self.sigma_x)[self.best_chain()])
+        dot = 0.5 * ((Xhat - X) ** 2) / sig
+        lnrm = 0.5 * np.log(sig) + 0.5 * np.log(2 * np.pi)
         return -(dot + lnrm)
 
     def init_latents(self, X, **args):
@@ -393,6 +414,7 @@ class LinearGaussianBMF(BMF):
         self.scl_lr = scl_lr
         self.outs = []                            # per-iteration log-odds if debug
         self._Ximp = None                         # per-chain imputation copy (lazy)
+        self._best_op = None                      # cached best-chain operator (lazy)
 
         self.operator.init_params(X, self.dim_hid, hot_start=hot_start, **opt_args)
 
