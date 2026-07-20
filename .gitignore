@@ -1,0 +1,7 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+
+# numba on-disk cache (emitted next to sources / in __pycache__)
+*.nbc
+*.nbi
