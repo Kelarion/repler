@@ -95,6 +95,46 @@ def _center_kernel(K):
 
 
 # ===========================================================================
+#  Training-time probes  (track any quantity over a fit, mirror of TempSchedule)
+# ===========================================================================
+#
+# A `probe` names something to record once per fit iteration.  It is either
+#   * a dotted attribute path (str): walked from the model, e.g. 'sigma_x',
+#     'temp', 'latent_prior.temp', 'latent_prior.J_W', 'latent_prior.S',
+#     'operator.W', 'operator.scl'; or
+#   * a callable model -> value, for a derived quantity the model doesn't store
+#     directly (e.g. lambda m: m.latent_prior.J_W.std()).
+# `fit(..., probes=[...])` collects them into `self.history` = {name: [per-iter]},
+# so nothing about the tracked set is baked into the model -- it is chosen per fit,
+# exactly like the prior_schedule.  Values are SNAPSHOTTED (arrays copied) so the
+# history holds each iteration's state, not a live alias to the array the fit keeps
+# mutating in place.
+
+def _snapshot(v):
+    """Copy a probed value so history holds the state AT that iteration, not a live
+    alias.  torch tensors / nn.Parameters -> detached numpy copies (duck-typed, so
+    this module stays torch-free); numpy arrays -> copies; scalars pass through."""
+    if hasattr(v, 'detach'):                       # torch tensor / nn.Parameter
+        v = v.detach()
+        v = v.cpu() if hasattr(v, 'cpu') else v
+        return np.asarray(v).copy()
+    if isinstance(v, np.ndarray):
+        return v.copy()
+    return v
+
+
+def _probe_value(model, probe):
+    """Evaluate one probe: a callable is called with the model; a string is a dotted
+    attribute path walked from the model.  Result is snapshotted."""
+    if callable(probe):
+        return _snapshot(probe(model))
+    obj = model
+    for attr in probe.split('.'):
+        obj = getattr(obj, attr)
+    return _snapshot(obj)
+
+
+# ===========================================================================
 #  Base class: fit loop only (unchanged from bae_models.BMF)
 # ===========================================================================
 
@@ -113,7 +153,7 @@ class BMF:
 
     def fit(self, *data, initial_temp=10, decay_rate=0.88, period=10,
             min_temp=1, prior_schedule=None, max_iter=None, verbose=True,
-            mask=None, **opt_args):
+            mask=None, probes=None, **opt_args):
         # The *prior* temperature (latent_prior.temp) runs on its OWN schedule,
         # decoupled from the model temp above: `prior_schedule` is any object with
         # `update(**inputs) -> float`, called once per iteration.  The default
@@ -122,6 +162,14 @@ class BMF:
         # nbp.ConstantTemp(t) pins it elsewhere.  Only the structured prior reads
         # it, and only when sampling S -- never when learning J -- so a schedule
         # here changes the search, not the fitted coupling.
+        #
+        # `probes` tracks any extra quantity over the fit (see _probe_value): a list
+        # of dotted attribute paths and/or callables, or a {name: path-or-callable}
+        # dict.  Each is recorded once per iteration (post-update) into `self.history`
+        # = {name: [per-iter snapshots]}, e.g.
+        #   probes=['sigma_x', 'latent_prior.temp', 'latent_prior.J_W']
+        # No tracking is baked into the model -- it is chosen per fit, like the
+        # prior_schedule -- and array values are snapshotted (copied) each iteration.
 
         if max_iter is None:
             max_iter = period * int(np.log(1e-4 / initial_temp) / np.log(decay_rate))
@@ -129,6 +177,15 @@ class BMF:
         if prior_schedule is None:
             prior_schedule = nbp.TempSchedule()
         sched_prior = hasattr(self, 'latent_prior')
+
+        # normalize probes to a {name: probe} dict; a bare list keys each path/
+        # callable by its own name (a callable's __name__, so lambdas want a dict).
+        if probes is None:
+            probes = {}
+        elif not isinstance(probes, dict):
+            probes = {(p if isinstance(p, str) else getattr(p, '__name__', repr(p))): p
+                      for p in probes}
+        self.history = {name: [] for name in probes}
 
         if verbose:
             from tqdm import tqdm
@@ -148,6 +205,10 @@ class BMF:
             # working array in `data` is refined across iterations).
             _, ls = self.grad_step(*data, mask=mask)
             en.append(ls)
+
+            # record the tracked quantities for this iteration (post-update state)
+            for name, probe in probes.items():
+                self.history[name].append(_probe_value(self, probe))
 
             if verbose:
                 pbar.update(1)
