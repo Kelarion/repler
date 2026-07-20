@@ -75,20 +75,15 @@ from typing import Optional
 # (params, init, forward/backward) live in the operators and priors it composes.
 import new_bae_search
 import new_bae_priors as nbp
-from new_bae_priors import LatentPrior, BoltzmannPrior
+from new_bae_priors import LatentPrior, BoltzmannPrior, MRFPrior
 from new_bae_weights import (
     LinearOperator,
     AffineOperator, Procrustes, TorchMatrixOp, CPOperator, ReducedRankOp, ConvOperator,
 )
-# multi-chain (n_chains > 1) components: a leading chain axis on the operator + prior,
-# picked in each model's __post_init__ when n_chains > 1.  See new_bae_models_parallel.
-from new_bae_weights_parallel import (
-    ParallelAffineOperator, ParallelProcrustes,
-    ParallelCPOperator, ParallelReducedRankOp,
-)
-from new_bae_priors_parallel import (
-    ParallelLatentPrior, ParallelBoltzmannPriorNP, MRFPrior,
-)
+# Every operator and prior now supports multiple chains through its own `n_chains`
+# field (n_chains == 1 is the ordinary serial 2-D component; n_chains > 1 carries a
+# leading chain axis).  There is no separate Parallel class -- a model just passes
+# n_chains through to the single component class (see `_chained`).
 
 
 def _center_kernel(K):
@@ -461,14 +456,12 @@ class LinearGaussianBMF(BMF):
         self.operator.build_search(self.latent_prior.link,
                                    self.latent_prior.prior_plugin, debug=self.debug)
 
-    # A model's __post_init__ composes its components through this: the serial class
-    # for a single chain, the chain-batched (Parallel*) class -- with n_chains -- for
-    # many.  The two classes take the SAME keyword arguments (the parallel ones mirror
-    # the serial constructors), so a model needs only name the pair.
-    def _chained(self, serial_cls, parallel_cls, **kw):
-        if self._multi:
-            return parallel_cls(n_chains=self.n_chains, **kw)
-        return serial_cls(**kw)
+    # A model's __post_init__ composes its components through this: it just threads
+    # `n_chains` into the single (chain-aware) component class.  n_chains == 1 builds
+    # the ordinary serial 2-D component; n_chains > 1 builds the chain-batched one --
+    # same class, same keyword arguments, only the leading chain axis differs.
+    def _chained(self, cls, **kw):
+        return cls(n_chains=self.n_chains, **kw)
 
     def _no_multichain(self, name):
         """Guard for models whose operator has no chain-batched port yet."""
@@ -551,13 +544,13 @@ class SemiBMF(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(AffineOperator, ParallelAffineOperator,
+        self.operator = self._chained(AffineOperator,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg,
                                       l2_reg=self.weight_l2_reg)
-        self.latent_prior = self._chained(LatentPrior, ParallelLatentPrior,
+        self.latent_prior = self._chained(LatentPrior,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg)
 
@@ -598,14 +591,14 @@ class JBMF(LinearGaussianBMF):
         #                               pr_reg=self.weight_pr_reg,
         #                               l1_reg=0.0,
         #                               l2_reg=self.weight_l2_reg)
-        self.operator = self._chained(AffineOperator, ParallelAffineOperator,
+        self.operator = self._chained(AffineOperator,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg,
                                       l2_reg=self.weight_l2_reg,
                                       resample_dead=True)
-        self.latent_prior = self._chained(nbp.BoltzmannPriorNP, ParallelBoltzmannPriorNP,
+        self.latent_prior = self._chained(nbp.BoltzmannPriorNP,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg,
                                           J_l1_reg=self.J_l1_reg,
@@ -658,7 +651,7 @@ class BiPCA(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(Procrustes, ParallelProcrustes,
+        self.operator = self._chained(Procrustes,
                                       fit_intercept=self.fit_intercept,
                                       fit_scl=self.fit_scl)
         if self.J_prior == 'mrf':
@@ -677,14 +670,13 @@ class BiPCA(LinearGaussianBMF):
                                          slab=self.slab,
                                          slab_prior=self.slab_prior)
         elif self.J_prior == 'none' or self.J_lr == 0:
-            self.latent_prior = self._chained(LatentPrior, ParallelLatentPrior,
+            self.latent_prior = self._chained(LatentPrior,
                                               sparse_reg=self.sparse_reg,
                                               tree_reg=self.tree_reg,
                                               slab=self.slab,
                                               slab_prior=self.slab_prior)
         else:
             self.latent_prior = self._chained(nbp.BoltzmannPriorNP,
-                                              ParallelBoltzmannPriorNP,
                                               sparse_reg=self.sparse_reg,
                                               tree_reg=self.tree_reg,
                                               J_l1_reg=self.J_l1_reg,
@@ -721,12 +713,12 @@ class SCPD(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(CPOperator, ParallelCPOperator,
+        self.operator = self._chained(CPOperator,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg)
-        self.latent_prior = self._chained(LatentPrior, ParallelLatentPrior,
+        self.latent_prior = self._chained(LatentPrior,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg,
                                           slab=self.slab,
@@ -762,12 +754,12 @@ class JSCPD(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(CPOperator, ParallelCPOperator,
+        self.operator = self._chained(CPOperator,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg)
-        self.latent_prior = self._chained(nbp.BoltzmannPriorNP, ParallelBoltzmannPriorNP,
+        self.latent_prior = self._chained(nbp.BoltzmannPriorNP,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg,
                                           J_l1_reg=self.J_l1_reg,
@@ -807,14 +799,14 @@ class RRBMF(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(ReducedRankOp, ParallelReducedRankOp,
+        self.operator = self._chained(ReducedRankOp,
                                       rank=self.rank,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg,
                                       l2_reg=self.weight_l2_reg)
-        self.latent_prior = self._chained(LatentPrior, ParallelLatentPrior,
+        self.latent_prior = self._chained(LatentPrior,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg,
                                           slab=self.slab,
@@ -841,14 +833,14 @@ class JRRBMF(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
-        self.operator = self._chained(ReducedRankOp, ParallelReducedRankOp,
+        self.operator = self._chained(ReducedRankOp,
                                       rank=self.rank,
                                       fit_intercept=self.fit_intercept,
                                       nonneg=self.nonneg,
                                       pr_reg=self.weight_pr_reg,
                                       l1_reg=self.weight_l1_reg,
                                       l2_reg=self.weight_l2_reg)
-        self.latent_prior = self._chained(nbp.BoltzmannPriorNP, ParallelBoltzmannPriorNP,
+        self.latent_prior = self._chained(nbp.BoltzmannPriorNP,
                                           sparse_reg=self.sparse_reg,
                                           tree_reg=self.tree_reg,
                                           J_l1_reg=self.J_l1_reg,

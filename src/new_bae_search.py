@@ -30,15 +30,22 @@ The scaffold owns everything shared: the permuted i,j loop, the neighbour-field
 accumulation from the gram (off Z), the tree/sparsity A/B/C/D regularizer, the
 StS bookkeeping (off S), and the sigmoid flip.
 
-Run `python new_bae_search.py` (with the real src on PYTHONPATH) to compare
-against bae_search.sbmf / bae_search.snmf and time both.
+This module holds BOTH the serial scaffold (`make_dense_search`, 2-D state, plain
+@njit) and its chain-batched twin (`make_parallel_dense_search`, a leading chain
+axis + `prange`).  They share the link/prior plugins verbatim; the operator
+(new_bae_weights) picks the parallel build when n_chains > 1 and the serial one
+otherwise, so a single chain keeps the exact serial RNG stream.
+
+Run `python new_bae_search.py` (with the real src on PYTHONPATH) to compare the
+serial scaffold against bae_search.sbmf / bae_search.snmf and the parallel one
+against C serial calls, and to time both.
 """
 
 import math
 from functools import lru_cache
 
 import numpy as np
-from numba import njit
+from numba import njit, prange
 
 import bae_util
 
@@ -262,6 +269,101 @@ make_dense_search = lru_cache(maxsize=None)(_build_dense_search)
 
 
 # ---------------------------------------------------------------------------
+#  The parallel-chains dense scaffold  (chains = a leading array axis)
+# ---------------------------------------------------------------------------
+#
+# The BMF objective is non-convex and the fit is stochastic, so in practice you
+# run several independent chains from different inits and keep the best.  This is
+# the same coordinate-descent sweep as `_build_dense_search`, but every state
+# array carries a leading chain axis C and the sweep is wrapped in `prange(C)`.
+# Chains are embarrassingly parallel (each owns its own S, Z, StS, W), so this is
+# a numba parallel loop with no cross-chain reads/writes -- race-free without any
+# locking.  The LINK and PRIOR plugins are reused VERBATIM: they operate on a 2-D
+# (S, i, j), so the parallel sweep just calls them on the c-th chain's slab.
+#
+# The operator picks this builder (via new_bae_weights) when n_chains > 1; a
+# single chain uses the serial `_build_dense_search` above, which keeps the plain
+# @njit path (and its exact RNG stream) intact.
+#
+# Shapes (C = n_chains):
+#     XW (C,n,m)  S (C,n,m)  Z (C,n,m)  WtW (C,m,m)  StS (C,m,m)
+#     sigma2 (C,)   Jc (C,m,m)   hc (C,m)   out (C,n,m) or None
+# `temp`, `alpha`, `beta`, `tau`, `N` are shared scalars (same schedule and
+# hyperparameters across chains -- only the random state differs).
+
+def _build_parallel_dense_search(score, aux_update, prior, diag_gram=False, debug=False):
+    """Same closure factory as `_build_dense_search`, but the sweep runs inside
+    `prange(C)`.  `score`, `aux_update`, `prior`, `diag_gram`, `debug` are
+    compile-time freevar constants (so the plugins inline and the diag/debug
+    branches fold), exactly as in the serial version.  Memoized: each distinct
+    (link, prior, diag_gram, debug) compiles once."""
+
+    @njit(parallel=True)
+    def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+               Jc, hc, inplace=True, out=None, prior_temp=1.0):
+        C, n, m = S.shape
+        regularize = beta > 1e-6
+
+        # ---- the ONE new line: chains are independent -> parallel outer loop ----
+        for c in prange(C):
+            # everything below is the serial 2-D sweep, verbatim, on chain c's own
+            # slabs (S[c], Z[c], WtW[c], ...).  No cross-chain reads or writes, so
+            # the prange is race-free without any locking.
+            sig2 = sigma2[c]
+            for i in np.random.permutation(np.arange(n)):
+                for j in np.random.permutation(np.arange(m)):
+
+                    Sij = S[c, i, j]
+
+                    # LIKELIHOOD field: off Z, true gram only (no prior leakage).
+                    E = XW[c, i, j]
+                    if not diag_gram:
+                        for k in range(m):
+                            if k != j:
+                                E -= WtW[c, j, k] * Z[c, i, k]
+
+                    logodds, mu, nu = score(E, WtW[c, j, j], tau, sig2)
+
+                    # PRIOR on S: the shared plugin, on chain c's spike/coupling.
+                    # prior_temp is a shared scalar across chains -- the structured
+                    # coupling is divided by it, same as the serial scaffold.
+                    lp = prior(S[c], i, j, StS[c], N, Jc[c], hc[c], alpha, beta,
+                               prior_temp)
+
+                    if debug:
+                        out[c, i, j] = logodds + lp
+
+                    curr = (logodds + lp) / temp
+
+                    if curr < -100:
+                        prob = 0.0
+                    elif curr > 100:
+                        prob = 1.0
+                    else:
+                        prob = 1.0 / (1.0 + math.exp(-curr))
+
+                    new_Sij = 1.0 * (np.random.rand() < prob)
+                    ds = new_Sij - Sij
+
+                    if regularize and inplace:
+                        StS[c, j, j] += ds
+                        for k in range(m):
+                            if k != j:
+                                StS[c, j, k] += S[c, i, k] * ds
+                                StS[c, k, j] += S[c, i, k] * ds
+
+                    S[c, i, j] = new_Sij
+                    aux_update(Z[c], i, j, new_Sij, mu, nu)
+
+        return S, Z
+
+    return search
+
+
+make_parallel_dense_search = lru_cache(maxsize=None)(_build_parallel_dense_search)
+
+
+# ---------------------------------------------------------------------------
 #  The kernel scaffold factory  (Gram factorization -- NOT a linear operator)
 # ---------------------------------------------------------------------------
 #
@@ -398,9 +500,12 @@ PRIOR_PLAIN = prior_unstructured
 PRIOR_BOLTZMANN = prior_boltzmann
 
 # prebuilt kernels (compiled lazily on first call); unstructured prior here, the
-# structured ones are composed by the model from its prior's plugin.
+# structured ones are composed by the model from its prior's plugin.  The `par_*`
+# variants are the chain-batched (prange) builds the operators use when n_chains>1.
 sbmf_search = make_dense_search(*BINARY_LINK, PRIOR_PLAIN)
 snmf_search = make_dense_search(*SLAB_LINK, PRIOR_PLAIN)
+par_sbmf_search = make_parallel_dense_search(*BINARY_LINK, PRIOR_PLAIN)
+par_snmf_search = make_parallel_dense_search(*SLAB_LINK, PRIOR_PLAIN)
 
 
 # ===========================================================================
@@ -515,5 +620,76 @@ def _selftest():
           f"({t_slab / t_snmf:.2f}x)")
 
 
+def _selftest_parallel():
+    """C parallel chains vs C serial calls.  Per-thread RNG in a prange means we
+    can't match a specific serial call bit-for-bit, so we check that (a)
+    shapes/dtypes line up, (b) every spike is a valid {0,1} draw, and (c) the
+    parallel sweep reduces the per-chain energy like the serial one."""
+    import time
+
+    rng = np.random.RandomState(0)
+    C, n, d, m = 6, 200, 50, 8
+    temp, alpha, beta, tau, sig = 0.7, 0.0, 1e-2, 1.0, 1.0
+
+    W = rng.randn(C, d, m)                 # distinct W per chain -> chains differ
+    X = rng.randn(n, d)
+    XW = np.einsum('nd,cdm->cnm', X, W)
+    WtW = np.einsum('cdm,cdk->cmk', W, W)
+    S0 = 1.0 * (rng.rand(C, n, m) > 0.5)
+    StS0 = np.einsum('cnm,cnk->cmk', S0, S0)
+    Jc = np.zeros((C, m, m))
+    hc = np.zeros((C, m))
+    sigma2 = np.full(C, sig)
+
+    Sp, Zp, StSp = S0.copy(), S0.copy(), StS0.copy()
+    par_sbmf_search(XW.copy(), Sp, Zp, WtW.copy(), StSp, n,
+                    temp, alpha, beta, tau, sigma2, Jc, hc, True, None)
+
+    Ss = S0.copy()
+    for c in range(C):
+        Sc, Zc, StSc = S0[c].copy(), S0[c].copy(), StS0[c].copy()
+        sbmf_search(XW[c].copy(), Sc, Zc, WtW[c].copy(), StSc, n,
+                    temp, alpha, beta, tau, sig,
+                    np.zeros((m, m)), np.zeros(m), True)
+        Ss[c] = Sc
+
+    print(f"[par shape]   parallel S {Sp.shape}  serial-stack S {Ss.shape}")
+    print(f"[par valid]   all spikes in {{0,1}}: {np.all((Sp == 0) | (Sp == 1))}")
+
+    def energy(S):
+        recon = np.einsum('cnm,cdm->cnd', S, W)
+        return ((X[None] - recon) ** 2).mean((1, 2))
+
+    e0, ep, es = energy(S0), energy(Sp), energy(Ss)
+    print(f"[par energy]  init          : {np.round(e0, 3)}")
+    print(f"[par energy]  parallel sweep: {np.round(ep, 3)}  "
+          f"(all decreased: {np.all(ep < e0)})")
+    print(f"[par energy]  serial  sweep : {np.round(es, 3)}  "
+          f"(all decreased: {np.all(es < e0)})")
+
+    def timeit(fn, reps=30):
+        fn()
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            fn()
+        return (time.perf_counter() - t0) / reps * 1e3
+
+    t_par = timeit(lambda: par_sbmf_search(
+        XW.copy(), S0.copy(), S0.copy(), WtW.copy(), StS0.copy(), n,
+        temp, alpha, beta, tau, sigma2, Jc, hc, True, None))
+
+    def serial_all():
+        for c in range(C):
+            sbmf_search(XW[c].copy(), S0[c].copy(), S0[c].copy(),
+                        WtW[c].copy(), StS0[c].copy(), n,
+                        temp, alpha, beta, tau, sig,
+                        np.zeros((m, m)), np.zeros(m), True)
+    t_ser = timeit(serial_all)
+    print(f"[par time]    {C} chains: parallel {t_par:.3f} ms | serial {t_ser:.3f} "
+          f"ms ({t_ser / t_par:.2f}x)")
+
+
 if __name__ == "__main__":
     _selftest()
+    print()
+    _selftest_parallel()
