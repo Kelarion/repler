@@ -120,6 +120,43 @@ class GeomAnneal(TempSchedule):
         return self.min_temp + self.initial * (self.decay_rate ** (it // self.period))
 
 
+@dataclass
+class AdaptiveTemp(TempSchedule):
+    """Loss-adaptive prior temperature: a control law that drives the model's
+    reconstruction MSE toward a target `kappa` by nudging the prior's INVERSE
+    temperature lambda = 1/temp,
+
+        lambda <- max(0, lambda + alpha * (err - kappa)),     temp = 1 / lambda
+
+    where `err` is the MSE from the previous iteration (the fit loop's last loss)
+    and `alpha` is the learning rate.  When the fit is worse than target (err >
+    kappa) lambda rises -> temp falls -> the structured prior sharpens; when it is
+    better lambda falls -> temp rises -> the prior relaxes.  lambda is clamped at 0
+    (never negative); at lambda == 0 the prior is switched fully off (temp = inf, so
+    the search divides the coupling by inf and it contributes nothing).
+
+    lambda is carried as state across iterations and re-seeded to `lambda_init` at
+    the start of each fit (it == 0), so the same schedule object can be reused.  The
+    first iteration has no loss yet, so lambda holds at its initial value.  Multi-
+    chain: the prior temperature is a single shared scalar, so a per-chain `err`
+    (C,) is reduced to its mean."""
+
+    alpha: float = 1e-3          # learning rate on the inverse temperature
+    kappa: float = 1e-3          # target reconstruction MSE
+    lambda_init: float = 1.0     # initial inverse temperature (temp = 1 / lambda_init)
+
+    def __post_init__(self):
+        self._lam = self.lambda_init
+
+    def update(self, it=0, loss=None, **inputs):
+        if it == 0:
+            self._lam = self.lambda_init      # fresh fit -> re-seed the state
+        if loss is not None:
+            err = float(np.mean(loss))        # scalar; mean over chains if multi-chain
+            self._lam = max(0.0, self._lam + self.alpha * (err - self.kappa))
+        return np.inf if self._lam <= 0.0 else 1.0 / self._lam
+
+
 # ===========================================================================
 #  Priors over the binary latents  (the whole latent side of a model)
 # ===========================================================================
