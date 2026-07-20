@@ -44,7 +44,7 @@ import torch.nn.functional as F
 
 import bae_search
 import new_bae_search
-from new_bae_search import make_dense_search, make_parallel_dense_search
+from new_bae_search import make_dense_search
 
 
 def init_affine(X, dim_hid, nonneg, hot_start, fit_intercept, resample_dead=False):
@@ -135,11 +135,11 @@ class LinearOperator:
         `debug=True` compiles the variant that records per-element log-odds.
 
         A single chain compiles the serial (plain-@njit, 2-D) scaffold; n_chains>1
-        compiles the chain-batched (`prange`, 3-D) one -- same link/prior plugins,
-        so the composition story is unchanged and only the outer chain axis differs.
-        ConvOperator overrides this."""
-        factory = make_parallel_dense_search if self._multi else make_dense_search
-        self._kernel = factory(*link, prior, diag_gram=self._diag_gram, debug=debug)
+        compiles the chain-batched (`prange`, 3-D) one -- same factory, same
+        link/prior plugins, only the `parallel` flag (and the outer chain axis)
+        differ.  ConvOperator overrides this."""
+        self._kernel = make_dense_search(*link, prior, diag_gram=self._diag_gram,
+                                         debug=debug, parallel=self._multi)
 
     def search(self, XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
                Jc, hc, inplace=True, out=None, prior_temp=1.0):
@@ -417,8 +417,8 @@ class Procrustes:
     # other dense model -- the scale lives entirely in the pre-scaled drive/gram.
     # Serial (2-D) or chain-batched (prange) build, picked by n_chains.
     def build_search(self, link, prior, debug=False):
-        factory = make_parallel_dense_search if self._multi else make_dense_search
-        self._kernel = factory(*link, prior, diag_gram=True, debug=debug)
+        self._kernel = make_dense_search(*link, prior, diag_gram=True,
+                                         debug=debug, parallel=self._multi)
 
     def search(self, XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
                Jc, hc, inplace=True, out=None, prior_temp=1.0):

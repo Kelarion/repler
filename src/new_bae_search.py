@@ -30,11 +30,13 @@ The scaffold owns everything shared: the permuted i,j loop, the neighbour-field
 accumulation from the gram (off Z), the tree/sparsity A/B/C/D regularizer, the
 StS bookkeeping (off S), and the sigmoid flip.
 
-This module holds BOTH the serial scaffold (`make_dense_search`, 2-D state, plain
-@njit) and its chain-batched twin (`make_parallel_dense_search`, a leading chain
-axis + `prange`).  They share the link/prior plugins verbatim; the operator
-(new_bae_weights) picks the parallel build when n_chains > 1 and the serial one
-otherwise, so a single chain keeps the exact serial RNG stream.
+One factory builds the dense E-step kernel for any number of chains:
+`make_dense_search(*link, prior, diag_gram=, debug=, parallel=)`.  Both the serial
+(2-D state, plain @njit) and the chain-batched (leading chain axis + `prange`)
+builds run the SAME per-chain sweep body (`_make_dense_sweep`); `parallel` just
+picks whether it runs directly or inside `prange(C)`.  The operator
+(new_bae_weights) passes parallel=(n_chains > 1), so a single chain keeps the exact
+serial RNG stream (bit-for-bit vs bae_search.sbmf / snmf).
 
 Run `python new_bae_search.py` (with the real src on PYTHONPATH) to compare the
 serial scaffold against bae_search.sbmf / bae_search.snmf and the parallel one
@@ -194,23 +196,30 @@ def prior_boltzmann(S, i, j, StS, N, Jc, hc, alpha, beta, prior_temp):
 # the whole additive S-prior `prior` -- the prior runs its own k-loop, which
 # numba inlines into the sweep (no call overhead, no second pass kept around).
 
-def _build_dense_search(score, aux_update, prior, diag_gram=False, debug=False):
-    # `diag_gram` is a COMPILE-TIME flag (a closed-over freevar constant, so LLVM
-    # folds the branch and eliminates the neighbour loop entirely -- no runtime
-    # cost).  Set it when the operator's gram is diagonal (orthonormal W, WtW == I,
-    # e.g. BiPCA): then sum_k WtW[j,k] Z[i,k] is exactly XW[i,j], so the O(m) inner
-    # loop over neighbours is pure waste.  Memoized separately from diag_gram=False
-    # (see make_dense_search's cache key), so each variant compiles once.
-    #
-    # `debug` (compile-time) samples EXACTLY as normal but also records each
-    # element's log-odds (logodds + prior, pre-temp) into `out` as it sweeps, so
-    # you can watch the current magnitudes over a real fit.  `out` defaults to None
-    # and is only touched under this (compile-time-pruned) branch, so the normal
-    # path's signature and callers are unchanged -- debug callers pass out=... .
+@lru_cache(maxsize=None)
+def _make_dense_sweep(score, aux_update, prior, diag_gram=False, debug=False):
+    """ONE chain's 2-D coordinate-descent sweep -- the shared body both the serial
+    and the parallel dense search run.  Operates on 2-D state (S/Z/WtW/StS/XW),
+    scalar sigma2, and a 2-D-or-None `out`; the serial search calls it directly and
+    the parallel one calls it per chain inside `prange(C)`, so the sweep logic lives
+    in exactly one place.
+
+    `score`, `aux_update`, `prior`, `diag_gram`, `debug` are compile-time freevar
+    constants: the link plugins (marked inline='always') fold into the loop, and the
+    diag_gram / debug branches are pruned by LLVM (no runtime cost).
+
+    * `diag_gram` -- set when the operator's gram is diagonal (orthonormal W,
+      WtW == I, e.g. BiPCA): then sum_k WtW[j,k] Z[i,k] is exactly XW[i,j], so the
+      O(m) neighbour loop is pure waste and is eliminated entirely.
+    * `debug` -- samples EXACTLY as normal but also records each element's log-odds
+      (logodds + prior, pre-temp) into `out` as it sweeps, so you can watch the
+      current magnitudes over a real fit.  Off (the normal path) never touches `out`.
+    Memoized, so the serial and parallel builds of the same (link, prior, diag_gram,
+    debug) share one compiled sweep."""
 
     @njit
-    def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-               Jc, hc, inplace=True, out=None, prior_temp=1.0):
+    def sweep(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+              Jc, hc, inplace, out, prior_temp):
         n, m = S.shape
         regularize = beta > 1e-6
 
@@ -262,105 +271,61 @@ def _build_dense_search(score, aux_update, prior, diag_gram=False, debug=False):
 
         return S, Z
 
+    return sweep
+
+
+def _build_dense_search(score, aux_update, prior, diag_gram=False, debug=False,
+                        parallel=False):
+    """The dense E-step kernel, in one factory.  `parallel` (a compile-time flag)
+    selects between two thin wrappers around the shared `_make_dense_sweep` body:
+
+      parallel=False -- a plain @njit over 2-D state (S/Z/... shaped (n,m)/(m,m),
+                        sigma2 a scalar).  This is the single-chain path; it keeps
+                        the exact serial RNG stream, so it stays bit-for-bit equal
+                        to bae_search.sbmf / snmf.
+      parallel=True  -- an @njit(parallel=True) that runs the SAME sweep per chain
+                        inside `prange(C)` over 3-D state (leading chain axis C,
+                        sigma2 (C,)).  Chains are embarrassingly parallel (each owns
+                        its own S/Z/StS/W), so the prange is race-free without locks.
+
+    Two wrappers rather than one because numba types a function on its argument
+    shapes: a 2-D and a 3-D `S` cannot share one compiled body, and routing a single
+    chain through `prange` would change its RNG stream (per-thread RNG).  The sweep
+    LOGIC is shared, though -- only the outer iteration (nothing vs prange over
+    chains) and the per-chain indexing differ.  Memoized on
+    (link, prior, diag_gram, debug, parallel) via make_dense_search, so each variant
+    compiles once.  The operator (new_bae_weights) passes parallel=(n_chains > 1)."""
+
+    sweep = _make_dense_sweep(score, aux_update, prior, diag_gram, debug)
+
+    if parallel:
+        @njit(parallel=True)
+        def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+                   Jc, hc, inplace=True, out=None, prior_temp=1.0):
+            C = S.shape[0]
+            for c in prange(C):
+                # `out` is (C,n,m) under debug (else None); the if/else is pruned
+                # since `debug` is a compile-time constant, so None is never indexed.
+                if debug:
+                    sweep(XW[c], S[c], Z[c], WtW[c], StS[c], N, temp, alpha, beta,
+                          tau, sigma2[c], Jc[c], hc[c], inplace, out[c], prior_temp)
+                else:
+                    sweep(XW[c], S[c], Z[c], WtW[c], StS[c], N, temp, alpha, beta,
+                          tau, sigma2[c], Jc[c], hc[c], inplace, out, prior_temp)
+            return S, Z
+    else:
+        @njit
+        def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+                   Jc, hc, inplace=True, out=None, prior_temp=1.0):
+            sweep(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+                  Jc, hc, inplace, out, prior_temp)
+            return S, Z
+
+    search._dense_sweep = sweep    # exposed for the inlining self-test
     return search
 
 
 make_dense_search = lru_cache(maxsize=None)(_build_dense_search)
-
-
-# ---------------------------------------------------------------------------
-#  The parallel-chains dense scaffold  (chains = a leading array axis)
-# ---------------------------------------------------------------------------
-#
-# The BMF objective is non-convex and the fit is stochastic, so in practice you
-# run several independent chains from different inits and keep the best.  This is
-# the same coordinate-descent sweep as `_build_dense_search`, but every state
-# array carries a leading chain axis C and the sweep is wrapped in `prange(C)`.
-# Chains are embarrassingly parallel (each owns its own S, Z, StS, W), so this is
-# a numba parallel loop with no cross-chain reads/writes -- race-free without any
-# locking.  The LINK and PRIOR plugins are reused VERBATIM: they operate on a 2-D
-# (S, i, j), so the parallel sweep just calls them on the c-th chain's slab.
-#
-# The operator picks this builder (via new_bae_weights) when n_chains > 1; a
-# single chain uses the serial `_build_dense_search` above, which keeps the plain
-# @njit path (and its exact RNG stream) intact.
-#
-# Shapes (C = n_chains):
-#     XW (C,n,m)  S (C,n,m)  Z (C,n,m)  WtW (C,m,m)  StS (C,m,m)
-#     sigma2 (C,)   Jc (C,m,m)   hc (C,m)   out (C,n,m) or None
-# `temp`, `alpha`, `beta`, `tau`, `N` are shared scalars (same schedule and
-# hyperparameters across chains -- only the random state differs).
-
-def _build_parallel_dense_search(score, aux_update, prior, diag_gram=False, debug=False):
-    """Same closure factory as `_build_dense_search`, but the sweep runs inside
-    `prange(C)`.  `score`, `aux_update`, `prior`, `diag_gram`, `debug` are
-    compile-time freevar constants (so the plugins inline and the diag/debug
-    branches fold), exactly as in the serial version.  Memoized: each distinct
-    (link, prior, diag_gram, debug) compiles once."""
-
-    @njit(parallel=True)
-    def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-               Jc, hc, inplace=True, out=None, prior_temp=1.0):
-        C, n, m = S.shape
-        regularize = beta > 1e-6
-
-        # ---- the ONE new line: chains are independent -> parallel outer loop ----
-        for c in prange(C):
-            # everything below is the serial 2-D sweep, verbatim, on chain c's own
-            # slabs (S[c], Z[c], WtW[c], ...).  No cross-chain reads or writes, so
-            # the prange is race-free without any locking.
-            sig2 = sigma2[c]
-            for i in np.random.permutation(np.arange(n)):
-                for j in np.random.permutation(np.arange(m)):
-
-                    Sij = S[c, i, j]
-
-                    # LIKELIHOOD field: off Z, true gram only (no prior leakage).
-                    E = XW[c, i, j]
-                    if not diag_gram:
-                        for k in range(m):
-                            if k != j:
-                                E -= WtW[c, j, k] * Z[c, i, k]
-
-                    logodds, mu, nu = score(E, WtW[c, j, j], tau, sig2)
-
-                    # PRIOR on S: the shared plugin, on chain c's spike/coupling.
-                    # prior_temp is a shared scalar across chains -- the structured
-                    # coupling is divided by it, same as the serial scaffold.
-                    lp = prior(S[c], i, j, StS[c], N, Jc[c], hc[c], alpha, beta,
-                               prior_temp)
-
-                    if debug:
-                        out[c, i, j] = logodds + lp
-
-                    curr = (logodds + lp) / temp
-
-                    if curr < -100:
-                        prob = 0.0
-                    elif curr > 100:
-                        prob = 1.0
-                    else:
-                        prob = 1.0 / (1.0 + math.exp(-curr))
-
-                    new_Sij = 1.0 * (np.random.rand() < prob)
-                    ds = new_Sij - Sij
-
-                    if regularize and inplace:
-                        StS[c, j, j] += ds
-                        for k in range(m):
-                            if k != j:
-                                StS[c, j, k] += S[c, i, k] * ds
-                                StS[c, k, j] += S[c, i, k] * ds
-
-                    S[c, i, j] = new_Sij
-                    aux_update(Z[c], i, j, new_Sij, mu, nu)
-
-        return S, Z
-
-    return search
-
-
-make_parallel_dense_search = lru_cache(maxsize=None)(_build_parallel_dense_search)
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +469,8 @@ PRIOR_BOLTZMANN = prior_boltzmann
 # variants are the chain-batched (prange) builds the operators use when n_chains>1.
 sbmf_search = make_dense_search(*BINARY_LINK, PRIOR_PLAIN)
 snmf_search = make_dense_search(*SLAB_LINK, PRIOR_PLAIN)
-par_sbmf_search = make_parallel_dense_search(*BINARY_LINK, PRIOR_PLAIN)
-par_snmf_search = make_parallel_dense_search(*SLAB_LINK, PRIOR_PLAIN)
+par_sbmf_search = make_dense_search(*BINARY_LINK, PRIOR_PLAIN, parallel=True)
+par_snmf_search = make_dense_search(*SLAB_LINK, PRIOR_PLAIN, parallel=True)
 
 
 # ===========================================================================
@@ -588,9 +553,9 @@ def _selftest():
         return hits
 
     print(f"[inolg]   binary kernel: residual link calls = "
-          f"{len(link_calls(sbmf_search))}")
+          f"{len(link_calls(sbmf_search._dense_sweep))}")
     print(f"[inolg]   slab   kernel: residual link calls = "
-          f"{len(link_calls(snmf_search))}")
+          f"{len(link_calls(snmf_search._dense_sweep))}")
 
     # ---- timing -----------------------------------------------------------
     def timeit(fn, reps=50):
