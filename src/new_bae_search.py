@@ -301,17 +301,20 @@ def _build_dense_search(score, aux_update, prior, diag_gram=False, debug=False,
     if parallel:
         @njit(parallel=True)
         def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
-                   Jc, hc, inplace=True, out=None, prior_temp=1.0):
+                   Jc, hc, inplace=True, out=None, prior_temp=None):
             C = S.shape[0]
             for c in prange(C):
+                # `prior_temp` is per chain here ((C,), like sigma2) -- the prior
+                # temperature may differ across chains (e.g. AdaptiveTemp with a
+                # per-chain loss), so each chain divides its coupling by its own.
                 # `out` is (C,n,m) under debug (else None); the if/else is pruned
                 # since `debug` is a compile-time constant, so None is never indexed.
                 if debug:
                     sweep(XW[c], S[c], Z[c], WtW[c], StS[c], N, temp, alpha, beta,
-                          tau, sigma2[c], Jc[c], hc[c], inplace, out[c], prior_temp)
+                          tau, sigma2[c], Jc[c], hc[c], inplace, out[c], prior_temp[c])
                 else:
                     sweep(XW[c], S[c], Z[c], WtW[c], StS[c], N, temp, alpha, beta,
-                          tau, sigma2[c], Jc[c], hc[c], inplace, out, prior_temp)
+                          tau, sigma2[c], Jc[c], hc[c], inplace, out, prior_temp[c])
             return S, Z
     else:
         @njit
@@ -605,10 +608,11 @@ def _selftest_parallel():
     Jc = np.zeros((C, m, m))
     hc = np.zeros((C, m))
     sigma2 = np.full(C, sig)
+    prior_temp = np.ones(C)          # per-chain prior temperature ((C,), like sigma2)
 
     Sp, Zp, StSp = S0.copy(), S0.copy(), StS0.copy()
     par_sbmf_search(XW.copy(), Sp, Zp, WtW.copy(), StSp, n,
-                    temp, alpha, beta, tau, sigma2, Jc, hc, True, None)
+                    temp, alpha, beta, tau, sigma2, Jc, hc, True, None, prior_temp)
 
     Ss = S0.copy()
     for c in range(C):
@@ -641,7 +645,7 @@ def _selftest_parallel():
 
     t_par = timeit(lambda: par_sbmf_search(
         XW.copy(), S0.copy(), S0.copy(), WtW.copy(), StS0.copy(), n,
-        temp, alpha, beta, tau, sigma2, Jc, hc, True, None))
+        temp, alpha, beta, tau, sigma2, Jc, hc, True, None, prior_temp))
 
     def serial_all():
         for c in range(C):

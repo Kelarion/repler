@@ -413,10 +413,21 @@ class LinearGaussianBMF(BMF):
         # `out` (sized to S, so `sample`'s fresh chain works too); snapshot it per
         # fit sweep so self.outs[t] holds iteration t's current magnitudes.
         out = np.zeros(S.shape) if self.debug else None
+        # Prior temperature into the search: a scalar for the serial kernel, a
+        # per-chain (C,) array for the parallel one -- exactly like sigma_x.  A
+        # schedule may return either a scalar (shared across chains) or a per-chain
+        # array (e.g. AdaptiveTemp fed a per-chain loss); coerce to the kernel's
+        # expected shape here so both cases -- and a shared temp broadcast over
+        # chains -- flow through unchanged.
+        if self._multi:
+            prior_temp = np.ascontiguousarray(
+                np.broadcast_to(np.asarray(lp.temp, dtype=float), (self.n_chains,)))
+        else:
+            prior_temp = float(np.asarray(lp.temp))
         self.operator.search(
             XW, S, Z, WtW, lp.StS, self.n, self.temp,
             lp.sparse_reg, lp.tree_reg, lp.slab_prior, self.sigma_x, Jc, hc,
-            inplace, out, lp.temp)
+            inplace, out, prior_temp)
         if self.debug and inplace:
             self.outs.append(out)
         ES = Z if slab else S
@@ -1056,8 +1067,11 @@ class KernelBMF(BMF):
         # to S so `sample`'s fresh chain works too); snapshot it per fit sweep so
         # self.outs[t] holds iteration t's current magnitudes over all (i, j).
         out = np.zeros(S.shape) if self.debug else self._dummy_out
+        # KernelBMF is single-chain, so the prior temperature is a scalar; coerce
+        # (a schedule like AdaptiveTemp returns a 0-d array even for a scalar loss).
+        prior_temp = float(np.asarray(lp.temp))
         self._search(data, S, lp.StS, StX, self.n, self.scl, self.sigma2, self.temp,
-                     lp.sparse_reg, lp.tree_reg, Jc, hc, out, inplace, lp.temp)
+                     lp.sparse_reg, lp.tree_reg, Jc, hc, out, inplace, prior_temp)
         if self.debug and inplace:
             self.outs.append(out)
         return S
