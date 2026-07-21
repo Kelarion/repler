@@ -725,10 +725,8 @@ class BiPCA(LinearGaussianBMF):
                                       fit_intercept=self.fit_intercept,
                                       fit_scl=self.fit_scl)
         if self.J_prior == 'mrf':
-            # MRFPrior is chain-batched only: its state carries the chain axis
-            # unconditionally, so a single-chain (2-D) operator's search would be
-            # handed a (1,m,m) coupling.  Hence the guard, and n_chains passed through.
-            self._only_multichain('BiPCA(J_prior="mrf")')
+            # MRFPrior is chain-aware like the others: n_chains == 1 gives 2-D state
+            # (feeding the serial search), n_chains > 1 the chain-batched form.
             self.latent_prior = MRFPrior(n_chains=self.n_chains,
                                          sparse_reg=self.sparse_reg,
                                          tree_reg=self.tree_reg,

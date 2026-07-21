@@ -127,35 +127,26 @@ class AdaptiveTemp(TempSchedule):
     temperature lambda = 1/temp,
 
         lambda <- max(0, lambda + alpha * (err - kappa)),     temp = 1 / lambda
-
-    where `err` is the MSE from the previous iteration (the fit loop's last loss)
-    and `alpha` is the learning rate.  When the fit is worse than target (err >
-    kappa) lambda rises -> temp falls -> the structured prior sharpens; when it is
-    better lambda falls -> temp rises -> the prior relaxes.  lambda is clamped at 0
-    (never negative); at lambda == 0 the prior is switched fully off (temp = inf, so
-    the search divides the coupling by inf and it contributes nothing).
-
-    lambda is carried as state across iterations and re-seeded to `lambda_init` at
-    the start of each fit (it == 0), so the same schedule object can be reused.  The
-    first iteration has no loss yet, so lambda holds at its initial value.  Multi-
-    chain: the prior temperature is a single shared scalar, so a per-chain `err`
-    (C,) is reduced to its mean."""
+    """
 
     alpha: float = 1e-3          # learning rate on the inverse temperature
     kappa: float = 1e-3          # target reconstruction MSE
+    gamma: float = 0.9           # exponential moving average
     lambda_init: float = 1.0     # initial inverse temperature (temp = 1 / lambda_init)
 
     def __post_init__(self):
         self._lam = self.lambda_init
+        self._D = self.kappa
 
     def update(self, it=0, loss=None, **inputs):
         if it == 0:
             self._lam = self.lambda_init      # fresh fit -> re-seed the state
+            self._D = self.kappa
         if loss is not None:
-            err = float(np.mean(loss))        # scalar; mean over chains if multi-chain
-            self._lam = max(0.0, self._lam + self.alpha * (err - self.kappa))
-        return np.inf if self._lam <= 0.0 else 1.0 / self._lam
-
+            self._D = self.gamma*self._D + (1-self.gamma)*(self.kappa - np.array(loss))
+            self._lam *= np.exp(self.alpha * self._D)
+        return np.where(self._lam <= 1e-7, np.inf, 1/self._lam)
+        # return np.inf if self._lam <= 0.0 else 1.0 / self._lam
 
 # ===========================================================================
 #  Priors over the binary latents  (the whole latent side of a model)
@@ -654,14 +645,15 @@ class BoltzmannPriorNP(BoltzmannPrior):
 @dataclass
 class MRFPrior(LatentPrior):
     """Sign-constrained Ising prior, fit by the annealed Gibbs/ICM sampler in
-    mrf_samplers.  CHAIN-BATCHED ONLY -- its state carries the chain axis
-    unconditionally, so it needs n_chains > 1 (n_chains=2 is the cheapest way to
-    get the equivalent of a single-chain fit).
+    mrf_samplers.  Supports multiple chains via `n_chains` (default 1) like the
+    other priors: a single chain keeps 2-D state (J (m,m), h (m,), scalar beta),
+    and n_chains > 1 carries a leading chain axis.
 
-    State (per chain, one leading chain axis as everywhere in this module):
+    State (single chain / multi-chain):
 
-      J  (C, m, m)   symmetric, zero diagonal, entries in {-1, 0, +1}
-      h  (C, m)      unconstrained field
+      J  (m,m) / (C,m,m)   symmetric, zero diagonal, entries in {-1, 0, +1}
+      h  (m,)  / (C,m)     unconstrained field
+      beta scalar / (C,)   the prior's inverse temperature (the coupling's scale)
 
     Inherits from LatentPrior: the latent state (S / Z / StS) and its init, the
     `link` property (so slab=True works here for free), sparse_reg / tree_reg, and
@@ -698,7 +690,8 @@ class MRFPrior(LatentPrior):
 
     # ---- the prior's params: the discrete coupling ------------------------
     def init_params(self, S0, **opt_args):
-        C, n, m = S0.shape                                # S0 is the (C,n,m) spike
+        # S0 is the spike: (n, m) for a single chain, (C, n, m) with n_chains > 1.
+        n, m = S0.shape[-2:]
         self.m = m
         # init_params is re-run on every init_latents, hence on every restart of a
         # multi-start fit -- so J_lam is rebuilt from the stashed multiplier rather
@@ -706,28 +699,51 @@ class MRFPrior(LatentPrior):
         # BoltzmannPriorNP's J_l1_reg does).
         self.J_lam = self.l0_reg * np.sqrt(np.log(m ** 2 / 1e-3) / n)  # mrf's lam
 
-        self.J = np.zeros((C, m, m))                      # {-1,0,+1}, zero diagonal
-        self.h = np.zeros((C, m))
-        self.beta = np.ones(C) * self.beta_init
-        self._n_changed = np.zeros(C, dtype=int)          # last sweep's #flips
+        if self._multi:
+            C = self.n_chains
+            self.J = np.zeros((C, m, m))                   # {-1,0,+1}, zero diagonal
+            self.h = np.zeros((C, m))
+            self.beta = np.ones(C) * self.beta_init
+            self._n_changed = np.zeros(C, dtype=int)       # last sweep's #flips
+        else:
+            self.J = np.zeros((m, m))                      # {-1,0,+1}, zero diagonal
+            self.h = np.zeros(m)
+            self.beta = float(self.beta_init)              # scalar inverse temperature
+            self._n_changed = 0
 
     # ---- the structured prior the search adds ------------------------------
     def coupling(self):
         """The (Jc, hc) that make new_bae_search.prior_boltzmann reproduce THIS
-        prior's conditional log-odds, beta*(J.sigma + h)."""
+        prior's conditional log-odds, beta*(J.sigma + h).  Single chain: (m,m)/(m,);
+        multi-chain: (C,m,m)/(C,m)."""
+        if not self._multi:
+            Jc = 2.0 * self.beta * self.J                # (m,m); symmetric, zero diag
+            hc = self.beta * (self.h - self.J.sum(1))    # (m,); field + 2S-1 shift
+            return Jc, hc
         Jc = 2.0 * self.beta[:, None, None] * self.J     # (C,m,m); symmetric, zero diag
         hc = self.beta[:, None] * (self.h - self.J.sum(2))  # (C,m); field + 2S-1 shift
         return Jc, hc
 
-    # ---- one annealed sampler pass over J (and h), per chain ---------------
-    # No chain batching here: the mrf kernels are numba loops over the m nodes and
-    # M samples, so each chain is a separate call.  The Python loop is over C only
-    # (C is ~8), and each call is O(m^2 n) inside numba.
+    # ---- one annealed sampler pass over J (and h) --------------------------
+    # No chain batching in the numba layer: the mrf kernels are loops over the m
+    # nodes and M samples, so each chain is a separate 2-D call.  A single chain is
+    # one call; multi loops over C (which is ~8), each O(m^2 n) inside numba.
     def learn(self, ES):
-        """Resample each chain's discrete coupling from the spike statistics ES
-        (C, n, m).  The fields F are rebuilt per call because ES changes every
-        M-step (build_fields is O(m^2 n), the same order as one sweep)."""
+        """Resample the discrete coupling from the spike statistics ES ((n,m) single
+        chain, (C,n,m) multi).  The fields F are rebuilt per call because ES changes
+        every M-step (build_fields is O(m^2 n), the same order as one sweep)."""
         spins = np.where(ES != 0, 1.0, -1.0)              # spike -> {-1,+1}; `!= 0`
+
+        if not self._multi:
+            St = np.ascontiguousarray(spins.T)            # (m, n), mrf's layout
+            F = mrf.build_fields(self.J, self.h, St)
+            for _ in range(self.J_sweeps):
+                if self.fit_h:
+                    self._fit_h(self.J, self.h, St, F, self.beta)
+                self._n_changed = mrf.gibbs_sweep_J(
+                    self.J, St, F, self.J_lam * self.beta, self.beta, self.J_temp)
+                self.beta = self._fit_beta(self.J, self.h, St, F, self.beta)
+            return
 
         for c in range(len(self.J)):
             St = np.ascontiguousarray(spins[c].T)         # (m, n), mrf's layout
@@ -757,9 +773,14 @@ class MRFPrior(LatentPrior):
             return mrf.ple_beta(J, h, beta, St, F, lr=self.beta_lr, J_lam=0)
 
     def objective(self, ES):
-        """Per-chain per-sample objective (mean log pseudolikelihood - lam*nnz(J)),
-        the monitoring quantity of fit_sign_ising's history."""
+        """Per-sample objective (mean log pseudolikelihood - lam*nnz(J)), the
+        monitoring quantity of fit_sign_ising's history.  Single chain -> scalar;
+        multi-chain -> (C,)."""
         spins = np.where(ES != 0, 1.0, -1.0)
+        if not self._multi:
+            St = np.ascontiguousarray(spins.T)
+            F = mrf.build_fields(self.J, self.h, St)
+            return mrf.objective(self.J, St, F, self.J_lam, self.beta)
         out = np.empty(len(self.J))
         for c in range(len(self.J)):
             St = np.ascontiguousarray(spins[c].T)
@@ -769,9 +790,13 @@ class MRFPrior(LatentPrior):
 
     # ---- sampling the prior itself (its generative model) ------------------
     def sample(self, n_samp=1, **gibbs_args):
-        """Draw {0,1} samples from each chain's prior, via mrf_samplers.gibbs_samp.
-
-        Returns (C, n_samp, m).  Chains loop in Python -- gibbs is 2-D per chain."""
+        """Draw {0,1} samples from the prior, via mrf_samplers.gibbs_samp.  Single
+        chain -> (n_samp, m); multi-chain -> (C, n_samp, m) (chains loop in Python,
+        gibbs is 2-D per chain)."""
+        if not self._multi:
+            g = mrf.gibbs_samp(self.beta * self.J, self.beta * self.h,
+                               temp=self.temp, n_samp=n_samp, **gibbs_args).T
+            return (1 + g) / 2
         samps = []
         for c in range(len(self.J)):
             samps.append(mrf.gibbs_samp(self.beta[c] * self.J[c], self.beta[c] * self.h[c],
@@ -793,8 +818,12 @@ class MRFPrior(LatentPrior):
             sparse_reg=self.sparse_reg, tree_reg=self.tree_reg, slab=self.slab,
             slab_prior=self.slab_prior, temp=self.temp, J_l1_reg=self.J_lam,
             sampler='gibbs')
-        lp.S, lp.Z, lp.StS = self.S[c].copy(), self.Z[c].copy(), self.StS[c].copy()
-        lp.J_W, lp.J_h = 0.5 * self.beta[c] * self.J[c], 0.5 * self.beta[c] * self.h[c]
+        if self._multi:
+            lp.S, lp.Z, lp.StS = self.S[c].copy(), self.Z[c].copy(), self.StS[c].copy()
+            lp.J_W, lp.J_h = 0.5 * self.beta[c] * self.J[c], 0.5 * self.beta[c] * self.h[c]
+        else:
+            lp.S, lp.Z, lp.StS = self.S.copy(), self.Z.copy(), self.StS.copy()
+            lp.J_W, lp.J_h = 0.5 * self.beta * self.J, 0.5 * self.beta * self.h
         return lp
 
 
