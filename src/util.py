@@ -271,6 +271,46 @@ def participation_ratio(X=None, K=None, center=False):
     else:
         raise ValueError('Requires either features (X) or kernel (K)')
 
+
+def _soft(z, t):
+    return np.sign(z) * np.maximum(np.abs(z) - t, 0.0)
+
+
+def sca(X, k, alpha, beta=0.01, n_restarts=8, n_iter=150,
+        n_sweep=40, tol=1e-8, seed=0):
+    n, p = X.shape
+    rng = np.random.default_rng(seed)
+    best = None
+    for _ in range(n_restarts):
+        U = rng.standard_normal((n, k))
+        U /= np.linalg.norm(U, axis=0, keepdims=True)
+        V = np.zeros((p, k))
+        prev = np.inf
+        for _ in range(n_iter):
+            # V-step: vectorized elastic-net coordinate descent over neurons
+            G = U.T @ U                      # (k,k)
+            B = X.T @ U                      # (p,k) = <x_j, u_m>
+            for _ in range(n_sweep):
+                for m in range(k):
+                    rho = B[:, m] - V @ G[:, m] + V[:, m] * G[m, m]
+                    V[:, m] = _soft(rho, alpha / 2.0) / (G[m, m] + beta)
+            # U-step: least squares + unit-norm columns
+            VtV = V.T @ V
+            U = X @ V @ np.linalg.pinv(VtV)
+            nrm = np.linalg.norm(U, axis=0, keepdims=True)
+            nrm[nrm == 0] = 1.0
+            U /= nrm
+            loss = (np.sum((X - U @ V.T) ** 2)
+                    + alpha * np.abs(V).sum() + beta * np.sum(V ** 2))
+            if prev - loss < tol:
+                prev = loss
+                break
+            prev = loss
+        if best is None or prev < best[2]:
+            best = (U, V, prev)
+    return best  # (U, V, loss)
+
+
 def sample_normalize(data, sigma, eps=1e-10):
     """ 
     data is (num_feat, num_sample)
@@ -824,7 +864,7 @@ def mat(x, incl_diag=False):
     A[...,aye,jay] = x
     A[...,jay,aye] = x
     
-    return A + np.expand_dims(np.eye(N), tuple(range(np.ndim(x)-1)))
+    return A + incl_diag*np.expand_dims(np.eye(N), tuple(range(np.ndim(x)-1)))
 
 def vec(A, incl_diag=False):
 
@@ -1270,31 +1310,30 @@ def topsort(graph):
     """
 
     nodes = []
-    depths = np.zeros(len(graph))
-    seen = set()
+    seen = set()        # fully processed nodes
+    path = []           # nodes on the current DFS path (for cycle detection)
 
-    def visit(visited, node):
+    def visit(node):
 
         if node in seen:
             return
-        if node in visited:
+        if node in path:
             raise Exception(
                 'Check your graph, it has a cycle!'
-                f'Specifically, this one: {visited+[node]}'
+                f'Specifically, this one: {path+[node]}'
                 )
 
-        visited.append(node)
+        path.append(node)
 
         for neighbor in graph[node]:
-            if neighbor not in seen:
-                seen.add(neighbor)
-                visit(visited, neighbor)
+            visit(neighbor)
 
+        path.pop()
+        seen.add(node)
         nodes.insert(0, node)
 
     for node in graph.keys():
-        if node not in seen:
-            visit([], node)
+        visit(node)
 
     return nodes
 

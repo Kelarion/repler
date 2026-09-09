@@ -779,10 +779,14 @@ def diverging_clim(ax):
         im.set_clim(-cmax,cmax)
 
 
-def scatter3d(X, ax=None, **scat_args):
+def scatter3d(X, ax=None, labels=None, **scat_args):
     if ax is None:
         ax = plt.subplot(111, projection='3d')
     scat = ax.scatter(X[...,0],X[...,1],X[...,2], **scat_args)
+
+    if labels is not None:
+        for x, lab in zip(X, labels):
+            ax.text(x[0], x[1], x[2], lab)
 
     set_axes_equal(ax)
 

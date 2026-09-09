@@ -187,22 +187,13 @@ def _ctor_kwargs(cls, kw):
 
 
 def _prior_coupling(prior, best=None):
-    """The fitted prior's symmetric coupling (m, m), or None if it has no coupling.
-
-    Two shapes of structured prior answer to this: the BoltzmannPrior family keeps a
-    continuous, in general ASYMMETRIC J_W (rple/logrise do not constrain it), so it
-    is symmetrized here; MRFPrior keeps `J`, already symmetric and already in
-    {-1,0,+1} (symmetrizing is then a no-op).  `best` picks the chain when the prior
-    is chain-batched.  Returns None for a plain prior, and for the torch
-    BoltzmannPrior whose `J` is an nn.Linear rather than an array."""
-    J = getattr(prior, 'J_W', None)
-    if J is None:
-        J = getattr(prior, 'J', None)
+    """The fitted prior's coupling `J` (m, m), or None if it has no coupling.
+    Both structured priors keep it symmetric (BoltzmannPrior continuous, MRFPrior
+    in {-1,0,+1}), so this just picks the chain when the prior is chain-batched."""
+    J = getattr(prior, 'J', None)
     if not isinstance(J, np.ndarray):
         return None
-    if best is not None:
-        J = J[best]
-    return (J + J.T) / 2
+    return J if best is None else J[best]
 
 
 @dataclass
@@ -299,7 +290,7 @@ class NewBMF(exp.BMFModel):
         else:
             self._heldout = None
 
-        self._model = mod       # kept so extra_metrics can read latent_prior.J_W
+        self._model = mod       # kept so extra_metrics can read latent_prior.J
         return en[-1], samps, T
 
     def extra_metrics(self, X, Strue, Ss, Jtrue=None, **rest):
@@ -308,7 +299,7 @@ class NewBMF(exp.BMFModel):
         Both are optional and self-gating: `test_ll`/`train_ll` appear only when
         fitting with imputation (folds set, see run_model); the coupling scores
         appear only when the task supplied Jtrue AND the chosen model's
-        latent_prior has a coupling (BoltzmannPrior's J_W, MRFPrior's J).
+        latent_prior has a coupling (BoltzmannPrior's J, MRFPrior's J).
         """
         out = {}
         if getattr(self, '_heldout', None) is not None:

@@ -5,3 +5,13 @@ __pycache__/
 # numba on-disk cache (emitted next to sources / in __pycache__)
 *.nbc
 *.nbi
+
+# Claude Code worktrees — nested checkouts of this same repo, never commit
+.claude/worktrees/
+
+# OneDrive duplicate-file artifacts
+* - Copy*
+* - Copy (*)*
+
+# run logs
+*.log

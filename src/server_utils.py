@@ -8,6 +8,8 @@ REMOTE_RESULTS = '/burg/theory/users/ma3811/results/'
 import socket
 import os
 import sys
+import glob
+import importlib
 import pickle as pkl
 import subprocess
 import copy
@@ -39,7 +41,7 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
         self.value = None
         self.root_instance = True
 
-        self.checks = set() # logical functions of the parameter
+        self.checks = [] # logical functions of the parameter (constraints via `|`)
 
     def generate_values(self):
         """
@@ -137,7 +139,7 @@ class Parameter(np.lib.mixins.NDArrayOperatorsMixin):
         # print('or')
 
         if isinstance(other, tuple):
-            self.checks.append(*other)
+            self.checks.extend(other)
         else:
             self.checks.append(other)
 
@@ -243,7 +245,10 @@ class Integer(Parameter):
         if self.step is not None:
             step = self.step
         elif self.num is not None:
-            step = int((ub - lb) // self.num)
+            # `num` sets the step via floor-division; clamp to >=1 so that asking
+            # for more points than the integer span gives the whole span rather
+            # than a zero step (np.arange ZeroDivisionError).
+            step = max(1, int((ub - lb) // self.num))
         else:
             raise ValueError('Need to define either step size or number')
 
@@ -403,7 +408,7 @@ class ParamSet:
         # print('or')
 
         if isinstance(other, tuple):
-            self.param.checks.append(*other)
+            self.param.checks.extend(other)
         else:
             self.param.checks.append(other)
 
@@ -681,8 +686,155 @@ def stringify(thing):
         return thing
 
 
+def _canon(v):
+    """A hashable, numpy/version-stable key for value comparison (mirrors how
+    arg_digest canonicalizes): callables -> name, numpy scalars/arrays -> native,
+    anything unhashable -> repr."""
+    v = stringify(v)
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return tuple(v.tolist())
+    try:
+        hash(v)
+        return v
+    except TypeError:
+        return repr(v)
+
+
+def _grid_signatures(param_dict, forbidden):
+    """(keys, signatures) for one side (task or model) of a sweep dict.
+
+    Enumerates the sweep grid with parse_params -- so it honors Set/Real/Integer,
+    matched tuples, and constraints exactly like get_all_experiments -- and
+    returns the SPECIFIED keys plus the set of their (key, canon-value) tuples
+    over every combination.  A saved run matches this side iff its args, read on
+    those keys, reproduce one of these signatures; keys absent from `param_dict`
+    are never looked at, so they are unconstrained."""
+    keys = tuple(sorted(k for k in param_dict if k not in forbidden))
+    sigs = {tuple((k, _canon(combo[k])) for k in keys)
+            for combo in parse_params(param_dict, forbidden_keys=list(forbidden))}
+    return keys, sigs
+
+
+def _run_signature(args, keys):
+    """Signature of a saved run's `args` over `keys`, or None if any key is
+    absent (so the run can't match -- e.g. it predates a field being queried)."""
+    try:
+        return tuple((k, _canon(args[k])) for k in keys)
+    except KeyError:
+        return None
+
+
+def load_experiments(task_args, model_args, SAVE_DIR=None,
+                     reconstitute=False, verbose=True):
+    """Load every saved run matching a task/model parameter sweep -- same dict
+    interface as get_all_experiments, but robust to missing/renamed folders and
+    to PARTIAL specs.
+
+    task_args / model_args carry a 'task'/'model' class plus parameter specs
+    (scalars, lists, su.Set/Real/Integer, matched tuples), exactly as passed to
+    get_all_experiments and send_to_server.  A saved run is kept iff, on the keys
+    PRESENT in the dicts, its stored args reproduce one of the enumerated sweep
+    combinations.  Keys omitted from a dict are unconstrained -- so to "load every
+    run regardless of posterior_samps", just leave posterior_samps out of
+    model_args.
+
+    Unlike the old grid-walk (get_all_experiments + Experiment.load_experiment),
+    this never recomputes a folder hash from a live object, so it is immune to the
+    two things that orphan runs across cluster sends: numpy/env repr drift and
+    dataclass field add/remove.  It keys the search on the class NAMES recorded in
+    each arguments_* sidecar, matching both the flat TaskClass/ModelClass layout
+    and any older nested-hash folders.
+
+    Returns
+    -------
+    records : list of dict
+        One per matching run: task, model (names), task_args, model_args, folder,
+        metrics, and (if reconstitute) task_obj/model_obj.
+    prm : dict {name: np.ndarray}
+        Every arg name seen, stacked across records (object-dtype stringified,
+        like get_all_experiments) for boolean-mask plotting: these = prm['x']==v.
+    """
+    if SAVE_DIR is None:
+        SAVE_DIR = globals()['SAVE_DIR']
+
+    task_cls, model_cls = task_args['task'], model_args['model']
+    task_name = task_cls if isinstance(task_cls, str) else task_cls.__name__
+    model_name = model_cls if isinstance(model_cls, str) else model_cls.__name__
+
+    tkeys, tsigs = _grid_signatures(task_args, {'task'})
+    mkeys, msigs = _grid_signatures(model_args, {'model'})
+
+    # sidecars keyed by class name: the flat TaskClass/ModelClass/ layout, plus
+    # older nested TaskClass/<hash>/ModelClass/<hash>/ saves.
+    patterns = [os.path.join(SAVE_DIR, task_name, model_name, 'arguments_*.pkl'),
+                os.path.join(SAVE_DIR, task_name, '*', model_name, '*',
+                             'arguments_*.pkl')]
+    sidecars = sorted({p for pat in patterns for p in glob.glob(pat)})
+
+    records = []
+    for side in tqdm(sidecars, disable=not verbose):
+        try:
+            with open(side, 'rb') as f:
+                rec = pkl.load(f)
+        except Exception:
+            continue
+
+        targs, margs = rec.get('task_args', {}), rec.get('model_args', {})
+        if _run_signature(targs, tkeys) not in tsigs:
+            continue
+        if _run_signature(margs, mkeys) not in msigs:
+            continue
+
+        # load the sibling metrics file (arguments_X.pkl -> metrics_X.pkl)
+        folder = os.path.dirname(side)
+        mfile = os.path.join(folder,
+            os.path.basename(side).replace('arguments_', 'metrics_', 1))
+        try:
+            with open(mfile, 'rb') as f:
+                metrics = pkl.load(f)
+        except Exception:
+            continue
+
+        out = {'task': rec.get('task'), 'model': rec.get('model'),
+               'task_args': targs, 'model_args': margs,
+               'folder': folder, 'metrics': metrics}
+        if reconstitute:
+            out['task_obj'] = _rebuild(rec.get('task_module'), rec.get('task'), targs)
+            out['model_obj'] = _rebuild(rec.get('model_module'), rec.get('model'), margs)
+        records.append(out)
+
+    # stack params across records for mask-style filtering downstream
+    keys = set()
+    for r in records:
+        keys |= set(r['task_args']) | set(r['model_args'])
+    prm = {}
+    for k in keys:
+        col = [{**r['task_args'], **r['model_args']}.get(k, None) for r in records]
+        arr = np.array(col)
+        if arr.dtype.name == 'object':
+            arr = np.array([stringify(v) for v in col])
+        prm[k] = arr
+
+    if verbose:
+        print(f'loaded {len(records)} / {len(sidecars)} runs '
+              f'({task_name}/{model_name})')
+    return records, prm
+
+
+def _rebuild(module_name, class_name, args):
+    """Reconstitute a Task/Model instance from a sidecar record: import its class
+    and call it with the saved (full) args.  Returns None if the class can't be
+    found (e.g. it was renamed/moved since the run was saved)."""
+    try:
+        return getattr(importlib.import_module(module_name), class_name)(**args)
+    except Exception:
+        return None
+
+
 def pad_to_dense(M):
-    """Appends the minimal required amount of zeroes at the end of each 
+    """Appends the minimal required amount of zeroes at the end of each
      array in the jagged array `M`, such that `M` looses its jagedness."""
 
     shapes = np.array([m.shape for m in M])

@@ -12,7 +12,7 @@ import numpy.linalg as nla
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from itertools import permutations, combinations
-from dataclasses import dataclass
+from dataclasses import dataclass, InitVar
 from tqdm import tqdm
 
 from sklearn import svm, discriminant_analysis, manifold, linear_model
@@ -261,10 +261,40 @@ def permham(S, Z, norm=False):
 
     dH = len(S) - np.abs(S_.T@Z_)
     if norm:
-        dH = dH/(np.sum(S>0,axis=0)[:,None])
+        dH = dH/np.maximum(np.sum(S>0,axis=0), 1)[:,None]  # clamp empty cols (no /0)
     aye,jay = util.unbalanced_assignment(dH, one_sided=True)
 
     return (dH[aye,jay])[np.argsort(aye)]
+
+def permyuke_idx(W, V, norm=False, sym=False):
+    """Feature correspondence (aye, jay) matching columns of W to columns of V by
+    cosine similarity -- the W-based analogue of permham_idx.  Use these indices
+    to align two factorizations by their weights (then score S with a plain
+    Hamming on the aligned columns)."""
+    if norm:
+        Wn = W / (nla.norm(W, axis=0, keepdims=True) + 1e-12)
+        Vn = V / (nla.norm(V, axis=0, keepdims=True) + 1e-12)
+    else:
+        Wn = W
+        Vn = V
+    C = Wn.T @ Vn                                  # (num_W, num_V) cosine sims
+    if sym:
+        C = np.abs(C)
+    return util.unbalanced_assignment(-C, one_sided=True)
+
+def permyuke(W, V, norm=False,sym=False):
+    """
+    Permutation-invariant column cosine similarity between two weight matrices.
+
+    W is (dim, num_W), V is (dim, num_V).  Columns are matched one-sided (via
+    unbalanced_assignment on the negative cosine-similarity matrix) and the
+    matched cosines are returned as a (num_W,)-sized vector (1 = perfect).
+    Matches on |cosine| by default (sign-invariant, like permham); set
+    signed=True to keep the sign.
+    """
+    aye, jay = permyuke_idx(W,V,norm,sym)
+
+    return np.sum((W[:,aye] - V[:,jay])**2, axis=0)[np.argsort(aye)]
 
 def permham_idx(S, Z, norm=False):
     """
@@ -287,7 +317,7 @@ def permham_idx(S, Z, norm=False):
 
     dH = len(S) - np.abs(S_.T@Z_)
     if norm:
-        dH = dH/(np.sum(S>0,axis=0)[:,None])
+        dH = dH/np.maximum(np.sum(S>0,axis=0), 1)[:,None]  # clamp empty cols (no /0)
     aye,jay = util.unbalanced_assignment(dH, one_sided=True)
 
     return aye,jay
@@ -641,20 +671,160 @@ def sparse_feats(num_feats, num_data, sparsity=0.1):
     return S*C
 
 
-def empty_graph(K):
+@dataclass
+class UndirectedModel:
+    """A binary undirected graphical model: pairwise couplings J and local
+    fields h.  Build one of a few named structures, optionally `blowup` it into
+    several disjoint copies, and combine independent models with `union` (the
+    disjoint union, J -> block-diag(J, J'), h -> [h, h']).
+    """
+
+    K: int
+    struct: str
+    kwargs: dict = None
+    blowup: int = 1         # graph blow-up: each node -> `blowup` copies
+
+    def __post_init__(self):
+        if self.kwargs is None:
+            self.kwargs = {}
+
+        self.J, self.h = self._build(self.K, self.struct, self.kwargs)
+
+        # graph blow-up: replace each node with `blowup` copies that inherit its
+        # connectivity (copy(i,a) ~ copy(j,b) with weight J[i,j] for i != j) but
+        # are unconnected to each other (the within-node n x n blocks are zero).
+        n = self.blowup
+        if n > 1:
+            K0 = len(self.h)
+            J = np.kron(self.J, np.ones((n, n)))
+            for i in range(K0):
+                J[i * n:(i + 1) * n, i * n:(i + 1) * n] = 0
+            self.J = J
+            self.h = np.repeat(self.h, n)
+
+        self.K = len(self.h)        # total size after blow-up
+
+    @staticmethod
+    def _build(K, struct, kwargs):
+        if struct == 'none':
+            return no_couplings(K)
+        elif struct == 'tree':
+            return random_tree_couplings(K, **kwargs)
+        elif struct == 'categorical':
+            return category_couplings(K, **kwargs)
+        elif struct == 'grid':
+            return grid_couplings(K, **kwargs)
+        elif struct == 'cycle':
+            return cycle_couplings(K, **kwargs)
+        raise ValueError(f'unknown struct {struct!r}')
+
+    def sample(self, N, temp=1):
+        """Draw N observations by Gibbs sampling.  Returns (N, K) binary."""
+        return gibbs(self.J, self.h, temp=temp, n_samp=N).T
+
+    def union(self, other):
+        """Disjoint union with another model: independent blocks side by side."""
+        J, h = _disjoint_union(self.J, self.h, other.J, other.h)
+        return UndirectedModel.from_couplings(J, h)
+
+    @classmethod
+    def from_couplings(cls, J, h):
+        """Build a model directly from precomputed (J, h) (e.g. a union result),
+        bypassing the named-structure construction."""
+        m = cls.__new__(cls)
+        m.J, m.h, m.K = J, h, len(h)
+        m.struct, m.kwargs, m.blowup = 'custom', {}, 1
+        return m
+
+
+def _disjoint_union(J1, h1, J2, h2):
+    """[J1, 0; 0, J2] and [h1, h2] -- independent variables with no cross terms."""
+    return la.block_diag(J1, J2), np.concatenate([h1, h2])
+
+def no_couplings(K):
 
     return np.zeros((K, K)), np.zeros(K)
 
+def grid_couplings(K, d):
+
+    Jays = []
+    hs = []
+    for i in range(d):
+        Jays.append(-np.eye(K,k=1) - np.eye(K,k=-1))
+        hs.append(1 - np.eye(K)[-1])
+
+    return la.block_diag(*Jays), np.concatenate(hs)
+
 def random_tree_couplings(K, rho=1, alpha=1, beta=0):
+    # K = number of tree nodes; rho/alpha shape the tree (forwarded), beta is the
+    # clique-size surplus rate (-> tau).  generate_signed_block_matrix blows each
+    # node up into a clique, so the returned J/h have dimension len(J) >= K.
+    G = util.generate_parametric_no_chain_tree(K, rho=rho, alpha=alpha)
+    J, idx = util.generate_signed_block_matrix(G, tau=beta)
 
-    G = util.generate_parametric_no_chain_tree(K)
-    J, idx = util.generate_signed_block_matrix(G, alpha=beta)
-
-    h = -1 * np.ones(K)
+    h = -1 * np.ones(len(J))            # one field per clique node, not per tree node
     source = next(nx.topological_sort(G))
-    h[idx[source]] = 0
+    h[idx[source]] = 0                  # root clique gets zero field
 
     return J, h
+
+def category_couplings(K):
+
+    J = np.eye(K) - np.ones((K,K)) 
+    h = np.zeros(K)
+
+    return J, h
+
+
+def cycle_couplings(K, d=1):
+
+    J = -np.eye(K,k=1) - np.eye(K,k=-1)
+    J[0,-1] = 1 
+    J[-1,0] = 1
+
+    h = 1 - np.eye(K)[-1]
+    h[0] = 0
+
+    return la.block_diag(*([J]*d)), np.concatenate([h]*d)
+
+
+def gibbs(J, h, temp=1, n_samp=1, t0=10, decay_rate=0.8, period=2):
+
+    burn = period*int(np.log(1e-4/t0)/np.log(decay_rate))
+
+    n = len(h)
+    s = np.random.choice([0,1], size=(n, n_samp))
+    for t in range(burn):
+        T = temp + t0*(decay_rate**(t//period))   # anneal a decaying offset down to `temp`
+        for i in range(n):
+            p = spc.expit((J[i]@s + h[i]) / T)
+            s[i] = 1*(np.random.rand(n_samp) < p)
+
+    return s
+
+def randwalk(J, h, L, n_samp=1, t0=100, decay_rate=0.8, period=2, min_temp=1e-1):
+    """
+    Generate a random walk on the high-probability samples of p(s;J,h)
+    """
+
+    burn = period*int(np.log(1e-4/t0)/np.log(decay_rate))
+
+    n = len(h)
+    s = np.random.choice([0,1], size=(n, n_samp))
+    for t in range(burn):
+        temp = min_temp + t0*(decay_rate**(t//period))
+        for i in range(n):
+            p = spc.expit((J[i]@s + h[i]) / temp)
+            s[i] = 1*(np.random.rand(n_samp) < p)
+
+    samps = np.zeros((n*L, n_samp, n))
+    for t in range(L):
+        for i in range(n):
+            p = spc.expit((J[i]@s + h[i]) / min_temp)
+            s[i] = 1*(np.random.rand(n_samp) < p)
+            samps[t*n +i] += s.T
+
+    return samps
 
 #####################################
 ##### NMF ###########################
@@ -2101,6 +2271,49 @@ def fit_J(S, strict=True):
     else:
         return None
 
+def brute_mle(S, temp=1, strict=False, lamb=1e-2, **solver_args):
+
+    n, k = S.shape
+    aye, jay = np.triu_indices(k)
+    
+    allS = util.F2(k)
+
+    if len(allS) == 0:
+        return np.zeros((k,k))
+    
+    ## vec'd matrices
+    allS_ = util.outers(allS.T)[:,aye,jay]
+    S_ = util.outers(S.T)[:,aye,jay]
+    
+    vecJ = cvx.Variable(S_.shape[1])
+    
+    if strict:
+        part = cvx.log_sum_exp(allS_@vecJ / temp, axis=0)
+        reg = cvx.sum(cvx.abs(vecJ))
+        cost = cvx.Minimize(part + lamb*reg)
+        constraints = [vecJ >= -1, vecJ <= 1, S_@vecJ == 0]
+    else:
+        c = S_.mean(0)
+        dot = vecJ@c / temp
+        part = cvx.log_sum_exp(allS_@vecJ / temp, axis=0)
+        reg = cvx.sum(cvx.abs(vecJ))
+        cost = cvx.Minimize(part - dot + lamb*reg)
+        constraints = [vecJ >= -1, vecJ <= 1]
+
+    prob = cvx.Problem(cost, constraints)
+
+    minval = prob.solve(**solver_args)
+
+    if minval is not None:
+        J = np.zeros((k,k))
+        J[aye,jay] = vecJ.value
+        J += J.T
+        
+        return J
+    else:
+        return None
+
+
 def meanfield(S):
 
     R = la.pinv((S-S.mean(0)).T@(S-S.mean(0)))
@@ -2125,21 +2338,10 @@ def fixed_points(J):
     
     return allS[val < 1e-6]
 
-def boltzman(J, h, temp=1, n_samp=1, burn=10):
-
-    n = len(h)
-    s = np.random.choice([0,1], size=(n, n_samp))
-    for _ in range(burn):
-        for i in range(n):
-            p = spc.expit((J[i]@s + h[i]) / temp)
-            s[i] = 1*(np.random.rand(n_samp) < p)
-
-    return s
-
 def signdraw(G, **args):
 
     edges,weights = zip(*nx.get_edge_attributes(G,'weight').items())
-    edge_col = [['r','b'][int(this)] for this in (np.array(weights)+1)//2]
+    edge_col = [['r','b'][int(this)] for this in (np.sign(np.array(weights))+1)//2]
 
     pos = graphviz_layout(G)
     
@@ -2174,6 +2376,113 @@ def plotgraph(S, type='neato', labels=None, **scat_args):
                    'boxstyle': 'round'}
         for i in np.where(deez)[0]:
             plt.text(xy[i,0]+2, xy[i,1]+2, labels[i], bbox=bbox)
+
+
+def plotwalk(J, h, L, n_samp=1, type='kamada_kawai', node_weight='empirical',
+             edge_weight='empirical', gamma=1.0, spread=4.0, min_temp=1,
+             seed=0, **scat_args):
+    """
+    Plot the graph traced out by a random walk on p(s; J, h).
+
+    Nodes are the distinct states visited, edges the transitions between
+    consecutive (single-site Gibbs) states. Nodes and edges are not
+    thresholded: instead size/alpha are scaled by weight**gamma, so larger
+    `gamma` more strongly deemphasises low-probability nodes/edges.
+
+    Edge weight is the product of its two node weights and sets the *ideal edge
+    length* as `1 + spread*weight`: every edge is at least unit length, so a
+    chain of low-weight (bridge/leaf) states can never shortcut the distance
+    between the high-weight nodes it connects, while high-weight (core) edges
+    are stretched longer so the core spreads out and claims most of the plot.
+    Larger `spread` => more area for the core; `gamma` sharpens the weights the
+    same way. Both therefore also affect positioning, not just size/alpha.
+
+    node_weight: 'empirical' (visit frequency) or 'model' (softmax of the
+        Boltzmann score 0.5 s'Js + h's over the visited states).
+    edge_weight: 'empirical' (transition count) or 'product' (product of the
+        two endpoints' node weights).
+    type: layout. 'kamada_kawai' and graphviz 'neato'/'fdp'/'sfdp' honour the
+        ideal edge lengths most faithfully; 'spring'/'arf'/'spectral' read the
+        inverse as an attraction; 'dot'/'twopi'/'circo' also dispatch to
+        graphviz but largely ignore lengths.
+    """
+
+    n = len(h)
+
+    ## Single-site Gibbs frames: (n*L, n_samp, n)
+    samps = randwalk(J, h, L, n_samp=n_samp, min_temp=min_temp)
+    T = samps.shape[0]
+
+    ## Nodes: distinct visited states, with visit counts
+    frames = samps.reshape(T*n_samp, n).astype(int)
+    states, inv, cnt = np.unique(frames, axis=0,
+                                 return_inverse=True, return_counts=True)
+    ids = inv.reshape(T, n_samp)          # node id of each frame, per chain
+    N = len(states)
+
+    ## Edges: consecutive transitions within a chain, undirected, no self-loops
+    a, b = ids[:-1].ravel(), ids[1:].ravel()
+    keep = a != b
+    pairs = np.sort(np.stack([a[keep], b[keep]], 1), axis=1)
+    uE, ucnt = np.unique(pairs, axis=0, return_counts=True)
+
+    ## Node weight: empirical visit frequency or normalized model probability
+    if node_weight == 'model':
+        energy = 0.5*np.einsum('ij,jk,ik->i', states, J, states) + states@h
+        nodeval = np.exp(energy - spc.logsumexp(energy))
+    else:
+        nodeval = cnt / cnt.sum()
+
+    G = nx.Graph()
+    G.add_nodes_from(range(N))
+    for (u, v), w in zip(uE, ucnt):
+        G.add_edge(int(u), int(v), count=float(w))
+    G.remove_nodes_from(list(nx.isolates(G)))   # states never transitioned to/from
+    nodes = list(G.nodes)
+    edges = list(G.edges)
+    EU = np.array(edges)                          # (M, 2), aligned with G.edges
+
+    ## Edge weight: empirical transition count or product of endpoint weights
+    if edge_weight == 'product':
+        edgeval = nodeval[EU[:, 0]] * nodeval[EU[:, 1]]
+    else:
+        edgeval = np.array([G[u][v]['count'] for u, v in edges])
+
+    ## Normalise to [0,1] and sharpen by gamma (drives both layout and the
+    ## visual size/alpha, so gamma affects positioning too)
+    ew = (edgeval/edgeval.max())**gamma
+    nv = (nodeval[nodes]/nodeval[nodes].max())**gamma
+
+    ## Layout. Ideal edge length = 1 + spread*weight: unit baseline keeps a
+    ## low-weight bridge from shortcutting distant core nodes, weight stretches
+    ## the core to claim area. Attraction-based engines get the inverse.
+    length = {e: float(1.0 + spread*w) for e, w in zip(edges, ew)}
+    attract = {e: float(1.0/(1.0 + spread*w)) for e, w in zip(edges, ew)}
+    if type in ('spring', 'fruchterman_reingold'):
+        nx.set_edge_attributes(G, attract, 'w')
+        pos = nx.spring_layout(G, weight='w', seed=seed)
+    elif type == 'arf':
+        nx.set_edge_attributes(G, attract, 'w')
+        pos = nx.arf_layout(G, weight='w', seed=seed)
+    elif type == 'spectral':
+        nx.set_edge_attributes(G, attract, 'w')
+        pos = nx.spectral_layout(G, weight='w')
+    elif type == 'kamada_kawai':
+        nx.set_edge_attributes(G, length, 'w')
+        pos = nx.kamada_kawai_layout(G, weight='w')
+    else:                                         # any graphviz prog
+        nx.set_edge_attributes(G, length, 'len')
+        nx.set_edge_attributes(G, attract, 'weight')
+        pos = graphviz_layout(G, type)
+
+    nx.draw_networkx_edges(G, pos, width=0.5 + 4*ew,
+        edge_color=[(0, 0, 0, al) for al in (0.05 + 0.95*ew)])
+    nx.draw_networkx_nodes(G, pos, nodelist=nodes,
+        node_size=10 + 300*nv, alpha=(0.1 + 0.9*nv), **scat_args)
+    plt.axis('off')
+
+    return states, G
+
 
 def isometrichull(S, nodes):
     """

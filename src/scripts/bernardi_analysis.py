@@ -1,5 +1,5 @@
 CODE_DIR = 'C:/Users/mmall/OneDrive/Documents/github/repler/src/'
-SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/'
+SAVE_DIR = 'C:/Users/mmall/OneDrive/Documents/uni/columbia/main/data/bernardi_data/'
  
 import os, sys, re
 import pickle
@@ -44,6 +44,8 @@ import bae_models
 import plotting as tpl
 import anime
 
+import new_bae_models
+
 #%%
 
 bern_hpc = pkl.load(open(SAVE_DIR+'HPC_dump.pck','rb'))
@@ -79,25 +81,63 @@ for fold in range(folds):
 cond = np.repeat(np.arange(8), ntrl)
 
 # %% 
-# this = hpc[0]
-this = pfc[0]
-# this = acc[0]
-# this = Z_hpc
-# this = Z_pfc
-# this = Z_acc
+# X_ = hpc[0]
+# X_ = pfc[0]
+# X_ = acc[0] 
+# X_ = Z_hpc
+X_ = Z_pfc
+# X_ = Z_acc
 
 # mod = bae_models.BiPCA(11, tree_reg=1e-2, sparse_reg=1e-2)
 # mod = bae_models.KernelBMF(6, tree_reg=1e-2)
-mod = bae_models.SemiBMF(3, weight_reg=1, tree_reg=1e-1, sparse_reg=1e-2,
-                         fit_intercept=True, nonneg=True)
-neal = bae_util.Neal(0.9, period=50, initial=10)
+# mod = bae_models.SemiBMF(3, weight_pr_reg=1, tree_reg=1e-1, sparse_reg=1e-2,
+#                          fit_intercept=True, nonneg=True)
+# neal = bae_util.Neal(0.9, period=50, initial=10)
 # neal = bae_util.Neal(1, 1, 1e-4)
-en = neal.fit(mod, this, W_lr=1e-1, b_lr=1e-1)
+# en = neal.fit(mod, this, W_lr=1e-1, b_lr=1e-1)
 # en = neal.fit(mod, util.group_mean(this[0], cond, axis=0), pvar=0.9)
 
+
+mod = new_bae_models.JBMF(3,
+                         nonneg=True,
+                         # nonneg=False,
+                         # fit_intercept=False,
+                         tree_reg=0,
+                         weight_pr_reg=1,
+                         weight_l2_reg=1e-2,
+                         weight_l1_reg=0,
+                         sparse_reg=0,
+                         # J_loss='mle',
+                         J_loss='rple',
+                         # J_l1_reg=1e-3,
+                         J_lr=1e-4,
+                         # J_lr=0,
+                         # slab=True,
+                         # slab_prior=0.1,
+                         )
+
+
+en = mod.fit(X_ / X_.std(),
+             period=100,
+             initial_temp=100,
+             decay_rate=0.88, 
+             min_temp=1, 
+             scl_lr=1e-4,
+             lr=1e-2,
+             hot_start=False,
+             )
+
+
+# en = mod.fit(this / this.std(), decay_rate=0.88, min_temp=1, initial_temp=10, period=50)
+
+
+samps = mod.sample(X_ / X_.std(), n_samp=1000)
+
 # S = (mod.S + (mod.S.mean(0)>0.5))%2
-S = mod.S
+# S = mod.S
 # S = S[cond]
+plt.imshow(samps.mean(0))
+# plt.imshow(util.group_mean(samps.mean(0), cond, axis=0))
 
 #%%
 

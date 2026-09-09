@@ -94,7 +94,8 @@ class BMF:
             # print(self.scl)
             T = min_temp + initial_temp*(decay_rate**(it//period))
             self.temp = T
-            en.append(self.grad_step(*data))
+            _,ls = self.grad_step(*data)
+            en.append(ls)
 
             if verbose:
                 pbar.update(1)
@@ -155,7 +156,7 @@ class BMF:
         newS = self.EStep(self.S, X)
         loss = self.MStep(newS,X)
 
-        return loss
+        return newS, loss
 
 @dataclass
 class BiPCA(BMF):
@@ -178,7 +179,7 @@ class BiPCA(BMF):
     fit_intercept: bool = True
     W_init: str = 'pca'
 
-    def init_params(self, X):
+    def init_params(self, X, lr=1.0):
 
         self.d = X.shape[1]
         if self.d < self.dim_hid: # then the rows are orthogonal
@@ -194,10 +195,11 @@ class BiPCA(BMF):
             if self.transpose:
                 self.W = self.W.T
 
+        self.lr = lr
         self.b = X.mean(0)
         self.scl = np.sqrt(np.mean((X-self.b)**2))
 
-    def init_latents(self, X):
+    def init_latents(self, X, **kwargs):
 
         coding_level = np.random.beta(self.alpha_pr, self.beta_pr, self.dim_hid)/2
         # self.prior_logits = -np.log(coding_level/(1-coding_level))
@@ -227,10 +229,10 @@ class BiPCA(BMF):
         XS = X.T@ES - np.outer(self.b, ES.sum(0))
         U,s,V = la.svd(XS + 1e-6*np.eye(X.shape[1], self.dim_hid), full_matrices=False)
 
-        self.W = U@V
-        self.scl = np.sum(s)/np.sum(ES**2)
+        self.W += self.lr*(U@V - self.W)
+        self.scl += self.lr*(np.sum(s)/np.sum(ES**2) - self.scl)
         if self.fit_intercept:
-            self.b = X.mean(0) - self.scl*self.W@ES.mean(0)
+            self.b += self.lr*(X.mean(0) - self.scl*self.W@ES.mean(0) - self.b)
 
         return np.mean((X - self.scl*ES@self.W.T - self.b)**2)
 
@@ -261,7 +263,7 @@ class SemiBMF(BMF):
     def __call__(self, S):
         return S@self.W.T + self.b
 
-    def init_params(self, X,  W_lr=0.1, b_lr=0.1, scl_lr=0, hot_start=False):
+    def init_params(self, X,  W_lr=0.1, b_lr=0.1, scl_lr=0, hot_start=True):
 
         self.n, self.d = X.shape
 
@@ -271,22 +273,37 @@ class SemiBMF(BMF):
         self.sigma_x = 1
         self.scl_lr = scl_lr
 
-        self.b = np.zeros(self.d) # Initialize b
         if hot_start:
-            nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
-            nmf.fit(X)
-            self.W = nmf.components_.T
+            # nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
+            # nmf.fit(X)
+            # self.W = nmf.components_.T
+            U,s,V = la.svd(X - X.mean(0), full_matrices=False)
+
+
+            if self.nonneg:
+                kpos = int(np.ceil(self.dim_hid / 2))
+                kneg = int(np.floor(self.dim_hid / 2))
+                self.W = np.vstack([V[:kpos]*(V[:kpos] > 0), 
+                                    -V[:kneg]*(V[:kneg] < 0)]).T
+            else:
+                self.W = V[:self.dim_hid].T
+
+            if self.fit_intercept:
+                self.b = X.mean(0)
+            else:
+                self.b = np.zeros(self.d)
 
         else:
             self.W = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
             if self.nonneg:
                 self.W[self.W < 0] = 0
+            self.b = np.zeros(self.d)
 
     def init_latents(self, X, **args):
 
             ## Initialize S 
-            Mx = X@self.W
-            self.S = 1.0*(Mx >= 0.5)
+            Mx = (X-self.b)@self.W
+            self.S = 1.0*(Mx >= 0)
 
             self.StS = self.S.T@self.S
 
@@ -366,6 +383,18 @@ class SemiBMF(BMF):
 
         return [err, 1*ES, err/self.sigma_x + np.log(self.sigma_x)]
 
+    def loglikelihood(self, X, Xhat):
+        """
+        The log-likelihood given the current parameters
+
+        default is MSE
+        """
+
+        dot  = 0.5*((Xhat - X)**2) / self.sigma_x
+        lnrm = 0.5*np.log(self.sigma_x) + 0.5*np.log(2*np.pi)
+
+        return - (dot + lnrm)
+
     def loss(self, X, mask=None):
         if mask is None:
             mask = np.ones(X.shape) > 0
@@ -400,9 +429,24 @@ class SpikeNMF(BMF):
         self.n, self.d = X.shape
 
         if hot_start:
-            nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
-            nmf.fit(X)
-            Winit = nmf.components_.T
+            # nmf = NMF(n_components=self.dim_hid, alpha_W=self.sparse_reg, l1_ratio=1)
+            # nmf.fit(X)
+            # Winit = nmf.components_.T
+
+            U,s,V = la.svd(X - X.mean(0), full_matrices=False)
+
+            if self.nonneg:
+                kpos = int(np.ceil(self.dim_hid / 2))
+                kneg = int(np.floor(self.dim_hid / 2))
+                Winit = np.vstack([V[:kpos]*(V[:kpos] > 0), 
+                                    -V[:kneg]*(V[:kneg] < 0)]).T
+            else:
+                Winit = V[:self.dim_hid].T
+
+            if self.fit_intercept:
+                binit = X.mean(0)
+            else:
+                binit = np.zeros(self.d)
 
             dead = Winit.sum(0) == 0
             newW = np.random.randn(self.d, dead.sum())/np.sqrt(self.d)
@@ -413,6 +457,7 @@ class SpikeNMF(BMF):
             Winit = np.random.randn(self.d, self.dim_hid)/np.sqrt(self.d)
             if self.nonneg:
                 Winit[Winit < 0] = 0
+            binit = np.zeros(self.d)
 
         self.sigma_x = 1 
         self.scl_lr = scl_lr
@@ -420,14 +465,17 @@ class SpikeNMF(BMF):
         self.W = nn.Linear(self.dim_hid, self.d, bias=self.fit_intercept)
         self.W.weight.data.copy_(torch.FloatTensor(Winit))
         if self.fit_intercept:
-            self.W.bias.data.copy_(torch.zeros(self.d))
+            self.W.bias.data.copy_(torch.FloatTensor(binit))
 
         self.optimizer = optim.SGD(self.W.parameters(), lr=0.1, **opt_args)
 
     def init_latents(self, X, **args):
 
         with torch.no_grad():
-            Z = X@self.W.weight.numpy()
+            if self.fit_intercept:
+                Z = ((X-self.W.bias.numpy())@self.W.weight.numpy())
+            else:
+                Z = X@self.W.weight.numpy()
         self.S = 1.0*(Z > 0)
         self.Z = Z*self.S  ## Rectify multipliers
 
@@ -437,8 +485,11 @@ class SpikeNMF(BMF):
 
         with torch.no_grad():
             W = self.W.weight.numpy()
-            b = self.W.bias.numpy()
-            XW = (X@W - b@W)
+            if self.fit_intercept:
+                b = self.W.bias.numpy()
+                XW = (X@W - b@W)
+            else:
+                XW = X@W
             WtW = W.T@W
 
         newS, newZ = bae_search.snmf(
@@ -490,7 +541,8 @@ class SpikeNMF(BMF):
             if self.nonneg:
                 with torch.no_grad():
                     self.W.weight[self.W.weight<0] = 0
-                    self.W.bias[self.W.bias<0] = 0
+                    if self.fit_intercept:
+                        self.W.bias[self.W.bias<0] = 0
 
                     ## resample dead weights
                     dead = self.W.weight.sum(0) == 0
@@ -503,6 +555,18 @@ class SpikeNMF(BMF):
             self.sigma_x += self.scl_lr*(new_sig - self.sigma_x)
 
         return new_sig
+
+    def loglikelihood(self, X, Xhat):
+        """
+        The log-likelihood given the current parameters
+
+        default is MSE
+        """
+
+        dot  = 0.5*((Xhat - X)**2) / self.sigma_x
+        lnrm = 0.5*np.log(self.sigma_x) + 0.5*np.log(2*np.pi)
+
+        return - (dot + lnrm)
 
     def loss(self, X, mask=None):
         if mask is None:
@@ -876,9 +940,9 @@ class KernelBMF2(BMF):
 
 
 @dataclass
-class CorrBMF(BMF):
+class JBMF(BMF):
     """
-    Correlated BMF
+    BMF with quadratic boltzmann prior
     """
 
     dim_hid: int
@@ -1339,7 +1403,7 @@ class RRBMF(BMF):
         self.S = 1.0*(XW > 0)
         self.StS = self.S.T@self.S
 
-    def EStep(self, S, X, inplace=False):
+    def EStep(self, S, X, inplace=True):
 
         # newS = binary_glm(self.data*1.0, oldS, self.W, self.b, steps=self.S_steps,
         #     beta=self.beta, temp=self.temp, lognorm=self.lognorm)

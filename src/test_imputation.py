@@ -7,8 +7,8 @@ bae_util.impcv `Z[M] = model(ES)[M]` loop folded into the E-step.  Here we hold
 out a fraction of a low-rank matrix, fit with the mask, and check the held-out
 cells are recovered (MSE down, correlation with truth up).
 
-Note: the fill is a *sample* (forward(ES) + N(0, sigma_x)), so the injected noise
-scales with sigma_x -- learn it (scl_lr > 0) for a well-scaled imputation.
+Note: the fill is the conditional MEAN forward(ES), with no observation noise
+added, so the imputation is an EM-style completion rather than a posterior draw.
 """
 
 import numpy as np
@@ -62,7 +62,8 @@ if __name__ == "__main__":
         "SemiBMF (affine)",
         lambda K: nbm.SemiBMF(K, tree_reg=0.0, sparse_reg=0.0, weight_l2_reg=1e-3)))
     results.append(run_case(
-        "SpikeNMF (slab, nonneg)",
-        lambda K: nbm.SpikeNMF(K, tree_reg=0.0, sparse_reg=0.0, weight_l2_reg=1e-3),
+        "SemiBMF (spike-and-slab, nonneg)",
+        lambda K: nbm.SemiBMF(K, slab=True, nonneg=True, tree_reg=0.0,
+                              sparse_reg=0.0, weight_l2_reg=1e-3),
         nonneg=True))
     print("\nALL PASS" if all(results) else "\nSOME FAILED")

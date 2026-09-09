@@ -45,6 +45,8 @@ import bae_util
 import plotting as tpl
 import anime
 
+import new_bae_models
+
 #%%
 
 X = pkl.load(open('C:/Users/mmall/Downloads/X_forMatteo.pck','rb'))
@@ -461,12 +463,82 @@ pp = util.ppop(neurons,
 
 ## check: ORBvl, RSP, FRP, AId/p/v, PL, VISa
 
-# X_ = pp['data'][...,pp['neur_labels']=='AId']
-X_ = pp['data'][...,pp['neur_labels']=='MOs'].squeeze()
-# X_ = pp['data'][...,pp['neur_labels']=='MOp']
+# X_ = pp['data'][...,pp['neur_labels']=='AId'].mean(1)
+# X_ = pp['data'][...,pp['neur_labels']=='MOs'].mean(0).squeeze()
+# X_ = pp['data'][...,pp['neur_labels']=='MOp'].mean(1)
+# X_ = pp['data'][...,pp['neur_labels']=='VISa'].mean(1)
+X_ = pp['data'][...,pp['neur_labels']=='ILA'].mean(1)
 # X_ = pp['data'][:,pp['neur_labels']=='ACAd']
 # X_ = pp['data'][:,pp['neur_labels']=='PL']
 # X_ = pp['data'][...,pp['neur_labels']=='RSPd']
+
+
+mod = new_bae_models.JBMF(4,
+                         nonneg=True,
+                         # nonneg=False,
+                         # fit_intercept=False,
+                         tree_reg=0,
+                         weight_pr_reg=1,
+                         weight_l2_reg=1e-1,
+                         weight_l1_reg=0,
+                         sparse_reg=1,
+                         # J_loss='mle',
+                         J_loss='rple',
+                         # J_l1_reg=0.2,
+                         # J_lr=1e-3,
+                         J_lr=0,
+                         # slab=True,
+                         # slab_prior=0.1,
+                         )
+
+# mod = bae_models.SpikeNMF(4,
+#                          nonneg=True, 
+#                          sparse_reg=1e-1, 
+#                          weight_pr_reg=1, 
+#                          tree_reg=1e-1, 
+#                          weight_l2_reg=1,
+#                          )
+
+# mod = bae_models.KernelBMF2(4,
+#                            sparse_reg=0.5,
+#                            tree_reg=1,
+#                            uniform_scale=False,
+#                            # l1_reg=1e-3,
+#                            )
+
+en = mod.fit(X_ / X_.std(),
+             period=100,
+             initial_temp=100,
+             decay_rate=0.88, 
+             min_temp=1, 
+             scl_lr=1e-3,
+             lr=1e-2,
+             # hot_start=False,
+             )
+
+
+# plt.figure()
+samps = mod.sample(X_ / X_.std(), n_samp=100)
+# samps = mod.sample(X / X.std(), n_samp=1000, slab=False)
+
+# samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
+
+plt.figure()
+
+plt.subplot(2,2,1)
+plt.imshow(util.group_mean(samps.mean(0), pp['cond_labels'], axis=0))
+
+plt.subplot(2,2,2)
+plt.plot(en)
+
+plt.subplot(2,2,3)
+plt.imshow(mod.operator.W.T@mod.operator.W)
+
+plt.subplot(2,2,4)
+plt.imshow(mod.latent_prior.J_W + mod.latent_prior.J_W.T, 'bwr', vmin=-1, vmax=1)
+
+
+#%%
 
 # kays = [2,3,4,5,10,15,20]
 kays = [2,3,4,5,6,7,8,9,10,11,12,13,14,15]

@@ -48,6 +48,8 @@ import bae_search
 import bae_util
 import plotting as tpl
 
+import new_bae_models
+
 #%%
 
 def zscore(x, center=True):
@@ -135,7 +137,7 @@ inf_present = np.array(inf_present)
 
 #%%
 
-# filt = (subj_type == subj_group) * (inf_present == 1)
+# filt = (subj_type == 1) * (inf_present == 1)
 filt = (inf_present == 1)
 
 pp = util.ppop([np.mean(x,axis=0, keepdims=True) for x in neurons[filt]], 
@@ -153,8 +155,6 @@ pp = util.ppop([np.mean(x,axis=0, keepdims=True) for x in neurons[filt]],
 #                independent=True,
 #                K=13,
 #                )
-
-X = pp['data'][:,pp['neur_labels']=='Hpc']
 
 #%%
 
@@ -203,19 +203,39 @@ X = pp['data'][:,pp['neur_labels']=='Hpc']
 
 #%%
 
-X_ = X
+# X_ = pp['data'][:,pp['neur_labels']=='vmPFC']
+X_ = pp['data'][:,pp['neur_labels']=='Hpc']
+# X_ = pp['data'][:,pp['neur_labels']=='dAcc'] 
 # X_ = X - X.mean(0)
 # X_ = (X / X.std(0)) - (X / X.std(0)).mean(0)
 
-mod = bae_models.SemiBMF(4,
-                         nonneg=True, 
-                         sparse_reg=5e-1,
-                         weight_pr_reg=1, 
-                         tree_reg=1e-1, 
+# mod = bae_models.SemiBMF(5,
+#                          nonneg=True, 
+#                          sparse_reg=5e-1,
+#                          weight_pr_reg=1, 
+#                          tree_reg=1e-1, 
+#                          weight_l2_reg=1,
+#                          )
+
+mod = new_bae_models.JBMF(6,
+                         nonneg=True,
+                         # nonneg=False,
+                         # fit_intercept=False,
+                         tree_reg=1,
+                         weight_pr_reg=1,
                          weight_l2_reg=1,
+                         weight_l1_reg=0,
+                         sparse_reg=1,
+                         # J_loss='mle',
+                         J_loss='rple',
+                         # J_l1_reg=0.2,
+                         J_lr=1e-3,
+                         # J_lr=0,
+                         # slab=True,
+                         # slab_prior=0.1,
                          )
 
-# mod = bae_models.SpikeNMF(5,
+# mod = bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1e-1, 
 #                          weight_pr_reg=1, 
@@ -230,24 +250,36 @@ mod = bae_models.SemiBMF(4,
 #                            # l1_reg=1e-3,
 #                            )
 
-
-en = mod.fit(X_,# / X_.std(), 
+en = mod.fit(X_ / X_.std(),
+             period=100,
              initial_temp=100,
-             decay_rate=0.9,
+             decay_rate=0.88, 
              min_temp=1, 
-             period=50, 
              scl_lr=1e-3,
-             # scl_lr=1e-2,
+             lr=1e-2,
+             # hot_start=False,
              )
 
-plt.figure()
-samps = mod.sample(X_ , n_samp=1000)
+
+# plt.figure()
+samps = mod.sample(X_ / X_.std(), n_samp=100)
 # samps = mod.sample(X / X.std(), n_samp=1000, slab=False)
 
 # samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
 
+plt.figure()
+
+plt.subplot(2,2,1)
 plt.imshow(samps.mean(0))
-# plt.imshow(samps.mean(0)[:,np.argsort(mod.scl)])
+
+plt.subplot(2,2,2)
+plt.plot(en)
+
+plt.subplot(2,2,3)
+plt.imshow(mod.operator.W.T@mod.operator.W)
+
+plt.subplot(2,2,4)
+plt.imshow(mod.latent_prior.J_W + mod.latent_prior.J_W.T, 'bwr', vmin=-1, vmax=1)
 
 #%%
 
@@ -261,30 +293,16 @@ args = {
         # 'nonneg': False,
         'weight_pr_reg': 1,
         # 'weight_pr_reg': 0,
-        'tree_reg': 1e-1,
-        'sparse_reg': 1e-1,
+        'tree_reg': 0,
+        'sparse_reg': 1,
         # 'tree_reg': 0,
         # 'weight_l1_reg': 1e-3,
         'weight_l2_reg': 1,
         # 'fit_intercept': True,
         # 'fit_intercept': False,
+        'slab': False,
+        'J_lr': 0,
         }
-
-# args = {
-#         'nonneg':True,
-#         # 'nonneg': False,
-#         'weight_pr_reg': 1,
-#         # 'weight_pr_reg': 0,
-#         'tree_reg': 1e-1,
-#         'sparse_reg': 1e-1,
-#         # 'tree_reg': 0,
-#         # 'weight_l1_reg': 1e-3,
-#         'weight_l1_reg': 1e-1,
-#         # 'weight_l2_reg': 1e-2,
-#         # 'fit_intercept': True,
-#         # 'fit_intercept': False,
-#         'slab_prior': 1,
-#         }
 
 opt_args = {'initial_temp': 100,
             'decay_rate': 0.8,
@@ -293,23 +311,25 @@ opt_args = {'initial_temp': 100,
             'hot_start': False,
             'scl_lr': 1e-3,
             'min_temp': 1,
-            # 'lr': 1e-1,
+            'lr': 1e-2,
             }
 
-n_run = 50
+n_run = 10
 
 trn = np.zeros(len(kays))
 tst = np.zeros(len(kays))
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         
-        mod = bae_models.SemiBMF(k,**args)
+        mod = new_bae_models.JBMF(k, **args)
+        # mod = bae_models.SemiBMF(k,**args)
         # mod = bae_models.SpikeNMF(k,**args)
         
-        wa,ba = bae_util.impcv(mod, X/X.std(), verbose=False, n_sample=10, folds=20, **opt_args)
+        # wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, n_sample=10, folds=10, **opt_args)
+        wa,ba = bae_util.gabriel_bicv(mod, X_/X_.std(), n_samp=10, **opt_args)
         
-        trn[i] += wa / n_run
-        tst[i] += ba / n_run
+        trn[i] += np.mean(wa) / n_run
+        tst[i] += np.mean(ba) / n_run
 
 plt.plot(kays, trn)
 plt.plot(kays, tst, '--')

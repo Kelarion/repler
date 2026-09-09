@@ -55,7 +55,53 @@ import bae_util
 @dataclass
 class BMFModel(exp.Model):
 
-    def fit(self, X, Strue, Wtrue=None):
+    def score(self, X, Strue, S, **truths):
+        """Recovery metrics for a single latent estimate S (one posterior sample).
+
+        Returns a dict of scalar/array metrics; BMFModel.fit averages these over
+        however many posterior samples run_model returns.  This is the baseline
+        shared by every BMFModel.
+
+        There are two ways for a subclass to add metrics WITHOUT touching this
+        shared code (see NewBMF for a worked example):
+
+          * per-sample metrics (a function of one latent estimate S) -- override
+            `score`, call `super().score(...)` for the baseline keys, and merge
+            extras on top.  `truths` carries the task's per-sample ground truth
+            (e.g. Jtrue), forwarded by fit; the baseline ignores it.
+          * per-fit metrics (a function of the whole fit: model parameters, the
+            full posterior stack) -- override `extra_metrics` instead; those are
+            computed once and stored as-is, not averaged over samples.
+        """
+        cka = util.cka(Strue@Strue.T, S@S.T)
+        mat_ham = df_util.permham(Strue, S)
+        norm_ham = df_util.permham(Strue, S, norm=True)
+        nbs = util.nbs(X, S)
+
+        Sunq = np.unique((S+S[[0]])%2, axis=1)
+        Sunq = Sunq[:,Sunq.sum(0)>0]
+
+        depth = df_util.porder(Strue)
+        minham = df_util.minham(Strue, S, sym=True)
+        cham = util.group_mean(minham, depth)
+        ncham = util.group_mean(minham/Strue.sum(0), depth)
+
+        return {'norm_hamming': np.mean(norm_ham),
+                'hamming': np.mean(mat_ham),
+                'cond_hamming': cham,
+                'norm_cond_hamming': ncham,
+                'cka': cka,
+                'nbs': nbs,
+                'unique_k': Sunq.shape[1]/Strue.shape[1]}
+
+    def fit(self, X, Strue, Wtrue=None, **truths):
+        """Fit each sample and record recovery metrics.
+
+        `truths` carries any extra per-sample ground-truth arrays the task chose
+        to emit (e.g. StructuredCats -> Jtrue); each is stashed verbatim into
+        metrics so it is saved alongside the fit.  Models/tasks without extras
+        pass nothing and are unaffected.
+        """
 
         self.metrics = {'losses': [], # all losses (i.e. train, CV, etc.)
                         'nbs': [],
@@ -69,8 +115,6 @@ class BMFModel(exp.Model):
 
         for it in range(len(X)):
 
-            K = X[it]@X[it].T
-
             if self.dim_hid is None:
                 h = len(Strue[it].T)
             else:
@@ -79,28 +123,38 @@ class BMFModel(exp.Model):
             ls, S, T = self.run_model(X[it], h)
             self.metrics['time'].append(T)
 
-            nrm = np.sum(util.center(K)**2)
-            cka = util.cka(Strue[it]@Strue[it].T, S@S.T)
-            mat_ham = df_util.permham(Strue[it], S)
-            norm_ham = df_util.permham(Strue[it], S, norm=True)
-            nbs = util.nbs(X[it], S)
+            truths_it = {k: v[it] for k, v in truths.items()}
 
-            Sunq = np.unique((S+S[[0]])%2, axis=1)
-            Sunq = Sunq[:,Sunq.sum(0)>0]
+            # run_model may return a single point estimate (N, K) or a stack of
+            # posterior samples (n_samp, N, K); score each and average.
+            Ss = np.asarray(S)
+            if Ss.ndim == 2:
+                Ss = Ss[None]
+            scored = [self.score(X[it], Strue[it], s, **truths_it) for s in Ss]
+            avg = {k: np.mean([d[k] for d in scored], axis=0) for k in scored[0]}
 
-            depth = df_util.porder(Strue[it])
-            minham = df_util.minham(Strue[it], S, sym=True)
-            cham = util.group_mean(minham, depth)
-            ncham = util.group_mean(minham/Strue[it].sum(0), depth)
-
-            self.metrics['norm_hamming'].append(np.mean(norm_ham))
-            self.metrics['hamming'].append(np.mean(mat_ham))
-            self.metrics['cond_hamming'].append(cham)
-            self.metrics['norm_cond_hamming'].append(ncham)
+            for k, v in avg.items():
+                self.metrics[k].append(v)
             self.metrics['losses'].append(ls)
-            self.metrics['cka'].append(cka)
-            self.metrics['nbs'].append(nbs)
-            self.metrics['unique_k'].append(Sunq.shape[1]/Strue[it].shape[1])
+
+            # per-fit metrics (default none): computed once from the whole fit,
+            # stored as-is rather than averaged over samples.
+            for k, v in self.extra_metrics(X[it], Strue[it], Ss, **truths_it).items():
+                self.metrics.setdefault(k, []).append(v)
+
+            for k, v in truths_it.items():   # keep the raw ground truth too
+                self.metrics.setdefault(k, []).append(v)
+
+    def extra_metrics(self, X, Strue, Ss, **truths):
+        """Per-fit metrics beyond the averaged per-sample `score` (default none).
+
+        Called once per sample-set in `fit`, after scoring.  `Ss` is the full
+        posterior stack (n_samp, N, K) and `truths` the task's ground truth
+        (e.g. Jtrue).  A subclass overrides this to add model-level scores that
+        depend on the fitted model or the aggregate posterior rather than a
+        single latent estimate; the returned dict is stored verbatim.
+        """
+        return {}
 
 @dataclass
 class BAE(BMFModel):
@@ -439,14 +493,21 @@ class CatTask(exp.Task):
     nonneg: bool = False
 
     def gen_latents(self):
+        """Return the (N, K) binary latents S.
+
+        A subclass may instead return a tuple (S, extras) where `extras` is a
+        dict of additional per-sample ground-truth arrays (e.g. StructuredCats
+        returns {'Jtrue': J}).  `sample` collects any such extras into the data
+        dict under their own key; tasks without them are unaffected.
+        """
         return NotImplementedError
 
     def gen_data(self, S):
 
         dim = self.ratio*S.shape[1]
 
-        W, noise = df_util.noisyembed(S, dim, 
-                    logsnr=self.snr, orth=self.orth, 
+        W, noise = df_util.noisyembed(S, dim,
+                    logsnr=self.snr, orth=self.orth,
                     nonneg=self.nonneg, scl=1e-4)
 
         return S@W.T + noise, W
@@ -455,47 +516,65 @@ class CatTask(exp.Task):
 
         np.random.seed(self.seed)
 
-        Xs = []
-        Strues = []
-        Wtrues = []
+        out = {'X': [], 'Strue': [], 'Wtrue': []}
         for it in range(self.samps):
 
-            S = self.gen_latents()
+            gen = self.gen_latents()
+            S, extras = gen if isinstance(gen, tuple) else (gen, {})
 
             X, W = self.gen_data(S)
 
-            Xs.append(X)
-            Strues.append(S) 
-            Wtrues.append(W)
+            out['X'].append(X)
+            out['Strue'].append(S)
+            out['Wtrue'].append(W)
+            for k, v in extras.items():        # optional per-sample ground truth
+                out.setdefault(k, []).append(v)
 
-        return {'X': Xs, 'Strue': Strues, 'Wtrue': Wtrues}
+        return out
 
 
 @dataclass(kw_only=True)
 class SparseStructured(CatTask):
+    """Latents drawn from a disjoint union of undirected graphical models.
 
-    K: int          # number of concepts
-    N: int          # number of observations
-    temp: float     # temperature of boltzmann distribution
-    struct: str     # structure of graph
-    kwargs: dict    # parameters of random structure
-    slab: bool = False
+    `blocks` is a list of flat dicts, each fully specifying one block: a
+    `struct` name, its size `K`, an optional `blowup`, and any structure-specific
+    parameters as plain keys, e.g.
+
+        blocks=[{'struct': 'categorical', 'K': 5},
+                {'struct': 'tree', 'K': 4, 'rho': 1, 'blowup': 2},
+                {'struct': 'none', 'K': 3}]
+
+    Each dict builds a df_util.UndirectedModel; the blocks are disjoint-unioned
+    into one model (latent dim = sum of block sizes, after blow-up), Gibbs-sampled
+    for N observations, and optionally scaled by a continuous (slab) multiplier.
+    """
+
+    blocks: list        # one flat spec dict per disjoint block (see above)
+    N: int              # number of observations
+    temp: float = 1.0   # temperature of the Gibbs sampler
+    slab: bool = False  # multiply the binary latents by Gamma magnitudes
+    blowup: int = 1
+
+    def model(self):
+        """Build the combined (disjoint-union) UndirectedModel from `blocks`."""
+        models = []
+        for spec in self.blocks:
+            spec = dict(spec)                       # don't mutate the caller's dict
+            struct = spec.pop('struct')
+            K = spec.pop('K')
+            models.append(df_util.UndirectedModel(
+                K=K, struct=struct, kwargs=spec, blowup=self.blowup))
+        model = models[0]
+        for m in models[1:]:
+            model = model.union(m)
+        return model
 
     def gen_latents(self):
-
-        if self.struct == 'none':
-            J,h = df_util.empty_graph(self.K)
-
-        elif self.struct == 'tree':
-            J,h = df_util.random_tree_couplings(self.K, **self.kwargs)
-
-        elif self.struct == 'categorical':
-            J,h = df_util.random_category_couplings(self.K, **self.kwargs)
-
-        S = df_util.boltzmann(J,h, temp=self.temp, n_samp=self.N)
-        Z = np.random.exponential(size=S.shape)
-
-        return S*Z
+        S = self.model().sample(self.N, temp=self.temp)   # (N, K_total) binary
+        if self.slab:
+            S = S * np.random.gamma(8, 1/8, size=S.shape)
+        return S
 
 
 @dataclass(kw_only=True)

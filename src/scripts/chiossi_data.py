@@ -21,7 +21,7 @@ import pickle as pkl
 import torch
 import torch.nn as nn
 import torch.optim as optim
- 
+
 from sklearn import svm, discriminant_analysis, manifold, linear_model
 from sklearn.cluster import KMeans, AgglomerativeClustering
 import scipy.stats as sts
@@ -51,6 +51,8 @@ import bae_models
 import bae_search
 import bae_util
 import plotting as tpl
+
+import new_bae_models 
 
 from func_behaviour import load_behaviour, get_trials_percat
 import func_basics as basics
@@ -438,8 +440,65 @@ pp = util.ppop([np.median(x,axis=0, keepdims=True) for x in neurons[perf > 0.9]]
                independent=True, 
                K=1)
 
+X_ = pp['data'][:, pp['data'].sum(0) > 0]
 
 #%%
 
+# X_ = Xmd / Xmd.std(0)
+# X_ = Xmd - Xmd.mean(0)
+# X_ = (Xmd / Xmd.std(0)) - (Xmd / Xmd.std(0)).mean(0)
+
+# mod = bae_models.SemiBMF(7,
+#                          nonneg=True, 
+#                          sparse_reg=1,
+#                          weight_pr_reg=1, 
+#                          tree_reg=1,
+#                          weight_l2_reg=1,
+#                          )
+# mod = bae_models.SpikeNMF(4,
+#                          nonneg=True, 
+#                          sparse_reg=1e-2,
+#                          weight_pr_reg=1,
+#                          tree_reg=1e-1,
+#                          weight_l2_reg=1,
+#                          )
+
+mod = new_bae_models.JBMF(5,
+                         nonneg=True,
+                         # nonneg=False,
+                         # fit_intercept=False,
+                         tree_reg=0,
+                         weight_pr_reg=1,
+                         weight_l2_reg=1e-1,
+                         weight_l1_reg=0,
+                         sparse_reg=1,
+                         # J_loss='mle',
+                         J_loss='rple',
+                         # J_l1_reg=1e-3,
+                         J_lr=1e-3,
+                         # slab=True,
+                         # slab_prior=0.1,
+                         )
+
+# mod = bae_models.KernelBMF2(6,
+#                            sparse_reg=1e-1,
+#                            tree_reg=1,
+#                            uniform_scale=False,
+#                            )
+
+en = mod.fit(X_ / X_.std(), 
+             initial_temp=100, 
+             decay_rate=0.88,
+             min_temp=1, 
+             period=100,
+             scl_lr=1e-3,
+             )
+
+samps = mod.sample(X_ / X_.std(), n_samp=1000)
+# samps = mod.sample(X_ / X_.std(), n_samp=1000, slab=False)
+
+# samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
+
+plt.imshow(samps.mean(0))
 
 

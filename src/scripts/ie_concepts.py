@@ -120,11 +120,63 @@ S = S[:,S.sum(0)>0]
 
 #%%
 
+mod = bae_models.SemiBMF(160,
+                         nonneg=True, 
+                         tree_reg=100,
+                         weight_pr_reg=1,
+                         weight_l2_reg=1e-2,
+                         weight_l1_reg=0,
+                         sparse_reg=1,
+                         )
+
+# mod = bae_models.SpikeNMF(11,
+#                          nonneg=True, 
+#                          sparse_reg=1,
+#                          weight_pr_reg=1,
+#                          tree_reg=0,
+#                          weight_l2_reg=1e-2,
+#                          weight_l1_reg=0,
+#                          )
+
+# mod = bae_models.KernelBMF2(12,
+#                            sparse_reg=1,
+#                            tree_reg=100,
+#                            uniform_scale=False,
+#                            # l1_reg=0,
+#                            )
+
+en = mod.fit(cogmat / cogmat.std(),
+             period=10, 
+             initial_temp=100,
+             decay_rate=0.9, 
+             min_temp=1, 
+             scl_lr=1e-4,
+             )
+
+# en = mod.fit(X_ / X_.std(),
+#              period=100, 
+#              initial_temp=10,
+#              decay_rate=0.9, 
+#              min_temp=1e-4, 
+#              scl_lr=0,
+#              )
+
+samps = mod.sample(cogmat / cogmat.std(), n_samp=1000)
+# samps = mod.sample(X_ / X_.std(), n_samp=1000, slab=False)
+
+# samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
+
+plt.imshow(samps.mean(0))
+
+S = 1*(samps.mean(0) > 0.9)
+
+#%%
+
 cmap = cm.tab10
 
 deez = np.arange(160)#[grp==7]
 
-E,H = df_util.allpaths(mod.S[deez])
+E,H = df_util.allpaths(S[deez])
 
 G = nx.Graph()
 G.add_edges_from(E)
