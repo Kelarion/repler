@@ -57,8 +57,8 @@ import dichotomies as dics
 import distance_factorization as df
 import df_util
 import df_models as mods
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #%%
@@ -131,10 +131,10 @@ kqmw = [words.index('king'),
 #%%
 # steps = 200
 
-# # bae = util.BAE(vecs, 5000)
-# baer = bae.BAE(vecs, 1000, pvar=0.95, alpha=1, beta=5, penalty=1e-1, max_ctx=None)
+# # old_bae = util.BAE(vecs, 5000)
+# baer = old_bae.BAE(vecs, 1000, pvar=0.95, alpha=1, beta=5, penalty=1e-1, max_ctx=None)
 
-# # foo = bae.fit(500, verbose=True)
+# # foo = old_bae.fit(500, verbose=True)
 
 # # baer.init_optimizer(decay_rate=0.8, period=1, initial=1)
 # baer.init_optimizer(decay_rate=0.95, period=1, initial=1)
@@ -152,14 +152,14 @@ kqmw = [words.index('king'),
     
 # S = baer.S.todense()
 
-# # S = np.sign(bae.current())
+# # S = np.sign(old_bae.current())
 # # S = np.unique(S*S[[0]], axis=1)
 # # S = S[:,np.abs(S.sum(0))<len(vecs)]
 
 # S = []
 # for _ in range(20):
-#     mod2 = bae_models.BiPCA(300, center=False, sparse_reg=1e-2)
-#     # mod = bae_models.KernelBMF(300, penalty=1e-2, scale_lr=1)
+#     mod2 = old_bae_models.BiPCA(300, center=False, sparse_reg=1e-2)
+#     # mod = old_bae_models.KernelBMF(300, penalty=1e-2, scale_lr=1)
     
 #     neal = bae_util.Neal(decay_rate=0.95, period=5)
 #     en = neal.fit(mod2, vecs)
@@ -168,7 +168,7 @@ kqmw = [words.index('king'),
 #     # S = np.unique(np.mod(mod2.S+(mod2.S.mean(0)>0.5),2), axis=1)
 # S, pi = df_util.mindistX(vecs, S, beta=1e-6, nonzero=False)
 
-mod = bae_models.BinaryAutoencoder(600, 300, 
+mod = old_bae_models.BinaryAutoencoder(600, 300, 
                                    tree_reg=0, 
                                    sparse_reg=1e-2,
                                    weight_reg=1e-2)

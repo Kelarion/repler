@@ -1,0 +1,301 @@
+"""
+new_bae_search.py  --  PROTOTYPE
+================================
+
+Demonstrates the compositional-search idea from the new_bae_* refactor: one
+shared coordinate-descent *scaffold* + two injected, inlined "link" plugins,
+so that the spike-only kernel (sbmf) and the spike-and-slab kernel (snmf) are
+two instances of the SAME kernel rather than two hand-written copies.
+
+The point being tested: inlining is preserved by specializing the kernel when
+the configuration is known (a closure factory closing over the link), instead
+of passing the link as a runtime argument (which would be an indirect,
+un-inlinable call in the n*m*m hot loop).
+
+A "link" is two element-wise pieces:
+    score(E, wjj, tau, sigma2)            -> (logodds, mu, nu)   [no RNG]
+    aux_update(Z, Seff, i, j, s, mu, nu)  -> None                [RNG + stores]
+`score` runs before the Bernoulli flip; `aux_update` runs after (and is the
+only place the slab draws its continuous Z), so the RNG-draw order matches the
+originals exactly.
+
+Two latent arrays, not three: `S` is the binary spike (drives the tree/StS
+combinatorics) and `Z` is the *effective continuous latent* read by the field
+accumulation.  The slab keeps the invariant Z==0 wherever the spike is off, so Z
+already equals S*magnitude -- the original snmf's `if S[i,k]>0` gate is redundant
+(a - 0.0 == a).  A no-slab model just initializes Z = S (the effective latent is
+the spike) and aux_update keeps Z == S.
+
+The scaffold owns everything shared: the permuted i,j loop, the neighbour-field
+accumulation from the gram (off Z), the tree/sparsity A/B/C/D regularizer, the
+StS bookkeeping (off S), and the sigmoid flip.
+
+Run `python new_bae_search.py` (with the real src on PYTHONPATH) to compare
+against bae_search.sbmf / bae_search.snmf and time both.
+"""
+
+import math
+from functools import lru_cache
+
+import numpy as np
+from numba import njit
+
+import bae_util
+
+
+# ---------------------------------------------------------------------------
+#  Link plugins  (marked inline='always' so LLVM folds them into the loop)
+# ---------------------------------------------------------------------------
+#
+# Binary spike (recovers bae_search.sbmf): the field is linear, magnitude is
+# fixed at 1, nothing extra is sampled.
+
+@njit(inline='always')
+def score_binary(E, wjj, tau, sigma2):
+    # logodds at the Gaussian precision 1/sigma2 (sbmf's XW/sigma2, WtW/sigma2);
+    # tau unused.  sigma2 == 1 -> exactly E - 0.5*wjj (a/1.0 is exact).
+    return (E - 0.5 * wjj) / sigma2, 0.0, 0.0
+
+
+@njit(inline='always')
+def aux_binary(Z, i, j, s, mu, nu):
+    Z[i, j] = s                             # effective latent == the spike
+
+
+# Spike-and-slab (recovers bae_search.snmf): the field is the partially
+# collapsed marginal over the continuous magnitude, and when the spike turns on
+# we draw that magnitude from a truncated normal.
+
+@njit(inline='always')
+def score_slab(E, wjj, tau, sigma2):
+    # wjj is the effective precision: the gram diagonal (||W[:,j]||^2), plus a
+    # structured prior's coupling for JBMF-style models.  Several degeneracies put
+    # it (or the drive E / noise sigma2) outside the domain where a slab posterior
+    # exists: a dead weight column sends wjj -> 0, a structured prior's coupling
+    # can send it negative, and an overflowing W (the slab's own large magnitudes,
+    # compounded over high-temperature sweeps) sends wjj / E / sigma2 to inf/NaN.
+    # Any of these makes nu = sqrt(sigma2/wjj) and mu = .../wjj non-finite, which
+    # (a) divides by zero in this kernel and (b) feeds NaN/inf magnitudes to the
+    # truncated-normal sampler.  In every such case the column carries no usable
+    # signal, so report the spike as strongly OFF with a bounded, well-defined
+    # (mu, nu): the flip turns off, no magnitude is drawn, and nothing downstream
+    # blows up.  A no-op when wjj is a healthy positive precision (the only regime
+    # that ever occurs on well-conditioned data), so well-behaved fits are
+    # unchanged.
+    if (not (math.isfinite(wjj) and wjj > 1e-12)
+            or not (math.isfinite(sigma2) and sigma2 > 0.0)
+            or not math.isfinite(E)):
+        return -1e18, 0.0, 1.0
+    mu = (E - tau * sigma2) / wjj
+    nu = math.sqrt(sigma2 / wjj)
+    logodds = (math.log(tau * nu * math.sqrt(2 * math.pi))
+               + (mu ** 2) / (2 * (sigma2 / wjj))
+               + bae_util.log_ndtr(mu / nu))
+    return logodds, mu, nu
+
+
+@njit(inline='always')
+def aux_slab(Z, i, j, s, mu, nu):
+    if s > 0.5:
+        Z[i, j] = bae_util.sample_trunc_norm(mu, nu)
+    else:
+        Z[i, j] = 0.0                       # maintains Z==0 off-spike
+
+
+# ---------------------------------------------------------------------------
+#  The scaffold factory
+# ---------------------------------------------------------------------------
+#
+# Closes over (score, aux_update) so they are compile-time freevar constants ->
+# inlinable.  Memoized so each distinct link compiles the kernel exactly once
+# (this is the "construct the search when the class is created" step).
+
+def _build_dense_search(score, aux_update):
+
+    @njit
+    def search(XW, S, Z, WtW, StS, N, temp, alpha, beta, tau, sigma2,
+               inplace=True):
+        n, m = S.shape
+        regularize = beta > 1e-6
+
+        for i in np.random.permutation(np.arange(n)):
+            for j in np.random.permutation(np.arange(m)):
+
+                Sij = S[i, j]
+
+                # fused neighbour-field (off Z) + tree-reg inhibition (off S)
+                E = XW[i, j]
+                inhib = 0.0
+                for k in range(m):
+                    if k != j:
+                        E -= WtW[j, k] * Z[i, k]
+                    if regularize:
+                        Sik = S[i, k]
+                        A = StS[j, k] - Sij * Sik
+                        B = StS[j, j] - A - Sij
+                        C = StS[k, k] - A
+                        D = N - A - B - C
+                        if A < min(B, C - 1, D):
+                            inhib += Sik
+                        if B < min(A, C, D - 1):
+                            inhib += 1 - Sik
+                        if C <= min(A, B, D):
+                            inhib -= Sik
+                        if D <= min(A, B, C):
+                            inhib -= 1 - Sik
+
+                logodds, mu, nu = score(E, WtW[j, j], tau, sigma2)
+                curr = (logodds - beta * inhib - alpha) / temp
+
+                if curr < -100:
+                    prob = 0.0
+                elif curr > 100:
+                    prob = 1.0
+                else:
+                    prob = 1.0 / (1.0 + math.exp(-curr))
+
+                new_Sij = 1.0 * (np.random.rand() < prob)
+                ds = new_Sij - Sij
+
+                if regularize and inplace:
+                    StS[j, j] += ds
+                    for k in range(m):
+                        if k != j:
+                            StS[j, k] += S[i, k] * ds
+                            StS[k, j] += S[i, k] * ds
+
+                S[i, j] = new_Sij
+                aux_update(Z, i, j, new_Sij, mu, nu)
+
+        return S, Z
+
+    return search
+
+
+make_dense_search = lru_cache(maxsize=None)(_build_dense_search)
+
+# A "link" is the (score, aux_update) pair an operator plugs into its scaffold.
+# These are the two composable bundles: no-slab models use BINARY_LINK, slab
+# models use SLAB_LINK.  This is the seam the refactor opens -- the operator owns
+# the scaffold, the prior/slab owns the link.
+BINARY_LINK = (score_binary, aux_binary)
+SLAB_LINK = (score_slab, aux_slab)
+
+# the two prebuilt kernels (compiled lazily on first call)
+sbmf_search = make_dense_search(*BINARY_LINK)
+snmf_search = make_dense_search(*SLAB_LINK)
+
+
+# ===========================================================================
+#  self-test  (vs bae_search.sbmf / bae_search.snmf)
+# ===========================================================================
+
+@njit
+def _seed(s):
+    np.random.seed(s)
+
+
+def _selftest():
+    import time
+    import bae_search
+
+    rng = np.random.RandomState(0)
+    n, d, m = 200, 50, 8
+    W = rng.randn(d, m)
+    b = rng.randn(d)
+    X = rng.randn(n, d)
+    XW = (X - b) @ W
+    WtW = W.T @ W
+    S0 = 1.0 * (rng.rand(n, m) > 0.5)
+    temp, alpha, beta = 0.7, 0.0, 1e-2
+    SEED = 12345
+
+    def StS_of(S):
+        return S.T @ S
+
+    # ---- BINARY: unified vs sbmf -----------------------------------------
+    S_a, StS_a = S0.copy(), StS_of(S0)
+    _seed(SEED)
+    bae_search.sbmf(XW.copy(), S_a, WtW.copy(), temp=temp,
+                    StS=StS_a, N=n, beta=beta, alpha=alpha, inplace=True)
+
+    S_b, Z_b, StS_b = S0.copy(), S0.copy(), StS_of(S0)   # no-slab: Z = S
+    _seed(SEED)
+    sbmf_search(XW.copy(), S_b, Z_b, WtW.copy(), StS_b, n,
+                temp, alpha, beta, 1.0, 1.0, True)
+
+    bin_equal = np.array_equal(S_a, S_b)
+    bin_frac = float(np.mean(S_a == S_b))
+    print(f"[binary]  S array_equal vs sbmf : {bin_equal}   "
+          f"(agreement {bin_frac:.5f})")
+
+    # ---- SLAB: unified vs snmf -------------------------------------------
+    Z0 = 1.0 * S0 * np.abs(rng.randn(n, m))
+    tau, sigma2 = 1.0, 1.0
+
+    S_c, Z_c, StS_c = S0.copy(), Z0.copy(), StS_of(S0)
+    _seed(SEED)
+    bae_search.snmf(XW.copy(), S_c, Z_c, WtW.copy(), temp=temp,
+                    sigma2=sigma2, tau=tau, StS=StS_c, N=n,
+                    beta=beta, alpha=alpha, inplace=True)
+
+    S_d = S0.copy()
+    Z_d = Z0.copy()                          # Z0 already zeroed off-spike
+    StS_d = StS_of(S0)
+    _seed(SEED)
+    snmf_search(XW.copy(), S_d, Z_d, WtW.copy(), StS_d, n,
+                temp, alpha, beta, tau, sigma2, True)
+
+    slab_S_equal = np.array_equal(S_c, S_d)
+    slab_Z_equal = np.allclose(Z_c, Z_d)
+    slab_Z_exact = np.array_equal(Z_c, Z_d)
+    print(f"[slab]    S array_equal vs snmf : {slab_S_equal}")
+    print(f"[slab]    Z array_equal vs snmf : {slab_Z_exact}   "
+          f"(allclose {slab_Z_equal})")
+
+    # ---- inlining evidence: scan the compiled LLVM IR --------------------
+    def link_calls(kernel):
+        llvm = kernel.inspect_llvm()
+        txt = "\n".join(llvm.values())
+        # any 'call' line that references the link helpers by name
+        hits = [ln.strip() for ln in txt.splitlines()
+                if " call " in ln and ("score_" in ln or "aux_" in ln
+                                       or "log_ndtr" in ln
+                                       or "sample_trunc_norm" in ln)]
+        return hits
+
+    print(f"[inolg]   binary kernel: residual link calls = "
+          f"{len(link_calls(sbmf_search))}")
+    print(f"[inolg]   slab   kernel: residual link calls = "
+          f"{len(link_calls(snmf_search))}")
+
+    # ---- timing -----------------------------------------------------------
+    def timeit(fn, reps=50):
+        fn()                                   # warm
+        t0 = time.perf_counter()
+        for _ in range(reps):
+            fn()
+        return (time.perf_counter() - t0) / reps * 1e3   # ms/sweep
+
+    t_sbmf = timeit(lambda: bae_search.sbmf(
+        XW.copy(), S0.copy(), WtW.copy(), temp=temp,
+        StS=StS_of(S0), N=n, beta=beta, alpha=alpha, inplace=True))
+    t_bin = timeit(lambda: sbmf_search(
+        XW.copy(), S0.copy(), S0.copy(), WtW.copy(),
+        StS_of(S0), n, temp, alpha, beta, 1.0, 1.0, True))
+    print(f"[time]    sbmf {t_sbmf:.3f} ms  | unified-binary {t_bin:.3f} ms  "
+          f"({t_bin / t_sbmf:.2f}x)")
+
+    t_snmf = timeit(lambda: bae_search.snmf(
+        XW.copy(), S0.copy(), Z0.copy(), WtW.copy(), temp=temp,
+        sigma2=sigma2, tau=tau, StS=StS_of(S0), N=n,
+        beta=beta, alpha=alpha, inplace=True))
+    t_slab = timeit(lambda: snmf_search(
+        XW.copy(), S0.copy(), Z0.copy(), WtW.copy(),
+        StS_of(S0), n, temp, alpha, beta, tau, sigma2, True))
+    print(f"[time]    snmf {t_snmf:.3f} ms  | unified-slab   {t_slab:.3f} ms  "
+          f"({t_slab / t_snmf:.2f}x)")
+
+
+if __name__ == "__main__":
+    _selftest()

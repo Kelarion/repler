@@ -16,13 +16,13 @@ import matplotlib.pyplot as plt
 
 # my code
 import util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
-import new_bae_models
+import bae_models
 
 #%%
 # ----------------------------------------------------------------------------
@@ -713,7 +713,7 @@ X_ = pops[0]
 # mask = np.isnan(X_)
 # X_ = np.where(np.isnan(X_), np.nanmean(X_), X_)
 
-mod = new_bae_models.JRRBMF(dim_hid=9,
+mod = bae_models.JRRBMF(dim_hid=9,
                             rank=3, 
                             nonneg=True, 
                             sparse_reg=1,
@@ -740,7 +740,7 @@ samps = mod.sample(X_ / X_.std(), n_samp=100)
 
 X_ = util.group_mean(pops[0][0],pops[0][1], axis=0)
 
-# mod = new_bae_models.JBMF(dim_hid=324,
+# mod = bae_models.JBMF(dim_hid=324,
 #                           nonneg=True, 
 #                           sparse_reg=1,
 #                           tree_reg=10,
@@ -749,7 +749,7 @@ X_ = util.group_mean(pops[0][0],pops[0][1], axis=0)
 #                           J_lr=1e-3,
 #                           )
 
-mod = new_bae_models.SemiBMF(dim_hid=324,
+mod = bae_models.SemiBMF(dim_hid=324,
                               nonneg=True, 
                               sparse_reg=1,
                               tree_reg=10,

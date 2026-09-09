@@ -39,9 +39,9 @@ import networkx as nx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
@@ -291,7 +291,7 @@ X = pp['data'][:,pp['neur_labels'] == 'vpa']
 X_ = X - X.mean(0) 
 # X_ = (X / X.std(0)) - (X / X.std(0)).mean(0)
 
-# mod = bae_models.SemiBMF(4,
+# mod = old_bae_models.SemiBMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1, 
@@ -299,7 +299,7 @@ X_ = X - X.mean(0)
 #                          weight_l2_reg=1,
 #                          )
 
-# mod = bae_models.SpikeNMF(5,
+# mod = old_bae_models.SpikeNMF(5,
 #                          nonneg=True, 
 #                          sparse_reg=1e-1, 
 #                          weight_pr_reg=1, 
@@ -307,7 +307,7 @@ X_ = X - X.mean(0)
 #                          weight_l2_reg=1,
 #                          )
 
-mod = bae_models.KernelBMF2(4,
+mod = old_bae_models.KernelBMF2(4,
                            sparse_reg=1,
                            tree_reg=1,
                            uniform_scale=False,

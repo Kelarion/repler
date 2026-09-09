@@ -26,13 +26,13 @@ import networkx as nx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
-import new_bae_models
+import bae_models
 
 #%%
 # ----------------------------------------------------------------------------
@@ -312,7 +312,7 @@ X_ = out['PFC']['rsa']
 
 # X_ -= X_.mean(0)
 
-mod = bae_models.SemiBMF(5,
+mod = old_bae_models.SemiBMF(5,
                          nonneg=True,
                          tree_reg=1e-3,
                          weight_pr_reg=1,
@@ -321,7 +321,7 @@ mod = bae_models.SemiBMF(5,
                          sparse_reg=1e-1,
                          )
 
-# mod = bae_models.SemiBMF(7,
+# mod = old_bae_models.SemiBMF(7,
 #                          nonneg=False,
 #                          tree_reg=1,
 #                          weight_pr_reg=1,
@@ -330,7 +330,7 @@ mod = bae_models.SemiBMF(5,
 #                          sparse_reg=1,
 #                          )
 
-# mod = bae_models.SpikeNMF(7,
+# mod = old_bae_models.SpikeNMF(7,
 #                          nonneg=False, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -339,7 +339,7 @@ mod = bae_models.SemiBMF(5,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = new_bae_models.JBMF(dim_hid=324,
+# mod = bae_models.JBMF(dim_hid=324,
 #                           nonneg=True, 
 #                           sparse_reg=1,
 #                           tree_reg=10,
@@ -349,7 +349,7 @@ mod = bae_models.SemiBMF(5,
 #                           )
 
 
-# mod = new_bae_models.JBMF(4,
+# mod = bae_models.JBMF(4,
 #                          # nonneg=True,
 #                          nonneg=False,
 #                          # fit_intercept=False,
@@ -366,7 +366,7 @@ mod = bae_models.SemiBMF(5,
 #                          # slab_prior=0.1,
 #                          )
 
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -375,7 +375,7 @@ mod = bae_models.SemiBMF(5,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = bae_models.KernelBMF2(12,
+# mod = old_bae_models.KernelBMF2(12,
 #                            sparse_reg=75,
 #                            tree_reg=1,
 #                            # uniform_scale=False,
@@ -414,7 +414,7 @@ X_ = out['HP']['X'].transpose((0,2,1))[:12]
 
 X_ /= X_.std((0,1), keepdims=True)
 
-# mod = new_bae_models.RRBMF(dim_hid=5,
+# mod = bae_models.RRBMF(dim_hid=5,
 #                             rank=3,
 #                             nonneg=True, 
 #                             # nonneg=False,
@@ -424,7 +424,7 @@ X_ /= X_.std((0,1), keepdims=True)
 #                             weight_l2_reg=1e-1,
 #                             )
 
-# mod = new_bae_models.JRRBMF(dim_hid=5,
+# mod = bae_models.JRRBMF(dim_hid=5,
 #                             rank=3,
 #                             nonneg=True, 
 #                             # nonneg=False,
@@ -435,7 +435,7 @@ X_ /= X_.std((0,1), keepdims=True)
 #                             J_lr=1e-3,
 #                             )
 
-# mod = new_bae_models.SCPD(dim_hid=4,
+# mod = bae_models.SCPD(dim_hid=4,
 #                             nonneg=True, 
 #                             # nonneg=False,
 #                             sparse_reg=1,
@@ -444,7 +444,7 @@ X_ /= X_.std((0,1), keepdims=True)
 #                             weight_l1_reg=1e-2,
 #                             )
 
-mod = new_bae_models.JSCPD(dim_hid=5,
+mod = bae_models.JSCPD(dim_hid=5,
                             nonneg=True, 
                             # nonneg=False,
                             sparse_reg=1e-1,
@@ -578,9 +578,9 @@ sigs = []
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         
-        # mod = new_bae_models.JBMF(k,**args)
-        # mod = new_bae_models.BiPCA(k, **args)
-        mod = new_bae_models.JSCPD(k, **args)
+        # mod = bae_models.JBMF(k,**args)
+        # mod = bae_models.BiPCA(k, **args)
+        mod = bae_models.JSCPD(k, **args)
         
         # wa,ba = bae_util.loocv(mod, X_/X_.std(), n_sample=10, **opt_args)
         wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, seed=0, n_sample=10, folds=10, max_folds=1, **opt_args)

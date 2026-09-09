@@ -47,7 +47,7 @@ import util
 import pt_util
 import df_util
 import bae_util
-import bae_models
+import old_bae_models
 
 import students 
 import super_experiments as sxp
@@ -190,7 +190,7 @@ vecs = whgamma[np.array(toks)].numpy()
 
 neal = bae_util.Neal(decay_rate=0.9, period=2, initial=10)
 
-# mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
+# mod = old_bae_models.BinaryAutoencoder(600, vecs.shape[1], 
 #                                    tree_reg=1e-1, 
 #                                    sparse_reg=1e-3,
 #                                    weight_reg=1e-2)
@@ -200,18 +200,18 @@ neal = bae_util.Neal(decay_rate=0.9, period=2, initial=10)
 
 # en = neal.fit(mod, dl, T_min=1e-6)
 
-mod = bae_models.KernelBMF(vecs.shape[1], tree_reg=0.2, scale_lr=1)
-# mod = bae_models.BiPCA(vecs.shape[1], sparse_reg=0, tree_reg=1)
+mod = old_bae_models.KernelBMF(vecs.shape[1], tree_reg=0.2, scale_lr=1)
+# mod = old_bae_models.BiPCA(vecs.shape[1], sparse_reg=0, tree_reg=1)
 en = neal.fit(mod, vecs, T_min=1e-5)
 
 S = mod.S
 # W = mod.W*mod.scl
 pi = np.ones(mod.S.shape[1])
 
-# mod = bae_models.KernelBMF(600, tree_reg=1e-1, scale_lr=0.9)
+# mod = old_bae_models.KernelBMF(600, tree_reg=1e-1, scale_lr=0.9)
 # en = neal.fit(mod, vecs.numpy(), pvar=0.95)
 
-# mod3 = bae_models.BernVAE(600, vecs.shape[1], weight_reg=1e-2)
+# mod3 = old_bae_models.BernVAE(600, vecs.shape[1], weight_reg=1e-2)
 # dl = pt_util.batch_data(vecs.cuda(), batch_size=512)
 # mod3.cuda()
 # # dl = pt_util.batch_data(vecs, batch_size=512)

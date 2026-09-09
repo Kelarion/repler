@@ -63,7 +63,7 @@ sys.path.insert(0, RIVELAND_DIR)
 
 import util
 import plotting as tpl
-import new_bae_models
+import bae_models
 import bae_util
 
 # Running this file directly puts src/scripts on sys.path, whose transformers.py
@@ -232,7 +232,7 @@ def condition_mean_reps(model, tasks=FIG3_TASKS, **kw):
 
 def reps_to_bmf_matrix(model, tasks=TASK_LIST, **kw):
     """Bridge to this repo's BMF pipeline: a (task x unit) matrix X of trial-mean
-    sensorimotor activity, ready for e.g. bae_models.SemiBMF to factor
+    sensorimotor activity, ready for e.g. old_bae_models.SemiBMF to factor
     X ~ f(S @ W) and test whether the binary latents S recover the task factors."""
     X = condition_mean_reps(model, tasks=tasks, **kw)
     return X, list(tasks)
@@ -384,7 +384,7 @@ def disentanglement_report(model, num_trials=100):
 model = load_model('combNet', 'swap9', seed=0)
 # fig, reduced, var = plot_fig3_scatter(model, save_path=f'{SAVE_DIR}/fig3_simpleNet_task.png')
 # print(disentanglement_report(model))
-# X, task_names = reps_to_bmf_matrix(model)   # -> feed to bae_models.SemiBMF
+# X, task_names = reps_to_bmf_matrix(model)   # -> feed to old_bae_models.SemiBMF
 
 reps = extract_task_reps(model, TASK_LIST)
 N = reps.shape[-1]
@@ -396,7 +396,7 @@ conds = np.repeat(TASK_LIST, 50)
 X_ = reps.reshape((-1, N))
 # X_ = reps.mean(1)
 
-# mod = new_bae_models.JBMF(5,
+# mod = bae_models.JBMF(5,
 #                          nonneg=True,
 #                          # nonneg=False,
 #                          # fit_intercept=False,
@@ -413,7 +413,7 @@ X_ = reps.reshape((-1, N))
 #                          # slab_prior=0.1,
 #                          )
 
-mod = new_bae_models.BiPCA(6,
+mod = bae_models.BiPCA(6,
                            # fit_intercept=False,
                            tree_reg=0,
                            sparse_reg=1,
@@ -427,7 +427,7 @@ mod = new_bae_models.BiPCA(6,
                            # gamma=1e-1,
                            )
 
-# mod = new_bae_models.KernelBMF(5,
+# mod = bae_models.KernelBMF(5,
 #                                sparse_reg=1,
 #                                tree_reg=0,
 #                                # uniform_scale=False,
@@ -436,7 +436,7 @@ mod = new_bae_models.BiPCA(6,
 #                                kernel_input=True,
 #                                J_lr=1e-12,
 #                                )
-# mod = bae_models.KernelBMF2(5,
+# mod = old_bae_models.KernelBMF2(5,
 #                                sparse_reg=0,
 #                                tree_reg=0,
 #                                # uniform_scale=False,

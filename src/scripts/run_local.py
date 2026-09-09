@@ -25,7 +25,7 @@ import experiments as exp
 import server_utils as su
 import plotting as tpl
 
-import new_bae_experiments as nbx
+import bae_experiments as nbx
 
 #%%
 

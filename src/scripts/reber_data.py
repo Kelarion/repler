@@ -16,8 +16,8 @@ from scipy.spatial.distance import pdist, squareform
 import util
 import df_util
 import bae_util
+import old_bae_models
 import bae_models
-import new_bae_models
 import plotting as tpl
 
 # ----------------------------------------------------------------------------
@@ -179,7 +179,7 @@ r = 'AM'
 X_ = mats[r]                          # (100, n_units)
 X_ = X_ - X_.mean(0, keepdims=True)   # mean-center neurons (RSA uses correlation)
 
-mod = bae_models.SemiBMF(10,
+mod = old_bae_models.SemiBMF(10,
                          nonneg=True,
                          tree_reg=1,
                          weight_pr_reg=1,
@@ -226,7 +226,7 @@ for r in REGIONS:
     trn = np.zeros(len(kays)); tst = np.zeros(len(kays))
     for _ in range(n_run):
         for i, k in enumerate(tqdm(kays, desc=r, leave=False)):
-            mod = bae_models.SemiBMF(k, **args)
+            mod = old_bae_models.SemiBMF(k, **args)
             wa, ba = bae_util.impcv(mod, X_, folds=10, n_sample=100,
                                     verbose=False, **opt_args)
             trn[i] += np.mean(wa) / n_run

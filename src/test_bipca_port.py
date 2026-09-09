@@ -1,6 +1,6 @@
-"""Checks for new_bae_models.BiPCA (Procrustes operator on the SHARED binary link).
+"""Checks for bae_models.BiPCA (Procrustes operator on the SHARED binary link).
 
-BiPCA no longer uses the bespoke bae_search.bpca kernel.  For the linear-Gaussian
+BiPCA no longer uses the bespoke old_bae_search.bpca kernel.  For the linear-Gaussian
 model X = scl S W^T + b + N(0, sigma^2) with orthonormal W the S_ij flip log-odds
 is  (scl/sigma^2) XW_ij - 0.5 (scl^2/sigma^2),  which the scaffold's binary link
 (E - 0.5 wjj)/sigma2 reproduces once XW, WtW are pre-scaled by scl, scl^2 (done in
@@ -10,7 +10,7 @@ Procrustes.drive/gram).  We check:
      the OLD bpca form (2 XW/scl - 1) exactly when sigma^2 = scl^2/2 (the implicit
      convention the old kernel baked in, along with a dropped Gaussian 1/2);
   2. empirically: the shared binary kernel (pre-scaled, diag_gram=True, sigma^2 =
-     scl^2/2) reproduces bae_search.bpca's E-step sweep;
+     scl^2/2) reproduces old_bae_search.bpca's E-step sweep;
   3. end-to-end: the model fits -- loss decreases and W stays orthonormal -- both
      with fixed sigma^2 = 1 and with sigma^2 estimated from the residual (scl_lr>0).
 """
@@ -18,9 +18,9 @@ Procrustes.drive/gram).  We check:
 import numpy as np
 from numba import njit
 
-import bae_search
-import new_bae_search as nbs
-import new_bae_models
+import old_bae_search
+import bae_search as nbs
+import bae_models
 
 
 @njit
@@ -80,7 +80,7 @@ def test_kernel_matches_bpca(seed=0):
 
     S_b, StS_b = S0.copy(), (S0.T @ S0).copy()
     numba_seed(seed)
-    bae_search.bpca(XWraw.copy(), S_b, scl, temp=temp, StS=StS_b, N=n,
+    old_bae_search.bpca(XWraw.copy(), S_b, scl, temp=temp, StS=StS_b, N=n,
                     alpha=alpha, beta=beta)
 
     frac = float(np.mean(S_k == S_b))
@@ -94,7 +94,7 @@ def test_end_to_end():
     X = make_data()
     allok = True
     for name, scl_lr in [("fixed sigma^2=1", 0.0), ("estimated sigma^2", 0.2)]:
-        m = new_bae_models.BiPCA(5, sparse_reg=1e-2, tree_reg=0.05)
+        m = bae_models.BiPCA(5, sparse_reg=1e-2, tree_reg=0.05)
         m.initialize(X, scl_lr=scl_lr)
         numba_seed(0)
         en = m.fit(X, initial_temp=1, decay_rate=0.8, period=2, min_temp=1e-4,

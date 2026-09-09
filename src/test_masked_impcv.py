@@ -23,8 +23,8 @@ OBSERVED entries only.  What is checked here:
 
 import numpy as np
 
-import new_bae_models as nbm
-import new_bae_search
+import bae_models as nbm
+import bae_search
 import bae_util
 
 
@@ -32,7 +32,7 @@ def seed_all(k):
     """Seed BOTH streams: numpy's (masks, chain init) and numba's (the search
     kernel's flips), which a bare np.random.seed does NOT reach."""
     np.random.seed(k)
-    new_bae_search._seed(k)
+    bae_search._seed(k)
 
 
 def synth(n=200, d=24, k=4, noise=0.3, seed=0):

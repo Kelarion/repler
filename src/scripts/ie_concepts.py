@@ -57,8 +57,8 @@ import dichotomies as dics
 import distance_factorization as df
 import df_util
 import df_models as mods
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #%%
@@ -88,8 +88,8 @@ for f,l in tqdm(zip(fid, lid)):
 
 #%%
 
-mod = bae_models.KernelBMF(900, tree_reg=2)
-# mod = bae_models.BiPCA(300, tree_reg=1, sparse_reg=0)
+mod = old_bae_models.KernelBMF(900, tree_reg=2)
+# mod = old_bae_models.BiPCA(300, tree_reg=1, sparse_reg=0)
 
 en = mod.fit(cogmat, decay_rate=0.95, period=5, initial_temp=10)
 
@@ -100,7 +100,7 @@ S = S[:,S.sum(0)>0]
 
 # neal = bae_util.Neal(decay_rate=0.95, period=2)
 
-# mod = bae_models.BinaryAutoencoder(600, vecs.shape[1], 
+# mod = old_bae_models.BinaryAutoencoder(600, vecs.shape[1], 
 #                                    tree_reg=1e-1, 
 #                                    sparse_reg=1e-3,
 #                                    weight_reg=1e-2)
@@ -113,14 +113,14 @@ S = S[:,S.sum(0)>0]
 # cv = []
 # neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
 # for k in tqdm(range(2, 29)):
-#     mod = bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
+#     mod = old_bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
 #     ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
 #     cv.append(np.mean(ba[0]))
 #     eses.append(ba[1])
 
 #%%
 
-mod = bae_models.SemiBMF(160,
+mod = old_bae_models.SemiBMF(160,
                          nonneg=True, 
                          tree_reg=100,
                          weight_pr_reg=1,
@@ -129,7 +129,7 @@ mod = bae_models.SemiBMF(160,
                          sparse_reg=1,
                          )
 
-# mod = bae_models.SpikeNMF(11,
+# mod = old_bae_models.SpikeNMF(11,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -138,7 +138,7 @@ mod = bae_models.SemiBMF(160,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = bae_models.KernelBMF2(12,
+# mod = old_bae_models.KernelBMF2(12,
 #                            sparse_reg=1,
 #                            tree_reg=100,
 #                            uniform_scale=False,

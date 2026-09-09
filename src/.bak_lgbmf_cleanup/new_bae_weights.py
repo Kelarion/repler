@@ -1,6 +1,6 @@
 """
-new_bae_weights.py  --  the weight side of the BMF stack
-=======================================================
+new_bae_weights.py  --  ILLUSTRATION ONLY (design sketch)
+=========================================================
 
 The *weight side* of the refactored BMF stack (see new_bae_models.py for the
 overview): the (affine) operator L that maps latents to the reconstruction.
@@ -45,11 +45,6 @@ import torch.nn.functional as F
 import bae_search
 import new_bae_search
 from new_bae_search import make_dense_search
-
-
-def _swap(A):
-    """Transpose the trailing two axes (chain-axis-agnostic `.T`)."""
-    return A.swapaxes(-1, -2)
 
 
 def init_affine(X, dim_hid, nonneg, hot_start, fit_intercept, resample_dead=False):
@@ -161,15 +156,6 @@ class LinearOperator:
         """One in-place M-step update of this operator's parameters (incl. its
         weight regularization); returns the residual X - forward(S)."""
         raise NotImplementedError
-
-    # Names of every learning rate this operator owns, so a caller (BMF.refine)
-    # can turn them all down without knowing which operator it holds.
-    _lr_fields = ('lr',)
-
-    def scale_lrs(self, factor):
-        for f in self._lr_fields:
-            if hasattr(self, f):
-                setattr(self, f, getattr(self, f) * factor)
 
 
 @dataclass
@@ -311,13 +297,6 @@ class AffineOperator(LinearOperator):
         return op
 
 
-def _polar(M):
-    """Nearest orthonormal frame to M (the polar factor U V^T of its SVD).
-    Batched: np.linalg.svd vectorizes over any leading axes."""
-    U, _, Vt = np.linalg.svd(M, full_matrices=False)
-    return U @ Vt
-
-
 @dataclass
 class Procrustes:
     """L(S) = scl * S W^T + b with W ORTHONORMAL (W^T W = I).  Backs BiPCA.
@@ -325,109 +304,118 @@ class Procrustes:
     Deliberately NOT a LinearOperator: it shares none of that base's machinery --
     no participation-ratio / L1 / L2 weight penalty (an orthonormal W has a fixed
     spectrum, so those regularizers are meaningless) and it cannot be non-negative
-    (non-negative + orthonormal columns force a permutation matrix).  It duck-types
-    the operator interface instead (forward / drive / gram / build_search / search /
-    backward / init_params / to_serial) and carries its own scalar scale `scl`.
+    (non-negative + orthonormal columns force a permutation matrix).  Instead it
+    duck-types the operator interface the model needs (forward / drive / gram /
+    build_search / search / backward / init_params) and carries its own scalar
+    scale `scl`.
 
-    It reuses the SHARED dense binary search rather than a bespoke kernel.  For
-    X = scl S W^T + b + N(0, sigma_x) the S_ij flip log-odds is
-        (scl/sigma_x) XW_ij - (scl^2/sigma_x) sum_{k!=j} S_ik WtW_jk
+    It reuses the SHARED dense binary search rather than a bespoke kernel.  For a
+    linear-Gaussian model X = scl S W^T + b + N(0, sigma_x) the S_ij flip log-odds
+    is  (scl/sigma_x) XW_ij - (scl^2/sigma_x) sum_{k!=j} S_ik WtW_jk
         - 0.5 (scl^2/sigma_x) WtW_jj,
     which is EXACTLY the scaffold's binary link (E - 0.5 wjj)/sigma2 once XW and
-    WtW are pre-scaled by scl and scl^2 -- so `drive` and `gram` carry those factors
-    and the true noise variance is handed through as sigma2.  W orthonormal makes
-    the gram diagonal, so the search is compiled with diag_gram=True.
-
-    The M-step follows minimal_structured_bipca.StructuredBiPCA._decoder_step:
-    a RELAXED orthogonal-Procrustes update of W on CENTERED data, a scale-free
-    (log-space) partial update of the scale, and the closed-form intercept relaxed
-    by `b_lr`.
-
-    Every array is written shape-agnostically (a leading chain axis when
-    n_chains > 1), and `X` may be either the shared data (n, d) or a per-chain
-    working copy (C, n, d) -- broadcasting covers both.
+    WtW are pre-scaled by scl and scl^2 -- so `drive` and `gram` carry those
+    factors and the operator hands the true noise variance sigma_x through as
+    sigma2.  (This corrects the old bae_search.bpca, whose 2*XW/scl - 1 dropped the
+    Gaussian 1/2 and implicitly fixed sigma^2 = scl^2/2.)  Because W is orthonormal
+    the gram is diagonal, so the search is compiled with diag_gram=True and the
+    neighbour loop is skipped.  The M-step is the closed-form orthogonal-Procrustes
+    solve (SVD of X^T ES), not a gradient step; W, scl, b set in init_params.
+    (bae_models.BiPCA:162.)
     """
 
     n_chains: int = 1
     fit_intercept: bool = True
     fit_scl: bool = True
-    W_lr: float = 0.25               # relaxation of the polar (Procrustes) update
-    scale_lr: float = 0.1           # log-space relaxation of the decoder scale
     init_jitter: float = 0.1         # multi-chain: per-chain perturbation of the
                                      # shared hot-start (followed by a polar project)
-
-    _lr_fields = ('W_lr', 'scale_lr', 'b_lr')
-
-    def scale_lrs(self, factor):
-        for f in self._lr_fields:
-            if hasattr(self, f):
-                setattr(self, f, getattr(self, f) * factor)
 
     @property
     def _multi(self):
         return self.n_chains > 1
 
-    @property
-    def _scl(self):
-        """`scl` as an array (0-d serial, (C,) multi), so the faces can broadcast
-        it over the trailing axes without branching on n_chains."""
-        return np.asarray(self.scl, dtype=float)
-
-    # ---- faces -----------------------------------------------------------
+    # ---- faces.  Single chain: W (d,m), b (d,), scalar scl.  Multi-chain:
+    # W (C,d,m), b (C,d), per-chain scl (C,) entering as scl[:,None,None] /
+    # scl[:,None,None]**2 -- the pre-scaling the shared binary link needs.
     def forward(self, S):
-        return self._scl[..., None, None] * (S @ _swap(self.W)) + self.b[..., None, :]
+        if not self._multi:
+            return self.scl * (S @ self.W.T) + self.b
+        return self.scl[:, None, None] * (S @ self.Wt) + self.b[:, None, :]
 
     def drive(self, X):
-        bW = np.einsum('...d,...dm->...m', self.b, self.W)
-        return self._scl[..., None, None] * (X @ self.W - bW[..., None, :])
+        if not self._multi:
+            return self.scl * (X @ self.W - self.b @ self.W)      # scl*XW
+        bW = self.b[:, None, :] @ self.W                          # (C,1,d)@(C,d,m)
+        return self.scl[:, None, None] * (X @ self.W - bW)        # scl*XW -> (C,n,m)
 
     def gram(self):
-        return (self._scl ** 2)[..., None, None] * (_swap(self.W) @ self.W)
+        if not self._multi:
+            return (self.scl ** 2) * (self.W.T @ self.W)          # scl^2*WtW
+        return (self.scl[:, None, None] ** 2) * (self.Wt @ self.W)
+
+    @property
+    def Wt(self):
+        return self.W.transpose(0, 2, 1)                          # (C, m, d), multi only
 
     def init_params(self, X, dim_hid, hot_start=True, lr=1.0):
-        """W from the data (PCA) or a random orthonormal frame; `lr` sets the
-        intercept relaxation (W and the scale have their own dataclass lrs)."""
         self.dim_hid = dim_hid
         self.d = d = X.shape[1]
-        self.b_lr = lr
+        transpose = d < dim_hid                          # rows orthonormal instead
         b0 = X.mean(0)
-        scl0 = np.sqrt(np.mean((X - b0) ** 2)) if self.fit_scl else 1.0
-
-        if hot_start:
-            # The economy SVD only yields min(N, d) right-singular vectors; when
-            # that is fewer than dim_hid, W would silently come out narrow and
-            # desync from the model's dim_hid, so fall back to the full SVD (N is
-            # small there, so the full U is cheap) and take the complement.
-            _, _, Vx = la.svd(X, full_matrices=min(X.shape) < dim_hid)
-            W0 = Vx[:dim_hid].T                              # (d, m), orthonormal
-        else:
-            s1, s2 = max(d, dim_hid), min(d, dim_hid)
-            W0 = sts.ortho_group.rvs(s1)[:, :s2]
-            if d < dim_hid:                                  # rows orthonormal
-                W0 = W0.T
-
         if not self._multi:
-            self.W, self.b, self.scl = W0, b0, np.asarray(scl0)
+            # hot_start is accepted for the shared init_params signature but ignored:
+            # W is always seeded from the data (PCA) or a random orthonormal frame.
+            if hot_start:
+                # Economy SVD only yields min(N, d) right-singular vectors; when the
+                # data rank is below dim_hid (i.e. N < dim_hid) that is too few to
+                # fill dim_hid orthonormal columns, and W would silently come out
+                # narrow -- desyncing the operator from the model/prior dim_hid and
+                # blowing up the Procrustes M-step.  Fall back to the full SVD there
+                # (N is small then, so the full U is cheap) so the extra columns are
+                # the orthonormal complement of the data subspace.
+                full = min(X.shape) < dim_hid
+                _, _, Vx = la.svd(X, full_matrices=full)
+                self.W = Vx[:dim_hid].T
+            else:
+                s1, s2 = max(d, dim_hid), min(d, dim_hid)
+                self.W = sts.ortho_group.rvs(s1)[:, :s2]
+                if transpose:
+                    self.W = self.W.T
+            self.lr = lr
+            self.b = b0
+            self.scl = np.sqrt(np.mean((X - b0) ** 2)) if self.fit_scl else 1
             return
-        # multi-chain: the shared start plus independent per-chain jitter, re-
-        # projected onto the orthonormal manifold so each chain explores its own
-        # basin.  hot_start=False already gives independent random frames.
+        # multi-chain: shared hot-start + independent per-chain jitter, but W must be
+        # orthonormal PER CHAIN, so the jitter is followed by a polar projection
+        # (nearest orthonormal frame = U V^T of its SVD).  The chain loop here is a
+        # one-shot init cost, not the per-iteration hot path, so it stays a plain loop.
         C = self.n_chains
+        W = np.empty((C, d, dim_hid))
         if hot_start:
-            W = np.repeat(W0[None], C, axis=0)
-            W = _polar(W + self.init_jitter * np.random.randn(*W.shape) / np.sqrt(d))
+            full = min(X.shape) < dim_hid
+            _, _, Vx = la.svd(X, full_matrices=full)
+            W0 = Vx[:dim_hid].T                            # (d, m), orthonormal cols
+            for c in range(C):
+                Wj = W0 + self.init_jitter * np.random.randn(*W0.shape) / np.sqrt(d)
+                U, _, V = la.svd(Wj, full_matrices=False)  # polar factor -> orthonormal
+                W[c] = U @ V
         else:
             s1, s2 = max(d, dim_hid), min(d, dim_hid)
-            W = np.stack([sts.ortho_group.rvs(s1)[:, :s2] for _ in range(C)])
-            if d < dim_hid:
-                W = _swap(W)
+            for c in range(C):
+                Wc = sts.ortho_group.rvs(s1)[:, :s2]
+                W[c] = Wc.T if transpose else Wc
         self.W = W
-        self.b = np.repeat(b0[None], C, axis=0)              # (C, d)
-        self.scl = np.full(C, scl0)
+        self.lr = lr
+        self.b = np.repeat(b0[None], C, axis=0)            # (C, d)
+        if self.fit_scl:
+            self.scl = np.full(C, np.sqrt(np.mean((X - b0) ** 2)))
+        else:
+            self.scl = np.ones(C)
 
-    # Orthonormal W -> diagonal gram, so compile the binary link with the
-    # neighbour loop skipped.  Same (score, aux, prior) machinery as every other
-    # dense model -- the scale lives entirely in the pre-scaled drive/gram.
+    # Orthonormal W -> diagonal gram, so compile the binary link with the neighbour
+    # loop skipped (diag_gram=True).  Same (score, aux, prior) machinery as every
+    # other dense model -- the scale lives entirely in the pre-scaled drive/gram.
+    # Serial (2-D) or chain-batched (prange) build, picked by n_chains.
     def build_search(self, link, prior, debug=False):
         self._kernel = make_dense_search(*link, prior, diag_gram=True,
                                          debug=debug, parallel=self._multi)
@@ -437,40 +425,57 @@ class Procrustes:
         return self._kernel(XW, S, Z, WtW, StS, N, temp, alpha, beta,
                             tau, sigma2, Jc, hc, inplace, out, prior_temp)
 
-    def backward(self, ES, X):
-        """One decoder update, then the post-update residual (whose mean square is
-        the model's energy).  W is relaxed toward the orthogonal-Procrustes solve
-        of the CENTERED data, the scale toward its least-squares target in LOG
-        space (so the step is scale-free), and the intercept toward its exact
-        closed form."""
-        xbar, zbar = X.mean(-2), ES.mean(-2)
-        Xc, Zc = X - xbar[..., None, :], ES - zbar[..., None, :]
-
-        self.W = _polar((1 - self.W_lr) * self.W
-                        + self.W_lr * _polar(_swap(Xc) @ Zc))
-
+    def backward(self, S, X):
+        """Closed-form orthogonal-Procrustes M-step (bae_models.BiPCA.MStep:227):
+        W <- polar factor of X^T ES, scl the mean singular value, b the residual
+        mean, each relaxed by lr.  Returns the post-update residual so the model's
+        MStep recovers BiPCA's mean((X - scl ES W^T - b)**2).  Multi-chain: the same
+        solve batched over chains via np.linalg.svd (which vectorizes leading axes),
+        with X either the shared data (n, d) or a per-chain working copy (C, n, d)."""
+        ES = S
+        if not self._multi:
+            XS = X.T @ ES - np.outer(self.b, ES.sum(0))
+            # ridge sized to XS's ACTUAL columns (== ES.shape[1]); with a consistent
+            # init this equals self.dim_hid, but keying off ES keeps the SVD
+            # well-posed regardless of how many latent columns the E-step handed back.
+            U, s, V = la.svd(XS + 1e-6 * np.eye(X.shape[1], ES.shape[1]),
+                             full_matrices=False)
+            self.W = U @ V
+            if self.fit_scl:
+                self.scl += self.lr * (np.sum(s) / np.sum(ES ** 2) - self.scl)
+            if self.fit_intercept:
+                self.b += self.lr * (X.mean(0) - self.scl * self.W @ ES.mean(0) - self.b)
+            # grouped exactly as bae_models.BiPCA.MStep (scl*ES)@W.T so the returned
+            # residual -- and the model's mean(resid**2) energy -- is bit-for-bit equal.
+            return X - self.scl * ES @ self.W.T - self.b
+        # multi-chain: unify the three data summaries the solve needs so shared
+        # (n, d) and per-chain (C, n, d) data both flow through by broadcasting.
+        if X.ndim == 3:
+            Xt, Xmean, Xb = X.transpose(0, 2, 1), X.mean(1), X          # (C,d,n)/(C,d)/(C,n,d)
+        else:
+            Xt, Xmean, Xb = X.T[None], X.mean(0)[None], X[None]         # (1,d,n)/(1,d)/(1,n,d)
+        XtES = np.matmul(Xt, ES)                                        # (C,d,m)
+        bOuter = self.b[:, :, None] * ES.sum(1)[:, None, :]            # b_c (sum_i ES_c)^T
+        XS = XtES - bOuter + 1e-6 * np.eye(self.d, self.dim_hid)[None]
+        U, s, V = np.linalg.svd(XS, full_matrices=False)               # batched over chains
+        self.W = U @ V                                                 # (C, d, m), orthonormal
         if self.fit_scl:
-            num = ((Xc @ self.W) * Zc).sum((-2, -1))
-            den = np.maximum((Zc ** 2).sum((-2, -1)), 1e-12)
-            target = np.clip(num / den, 1e-4, 100.0)
-            self.scl = np.exp(
-                (1 - self.scale_lr) * np.log(np.maximum(self._scl, 1e-12))
-                + self.scale_lr * np.log(target))
-
+            self.scl += self.lr * (s.sum(1) / (ES ** 2).sum((1, 2)) - self.scl)
         if self.fit_intercept:
-            Wz = np.einsum('...dm,...m->...d', self.W, zbar)
-            self.b = self.b + self.b_lr * (xbar - self._scl[..., None] * Wz - self.b)
-
-        return X - self.forward(ES)
+            WeS = (self.W @ ES.mean(1)[:, :, None])[:, :, 0]           # (C, d)
+            self.b += self.lr * (Xmean - self.scl[:, None] * WeS - self.b)
+        return Xb - self.scl[:, None, None] * (ES @ self.Wt) - self.b[:, None, :]
 
     def to_serial(self, c):
         """Return chain c as a single-chain (n_chains=1) Procrustes."""
-        op = Procrustes(fit_intercept=self.fit_intercept, fit_scl=self.fit_scl,
-                        W_lr=self.W_lr, scale_lr=self.scale_lr)
-        pick = (lambda a: a[c]) if self._multi else (lambda a: a)
-        op.W, op.b = pick(self.W).copy(), pick(self.b).copy()
-        op.scl = np.asarray(pick(self._scl))
-        op.b_lr, op.dim_hid, op.d = self.b_lr, self.dim_hid, self.d
+        op = Procrustes(fit_intercept=self.fit_intercept, fit_scl=self.fit_scl)
+        if self._multi:
+            op.W, op.b = self.W[c].copy(), self.b[c].copy()
+            op.scl = float(np.atleast_1d(self.scl)[c])
+        else:
+            op.W, op.b = self.W.copy(), self.b.copy()
+            op.scl = self.scl
+        op.lr, op.dim_hid, op.d = self.lr, self.dim_hid, self.d
         return op
 
 

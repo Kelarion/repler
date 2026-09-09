@@ -1,5 +1,5 @@
 """
-new_bae_priors.py  --  the latent side of the BMF stack
+bae_priors.py  --  the latent side of the BMF stack
 =======================================================
 
 The latent component is one slot on a model, `latent_prior`.  It owns the latent
@@ -42,7 +42,7 @@ from scipy.special import expit, logsumexp, xlogy, log_ndtr
 from scipy.optimize import minimize_scalar
 
 import df_util
-import new_bae_search
+import bae_search
 import mrf_samplers as mrf              # sign-constrained Ising kernels (numba)
 
 
@@ -170,12 +170,12 @@ class LatentPrior:
     # slab support for free and there is no __post_init__ to collide with.
     @property
     def link(self):
-        return (new_bae_search.SLAB_LINK if self.slab
-                else new_bae_search.BINARY_LINK)
+        return (bae_search.SLAB_LINK if self.slab
+                else bae_search.BINARY_LINK)
 
     @property
     def prior_plugin(self):
-        return new_bae_search.PRIOR_PLAIN
+        return bae_search.PRIOR_PLAIN
 
     # ---- parameters (a structured subclass builds its coupling here) ------
     def init_params(self, S):
@@ -249,7 +249,7 @@ class LatentPrior:
         return lp
 
     def link_moments(self, E, gjj, sigma2):
-        """Numpy mirror of the search's LINK plugin (new_bae_search.score_*), for
+        """Numpy mirror of the search's LINK plugin (bae_search.score_*), for
         a whole array at once: given the leave-one-out field E (..., n, m) and the
         gram diagonal, return
 
@@ -380,7 +380,7 @@ class BoltzmannPrior(LatentPrior):
 
     @property
     def prior_plugin(self):
-        return new_bae_search.PRIOR_BOLTZMANN
+        return bae_search.PRIOR_BOLTZMANN
 
     def init_params(self, S):
         batch, m = S.shape[:-2], S.shape[-1]
@@ -614,7 +614,7 @@ class MRFPrior(LatentPrior):
 
     @property
     def prior_plugin(self):
-        return new_bae_search.PRIOR_BOLTZMANN
+        return bae_search.PRIOR_BOLTZMANN
 
     def init_params(self, S):
         batch, m = S.shape[:-2], S.shape[-1]

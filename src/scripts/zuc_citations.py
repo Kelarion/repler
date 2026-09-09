@@ -58,8 +58,8 @@ import dichotomies as dics
 import distance_factorization as df
 import df_util
 import df_models as mods
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #%%
@@ -104,7 +104,7 @@ max_iter = None
 allS = []
 for k in tqdm(range(1, 2*N)):
 
-    mod = bae_models.KernelBMF(k, tree_reg=1, scale_lr=1)
+    mod = old_bae_models.KernelBMF(k, tree_reg=1, scale_lr=1)
     en = neal.fit(mod, X, max_iter=max_iter, verbose=False)
     
     allS.append(mod.S)

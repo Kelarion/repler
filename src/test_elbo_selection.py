@@ -29,14 +29,14 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.special import logsumexp
 
-import new_bae_models as nbm
-import new_bae_priors as nbp
-import new_bae_search
+import bae_models as nbm
+import bae_priors as nbp
+import bae_search
 
 
 def seed_all(k):
     np.random.seed(k)
-    new_bae_search._seed(k)
+    bae_search._seed(k)
 
 
 def synth(n=150, d=14, k=4, noise=0.3, seed=0):

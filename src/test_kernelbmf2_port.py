@@ -1,11 +1,11 @@
-"""Correctness check: new_bae_models.KernelBMF vs bae_models.KernelBMF2.
+"""Correctness check: bae_models.KernelBMF vs old_bae_models.KernelBMF2.
 
 KernelBMF2 is the one model that does NOT fit the LinearGaussianBMF skeleton: it
 factorizes a Gram matrix K ~ center(S diag(scl) S^T), quadratic in S.  So it
 subclasses BMF directly and carries its own diagonal scale `scl` + running
 StX = S^T X -- but it still reuses the LatentPrior (S / StS / Z + the shared
 additive S-prior plugin) and only swaps in a kernel-specific likelihood field
-(new_bae_search.make_kernel_search, ported from bae_search.kerbmf3 / kerbmf2).
+(bae_search.make_kernel_search, ported from old_bae_search.kerbmf3 / kerbmf2).
 
 The E-step is the numba kerbmf3 (RNG -> numba_seed); the scale M-step is
 deterministic.  We sync S / StS / StX / scl, run identical anneals (explicit
@@ -20,8 +20,8 @@ same spike.
 import numpy as np
 from numba import njit
 
+import old_bae_models
 import bae_models
-import new_bae_models
 
 
 @njit
@@ -55,9 +55,9 @@ SCHED = dict(initial_temp=2.0, decay_rate=0.85, period=3, min_temp=1e-3)
 
 def run_case(name, X, dim_hid=4, max_iter=120, seed=0,
              uniform_scale=True, l1_reg=0.0, sparse_reg=0.0, tree_reg=1e-2):
-    orig = bae_models.KernelBMF2(dim_hid, sparse_reg=sparse_reg, tree_reg=tree_reg,
+    orig = old_bae_models.KernelBMF2(dim_hid, sparse_reg=sparse_reg, tree_reg=tree_reg,
                                  uniform_scale=uniform_scale, l1_reg=l1_reg)
-    port = new_bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg, tree_reg=tree_reg,
+    port = bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg, tree_reg=tree_reg,
                                      uniform_scale=uniform_scale, l1_reg=l1_reg)
 
     orig.initialize(X)
@@ -90,12 +90,12 @@ def run_kernel_equiv(name, X, scl, dim_hid=4, seed=1, tree_reg=1e-2, sparse_reg=
     """The feature (X) and kernel (K = Xc Xc^T) E-steps compute the identical
     field -- for ANY diagonal scale scl -- so one seeded sweep from the same state
     must give the same spike.  This is how the (per-feature) kernel-input branch
-    is verified, since the original bae_search.kerbmf2 is scalar-only."""
+    is verified, since the original old_bae_search.kerbmf2 is scalar-only."""
     K = X @ X.T
 
-    feat = new_bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg,
+    feat = bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg,
                                      tree_reg=tree_reg, kernel_input=False)
-    kern = new_bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg,
+    kern = bae_models.KernelBMF(dim_hid, sparse_reg=sparse_reg,
                                      tree_reg=tree_reg, kernel_input=True)
     feat.initialize(X)
     kern.initialize(K)
@@ -128,7 +128,7 @@ def run_logodds(X, dim_hid=4, seed=2):
     d(loglik) -- the constant is the likelihood precision 1/sigma2; a non-constant
     ratio would mean the field is wrong.  The kernel is fed as the double-centered
     Gram (as the E-step centers it), matching the loss/MStep."""
-    import new_bae_search as nbs
+    import bae_search as nbs
     Kc = X @ X.T                                   # double-centered (X col-centered)
     n, m = len(X), dim_hid
     rng = np.random.default_rng(seed)
@@ -175,7 +175,7 @@ def run_sample(X, dim_hid=4):
     of the right shape."""
     ok = True
     for name, data, kin in [("feature", X, False), ("kernel", X @ X.T, True)]:
-        m = new_bae_models.KernelBMF(dim_hid, sparse_reg=0.1, tree_reg=0.05,
+        m = bae_models.KernelBMF(dim_hid, sparse_reg=0.1, tree_reg=0.05,
                                      kernel_input=kin)
         m.initialize(data)
         samps = m.sample(data, n_samp=3, burnin=2)
@@ -193,7 +193,7 @@ def run_logodds_scaling(dim_hid=4):
     so the sigmoid stays responsive (neither saturated nor a coin flip).  Sweep all
     three and assert the std stays in a bounded band; also assert exact invariance
     to the input scale (identical std when the kernel is multiplied by a constant)."""
-    import new_bae_search as nbs
+    import bae_search as nbs
     kern = nbs.make_kernel_search(nbs.PRIOR_PLAIN, kernel_input=True, currents=True)
 
     def std_logodds(Kc, N, m, seed=1):

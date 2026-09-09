@@ -44,9 +44,9 @@ from nsd_access import NSDAccess
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
@@ -235,8 +235,8 @@ trn = []
 tst = []
 for k in kays:
     
-    # mod = bae_models.BiPCA(k, sparse_reg=1e-4)
-    mod = bae_models.SemiBMF(k, nonneg=True, tree_reg=1e-2, weight_pr_reg=0.1)
+    # mod = old_bae_models.BiPCA(k, sparse_reg=1e-4)
+    mod = old_bae_models.SemiBMF(k, nonneg=True, tree_reg=1e-2, weight_pr_reg=0.1)
     
     wa,ba = bae_util.impcv(mod, X, decay_rate=0.95, initial_temp=10, verbose=True)
     

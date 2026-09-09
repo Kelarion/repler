@@ -37,7 +37,7 @@ from numba import njit
 # my code
 import util
 import df_util
-import bae
+import old_bae
 import plotting as tpl
 import anime
 
@@ -56,7 +56,7 @@ these_periods = [1,50,70,100]
 samples = 100
 epochs = 1500
 
-baer = bae.BAE(X, 4*Strue.shape[1], pvar=0.95, penalty=1e-2, steps=2)
+baer = old_bae.BAE(X, 4*Strue.shape[1], pvar=0.95, penalty=1e-2, steps=2)
 baer.init_optimizer(decay_rate=0.98, period=10, initial=5)
 
 en = []

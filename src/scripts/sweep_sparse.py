@@ -1,6 +1,6 @@
 """
 Sweep: BMF recovery vs N, across generative temperature, structure, and the
-regularizers tree_reg / pr_reg.  Models: new_bae_models SemiBMF & SpikeNMF
+regularizers tree_reg / pr_reg.  Models: bae_models SemiBMF & SpikeNMF
 (numpy) plus an NMF baseline.
 
 Fixed: annealing min_temp = 1 (posterior-sampling regime); the swept temperature
@@ -28,7 +28,7 @@ import numpy as np
 from sklearn.decomposition import NMF
 
 import experiments as exp
-import new_bae_models as nbm
+import bae_models as nbm
 import df_util as d
 import util
 

@@ -85,11 +85,11 @@ from pynwb import NWBHDF5IO
 import util
 import df_util
 import bae_util
+import old_bae_models
 import bae_models
-import new_bae_models
 import plotting as tpl
 
-import new_bae_models
+import bae_models
 
 warnings.filterwarnings('ignore')
 
@@ -621,7 +621,7 @@ X_ = X_[:,X_.sum(0) > 0]
 # X_ = util.embed(-util.center(representation['rdm_mean']))
 # X_ = -util.center(representation['rdm_mean']) * 5
 
-# mod = new_bae_models.JBMF(5,
+# mod = bae_models.JBMF(5,
 #                          nonneg=True,
 #                          # nonneg=False,
 #                          # fit_intercept=False,
@@ -638,7 +638,7 @@ X_ = X_[:,X_.sum(0) > 0]
 #                          # slab_prior=0.1,
 #                          )
 
-mod = new_bae_models.BiPCA(4,
+mod = bae_models.BiPCA(4,
                            # fit_intercept=False,
                            tree_reg=0,
                            sparse_reg=1,
@@ -653,7 +653,7 @@ mod = new_bae_models.BiPCA(4,
                            n_chains=8,
                            )
 
-# mod = new_bae_models.KernelBMF(5,
+# mod = bae_models.KernelBMF(5,
 #                                sparse_reg=1,
 #                                tree_reg=0,
 #                                # uniform_scale=False,
@@ -662,7 +662,7 @@ mod = new_bae_models.BiPCA(4,
 #                                kernel_input=True,
 #                                J_lr=1e-12,
 #                                )
-# mod = bae_models.KernelBMF2(5,
+# mod = old_bae_models.KernelBMF2(5,
 #                                sparse_reg=0,
 #                                tree_reg=0,
 #                                # uniform_scale=False,
@@ -775,8 +775,8 @@ sigs = []
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         
-        # mod = new_bae_models.JBMF(k,**args)
-        mod = new_bae_models.BiPCA(k, **args)
+        # mod = bae_models.JBMF(k,**args)
+        mod = bae_models.BiPCA(k, **args)
         
         # wa,ba = bae_util.loocv(mod, X_/X_.std(), n_sample=10, **opt_args)
         wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, seed=0, n_sample=1, folds=10, max_folds=1, **opt_args)

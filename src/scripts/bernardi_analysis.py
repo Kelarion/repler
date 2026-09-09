@@ -38,13 +38,13 @@ from numba import njit
 # my code
 import util
 import df_util
-import bae
+import old_bae
 import bae_util
-import bae_models
+import old_bae_models
 import plotting as tpl
 import anime
 
-import new_bae_models
+import bae_models
 
 #%%
 
@@ -88,9 +88,9 @@ cond = np.repeat(np.arange(8), ntrl)
 X_ = Z_pfc
 # X_ = Z_acc
 
-# mod = bae_models.BiPCA(11, tree_reg=1e-2, sparse_reg=1e-2)
-# mod = bae_models.KernelBMF(6, tree_reg=1e-2)
-# mod = bae_models.SemiBMF(3, weight_pr_reg=1, tree_reg=1e-1, sparse_reg=1e-2,
+# mod = old_bae_models.BiPCA(11, tree_reg=1e-2, sparse_reg=1e-2)
+# mod = old_bae_models.KernelBMF(6, tree_reg=1e-2)
+# mod = old_bae_models.SemiBMF(3, weight_pr_reg=1, tree_reg=1e-1, sparse_reg=1e-2,
 #                          fit_intercept=True, nonneg=True)
 # neal = bae_util.Neal(0.9, period=50, initial=10)
 # neal = bae_util.Neal(1, 1, 1e-4)
@@ -98,7 +98,7 @@ X_ = Z_pfc
 # en = neal.fit(mod, util.group_mean(this[0], cond, axis=0), pvar=0.9)
 
 
-mod = new_bae_models.JBMF(3,
+mod = bae_models.JBMF(3,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,

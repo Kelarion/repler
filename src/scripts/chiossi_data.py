@@ -46,13 +46,13 @@ from pathlib import Path
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
-import new_bae_models 
+import bae_models 
 
 from func_behaviour import load_behaviour, get_trials_percat
 import func_basics as basics
@@ -448,14 +448,14 @@ X_ = pp['data'][:, pp['data'].sum(0) > 0]
 # X_ = Xmd - Xmd.mean(0)
 # X_ = (Xmd / Xmd.std(0)) - (Xmd / Xmd.std(0)).mean(0)
 
-# mod = bae_models.SemiBMF(7,
+# mod = old_bae_models.SemiBMF(7,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1, 
 #                          tree_reg=1,
 #                          weight_l2_reg=1,
 #                          )
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1e-2,
 #                          weight_pr_reg=1,
@@ -463,7 +463,7 @@ X_ = pp['data'][:, pp['data'].sum(0) > 0]
 #                          weight_l2_reg=1,
 #                          )
 
-mod = new_bae_models.JBMF(5,
+mod = bae_models.JBMF(5,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,
@@ -480,7 +480,7 @@ mod = new_bae_models.JBMF(5,
                          # slab_prior=0.1,
                          )
 
-# mod = bae_models.KernelBMF2(6,
+# mod = old_bae_models.KernelBMF2(6,
 #                            sparse_reg=1e-1,
 #                            tree_reg=1,
 #                            uniform_scale=False,

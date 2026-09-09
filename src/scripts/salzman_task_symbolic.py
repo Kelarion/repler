@@ -52,7 +52,7 @@ import dichotomies as dics
 
 import distance_factorization as df
 import df_util
-import bae
+import old_bae
 
 #%% Make data
 
@@ -173,7 +173,7 @@ X = inps.labels.T
 
 #%% Factorize
 
-baer = bae.BAE(Z, 40, pvar=0.95)
+baer = old_bae.BAE(Z, 40, pvar=0.95)
 baer.init_optimizer(decay_rate=0.95, period=2, initial=10)
 
 en = []

@@ -43,8 +43,8 @@ import grammars as gram
 # import distance_factorization as df
 import df_util
 import sparse_autoencoder as spae
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #############################################################################
@@ -175,7 +175,7 @@ class BAE(BMFModel):
     def run_model(self, X, h):
 
         if self.search:
-            mod = bae_models.BinaryAutoencoder(
+            mod = old_bae_models.BinaryAutoencoder(
                         dim_inp=X[it].shape[1], 
                         dim_hid=h,
                         tree_reg=self.tree_reg, 
@@ -184,7 +184,7 @@ class BAE(BMFModel):
                         beta=self.beta
                         )
         else:
-            mod = bae_models.BernVAE(
+            mod = old_bae_models.BernVAE(
                         dim_inp=X[it].shape[1], 
                         dim_hid=h,
                         weight_reg=self.pr_reg,
@@ -224,7 +224,7 @@ class KBMF(BMFModel):
 
     def run_model(self, X, h):
         
-        mod = bae_models.KernelBMF(h, 
+        mod = old_bae_models.KernelBMF(h, 
                 sparse_reg=self.sparse_reg,
                 tree_reg=self.tree_reg)     
 
@@ -308,11 +308,11 @@ class SBMF(BMFModel):
     def run_model(self, X, h):
 
         if self.ortho:
-            mod = bae_models.BiPCA(h, 
+            mod = old_bae_models.BiPCA(h, 
                     sparse_reg=self.sparse_reg, 
                     tree_reg=self.tree_reg)
         else:
-            mod = bae_models.SemiBMF(h, 
+            mod = old_bae_models.SemiBMF(h, 
                     tree_reg=self.tree_reg,
                     weight_pr_reg=self.pr_reg,
                     weight_l2_reg=self.l2_reg,
@@ -348,7 +348,7 @@ class IBP(BMFModel):
 
     def run_model(self, X, h):
 
-        mod = bae_models.Buffet(h, 
+        mod = old_bae_models.Buffet(h, 
                 ibp_alpha=self.alpha,
                 sigma_x=self.sigma_x,
                 sigma_w=self.sigma_w,

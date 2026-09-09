@@ -162,16 +162,16 @@ def prior_unstructured(S, i, j, StS, N, Jc, hc, alpha, beta, prior_temp):
 @njit(inline='always')
 def prior_boltzmann(S, i, j, StS, N, Jc, hc, alpha, beta, prior_temp):
     """BoltzmannPrior: sparsity + tree + the Ising conditional, additive and linear
-    in the binary spikes S_ik.  Jc is the symmetric {0,1}-coupling (zero diagonal)
-    and hc the {0,1}-field, i.e. (2J, 2h) for a prior log p(S) ~ S'JS + 2h'S, so
-    this accumulates exactly its conditional log-odds 2*(J S + h)_j.  Both are
-    sigma2-independent: J is learned from the spike statistics alone, so the E-step
-    applies it at face value.
+    in the binary spikes S_ik.  Jc is the symmetric {0,1}-coupling (zero diagonal),
+    hc the {0,1}-field; both are sigma2-independent (the J is learned from the spike
+    statistics alone, so the E-step applies it at face value -- unlike the old
+    folding, which divided it by sigma2 as a side effect).
 
     `prior_temp` is the prior temperature: the coupling contribution is divided by
-    it, so high prior_temp = weak structure.  This is the ONLY place it acts, so it
+    it, so high prior_temp = weak structure.  This is the ONLY place it acts --
+    BoltzmannPriorNP learns its J from the spikes at face value, so prior_temp
     tempers how strongly the structure biases the sampling of S without touching
-    what the structure learns, and the fit loop can anneal it freely (see
+    what the structure learns; the fit loop can therefore anneal it freely (see
     new_bae_priors.TempSchedule).  The sparsity/tree terms are NOT scaled (they are
     separate regularizers, not part of the temperature-controlled Boltzmann prior)."""
     lp = -alpha - beta * _tree_inhib(S, i, j, StS, N, beta)

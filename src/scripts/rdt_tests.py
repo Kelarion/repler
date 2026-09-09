@@ -41,16 +41,16 @@ import cvxpy as cvx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 import plotting as tpl
 import experiments as exp
-import new_bae_priors as nbp
-import new_bae_models
-import new_bae_search as nbs
+import bae_priors as nbp
+import bae_models
+import bae_search as nbs
 
-import new_bae_experiments as nbx
+import bae_experiments as nbx
 
 import numpy as np
 from scipy.special import logsumexp, xlogy
@@ -297,7 +297,7 @@ for sx in [0.5, 0.3, 0.2, 0.1, 0.05]:
 X_ = data['X'][0]
 
 
-mod = new_bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
+mod = bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
                            # sparse_reg=1e-1,
                            sparse_reg=1,
                            tree_reg=1e-1,
@@ -321,7 +321,7 @@ en = mod.fit(X_ / X_.std(),
              # prior_min_temp=1e-1,
              # max_iter=1000,
              prior_schedule=nbp.ConstantTemp(5e-2),
-             # prior_schedule=new_bae_priors.GeomAnneal(10, 0.88, period=50, min_temp=1e-1),
+             # prior_schedule=bae_priors.GeomAnneal(10, 0.88, period=50, min_temp=1e-1),
              # prior_schedule=nbp.AdaptiveTemp(1e-1, kappa=0.15, gamma=0.1),
              probes=['latent_prior.beta', 'latent_prior.temp', 'sigma_x'],
              )
@@ -345,7 +345,7 @@ for kap in [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3]:
     ba = []
     wa = []
     for _ in range(5):
-        mod = new_bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
+        mod = bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
                                    # sparse_reg=1e-1,
                                    sparse_reg=1,
                                    # tree_reg=10,

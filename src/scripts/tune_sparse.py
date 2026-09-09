@@ -1,7 +1,7 @@
 """
 Hyperparameter tuning for BMF models on SparseStructured data.
 
-Uses the faster numpy models in new_bae_models.  For each (data condition, model)
+Uses the faster numpy models in bae_models.  For each (data condition, model)
 it sweeps the annealing regime and the regularizers and reports the configs that
 recover best.  Knobs swept:
 
@@ -27,7 +27,7 @@ from functools import partial
 import numpy as np
 
 import experiments as exp
-import new_bae_models as nbm
+import bae_models as nbm
 import df_util as d
 import util
 

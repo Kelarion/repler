@@ -21,7 +21,7 @@ from matplotlib import cm
 sys.path.append(CODE_DIR)
 import util
 import super_experiments as sxp
-import new_bae_experiments as nbx
+import bae_experiments as nbx
 import experiments as exp
 import server_utils as su
 import plotting as tpl

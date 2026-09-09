@@ -1,4 +1,4 @@
-"""Correctness check: new_bae_models.RRBMF vs bae_models.RRBMF.
+"""Correctness check: bae_models.RRBMF vs old_bae_models.RRBMF.
 
 Same idea as test_spikenmf_port.py.  The reduced-rank operator works on a 3-D
 data tensor X (n, t, d); the E-step is the dense sbmf (Numba RNG -> numba_seed),
@@ -6,7 +6,7 @@ the M-step is autograd SGD on (U, V, b) (deterministic).  We sync U/V/b, the
 spike S (and Z == S, since there is no slab), and StS, run identical anneals and
 assert latents / weights / reconstructions / energies match bit-for-bit.
 
-NOTE: assumes bae_models.RRBMF.EStep defaults to inplace=True (StS tracked live),
+NOTE: assumes old_bae_models.RRBMF.EStep defaults to inplace=True (StS tracked live),
 like every other model.  The refactor standardizes on inplace=True; the older
 inplace=False froze StS for the whole fit, in which case only the tree_reg==0
 cases would match.
@@ -16,8 +16,8 @@ import numpy as np
 import torch
 from numba import njit
 
+import old_bae_models
 import bae_models
-import new_bae_models
 
 
 @njit
@@ -49,10 +49,10 @@ def sync(orig, port):
 def run_case(name, X, dim_hid=4, rank=2, max_iter=150, seed=0, lr=1e-2,
              nonneg=False, sparse_reg=0.0, tree_reg=1e-2,
              pr_reg=1e-2, l1_reg=0.0, l2_reg=1e-2):
-    orig = bae_models.RRBMF(dim_hid, rank, nonneg=nonneg,
+    orig = old_bae_models.RRBMF(dim_hid, rank, nonneg=nonneg,
                             sparse_reg=sparse_reg, tree_reg=tree_reg,
                             pr_reg=pr_reg, l1_reg=l1_reg, l2_reg=l2_reg)
-    port = new_bae_models.RRBMF(dim_hid, rank=rank, nonneg=nonneg,
+    port = bae_models.RRBMF(dim_hid, rank=rank, nonneg=nonneg,
                                 sparse_reg=sparse_reg, tree_reg=tree_reg,
                                 weight_pr_reg=pr_reg, weight_l1_reg=l1_reg,
                                 weight_l2_reg=l2_reg)

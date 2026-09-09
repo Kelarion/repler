@@ -20,7 +20,7 @@ sys.path.insert(0, 'C:/Users/mmall/OneDrive/Documents/github/repler/src/')
 import numpy as np
 
 import experiments as exp
-import bae_models
+import old_bae_models
 import df_util as d
 import util
 
@@ -48,9 +48,9 @@ SCHED = dict(initial_temp=10.0, decay_rate=0.9, period=8, min_temp=1.0,
              max_iter=None, scl_lr=1e-2, hot_start=True, verbose=False)
 
 MODELS = {
-    'SemiBMF':  lambda K: bae_models.SemiBMF(K, nonneg=True, tree_reg=0.0,
+    'SemiBMF':  lambda K: old_bae_models.SemiBMF(K, nonneg=True, tree_reg=0.0,
                     sparse_reg=0.0, weight_pr_reg=0.1, weight_l2_reg=1e-2),
-    'SpikeNMF': lambda K: bae_models.SpikeNMF(K, nonneg=True, tree_reg=0.0,
+    'SpikeNMF': lambda K: old_bae_models.SpikeNMF(K, nonneg=True, tree_reg=0.0,
                     sparse_reg=0.0, weight_pr_reg=0.1, weight_l2_reg=1e-2),
 }
 

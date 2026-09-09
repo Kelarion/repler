@@ -42,13 +42,13 @@ import networkx as nx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
-import new_bae_models
+import bae_models
 
 #%%
 
@@ -209,7 +209,7 @@ X_ = pp['data'][:,pp['neur_labels']=='Hpc']
 # X_ = X - X.mean(0)
 # X_ = (X / X.std(0)) - (X / X.std(0)).mean(0)
 
-# mod = bae_models.SemiBMF(5,
+# mod = old_bae_models.SemiBMF(5,
 #                          nonneg=True, 
 #                          sparse_reg=5e-1,
 #                          weight_pr_reg=1, 
@@ -217,7 +217,7 @@ X_ = pp['data'][:,pp['neur_labels']=='Hpc']
 #                          weight_l2_reg=1,
 #                          )
 
-mod = new_bae_models.JBMF(6,
+mod = bae_models.JBMF(6,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,
@@ -235,7 +235,7 @@ mod = new_bae_models.JBMF(6,
                          # slab_prior=0.1,
                          )
 
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1e-1, 
 #                          weight_pr_reg=1, 
@@ -243,7 +243,7 @@ mod = new_bae_models.JBMF(6,
 #                          weight_l2_reg=1,
 #                          )
 
-# mod = bae_models.KernelBMF2(4,
+# mod = old_bae_models.KernelBMF2(4,
 #                            sparse_reg=0.5,
 #                            tree_reg=1,
 #                            uniform_scale=False,
@@ -321,9 +321,9 @@ tst = np.zeros(len(kays))
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         
-        mod = new_bae_models.JBMF(k, **args)
-        # mod = bae_models.SemiBMF(k,**args)
-        # mod = bae_models.SpikeNMF(k,**args)
+        mod = bae_models.JBMF(k, **args)
+        # mod = old_bae_models.SemiBMF(k,**args)
+        # mod = old_bae_models.SpikeNMF(k,**args)
         
         # wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, n_sample=10, folds=10, **opt_args)
         wa,ba = bae_util.gabriel_bicv(mod, X_/X_.std(), n_samp=10, **opt_args)

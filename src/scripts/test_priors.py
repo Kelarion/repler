@@ -39,20 +39,20 @@ import cvxpy as cvx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 import plotting as tpl
 import experiments as exp
-import new_bae_priors as nbp   # parallel classes merged into new_bae_priors (n_chains)
-import new_bae_models
+import bae_priors as nbp   # parallel classes merged into bae_priors (n_chains)
+import bae_models
 
-import new_bae_experiments as nbx
+import bae_experiments as nbx
 
 
 #%%
 
-mod = new_bae_models.BiPCA(43,
+mod = bae_models.BiPCA(43,
                            tree_reg=0,
                            sparse_reg=1,
                            J_lr=1e-3,
@@ -212,7 +212,7 @@ ga = []
 R = []
 D = []
 
-new_bae_search._build_dense_search(score, aux_update, prior, diag_gram=False, debug=False,parallel=False):
+bae_search._build_dense_search(score, aux_update, prior, diag_gram=False, debug=False,parallel=False):
 
 #%%
 
@@ -250,7 +250,7 @@ for t in [2, 1.75, 1.5, 1.25, 1]:
 X_ = data['X'][0]
 conds = np.unique(data['Strue'][0], axis=0, return_inverse=True)[1]
 
-# mod = new_bae_models.JBMF(dim_hid=9,
+# mod = bae_models.JBMF(dim_hid=9,
 #                         nonneg=False, 
 #                         sparse_reg=1,
 #                         tree_reg=10,
@@ -260,7 +260,7 @@ conds = np.unique(data['Strue'][0], axis=0, return_inverse=True)[1]
 #                         # J_l1_reg=0.0,
 #                         )
 
-mod = new_bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
+mod = bae_models.BiPCA(dim_hid=data['Strue'][0].shape[-1],
                            # sparse_reg=1e-1,
                            sparse_reg=1e-1,
                            tree_reg=10,
@@ -434,14 +434,14 @@ sigs = []
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         
-        # mod = new_bae_models.JBMF(k,**args)
-        mod = new_bae_models.BiPCA(k, **args)
+        # mod = bae_models.JBMF(k,**args)
+        mod = bae_models.BiPCA(k, **args)
         
         # wa,ba = bae_util.loocv(mod, X_/X_.std(), n_sample=10, **opt_args)
         wa,ba = bae_util.impcv(mod, X_/X_.std(), verbose=False, seed=0, n_sample=1, folds=10, max_folds=1, **opt_args)
         # wa,ba = bae_util.gabriel_bicv(mod, X_/X_.std(), n_samp=10, **opt_args)
         
-        mod = new_bae_models.BiPCA(k, **args)
+        mod = bae_models.BiPCA(k, **args)
         en = mod.fit(X_ / X_.std(), verbose=False, **opt_args)
         
         trn[i] += np.mean(wa) / n_run

@@ -1,6 +1,6 @@
-"""Correctness check: new_bae_models.SemiBMF vs bae_models.SemiBMF.
+"""Correctness check: bae_models.SemiBMF vs old_bae_models.SemiBMF.
 
-Strategy: the discrete E-step (bae_search.sbmf) draws from Numba's *own* RNG,
+Strategy: the discrete E-step (old_bae_search.sbmf) draws from Numba's *own* RNG,
 which Python's np.random.seed does not touch -- so we seed it from inside a
 jitted function.  We sync both models to a byte-identical starting state, run
 identical anneals, and assert the latents / weights / energies match exactly.
@@ -9,8 +9,8 @@ identical anneals, and assert the latents / weights / energies match exactly.
 import numpy as np
 from numba import njit
 
+import old_bae_models
 import bae_models
-import new_bae_models
 
 
 @njit
@@ -36,8 +36,8 @@ def sync(orig, port):
 
 
 def run_case(name, X, max_iter=300, seed=0, **kw):
-    orig = bae_models.SemiBMF(5, **kw)
-    port = new_bae_models.SemiBMF(5, **kw)
+    orig = old_bae_models.SemiBMF(5, **kw)
+    port = bae_models.SemiBMF(5, **kw)
 
     orig.initialize(X)
     port.initialize(X)

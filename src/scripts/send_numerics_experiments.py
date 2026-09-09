@@ -19,7 +19,7 @@ import super_experiments as sxp
 import experiments as exp
 import server_utils as su
 
-import new_bae_experiments as nbx
+import bae_experiments as nbx
 
 ####################################
 

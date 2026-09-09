@@ -39,13 +39,13 @@ from numba import njit
 # my code
 import util
 import df_util
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 import plotting as tpl
 import anime
 
-import new_bae_models
+import bae_models
 
 #%%
 
@@ -72,14 +72,14 @@ for this_area in range(29):
     trn = []
     Es = []
     for k in tqdm(range(2,16)):
-        mod = bae.BAE(Z, k, penalty=0.1)
+        mod = old_bae.BAE(Z, k, penalty=0.1)
         mod.init_optimizer(decay_rate=0.98, period=1)
         for it in range(500):
             mod.grad_step()
         trn.append(mod.energy())  
         Es.append(mod.S.todense())  
     
-        mod = bae.BAE(Z, k, penalty=0.1)
+        mod = old_bae.BAE(Z, k, penalty=0.1)
         cv.append(bae_util.impcv(mod, folds=10, iters=500, draws=10, 
                                  decay_rate=0.98, period=1))
 
@@ -108,11 +108,11 @@ for r in ranks:
         trn = idx[:N//2]
         tst = idx[N//2:]
         
-        trnmod = bae_models.GaussBAE(r, sparse_reg=1e-2)
-        tstmod = bae_models.GaussBAE(r, sparse_reg=1e-2)
-        # trnmod = bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
-        # tstmod = bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
-        # mod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
+        trnmod = old_bae_models.GaussBAE(r, sparse_reg=1e-2)
+        tstmod = old_bae_models.GaussBAE(r, sparse_reg=1e-2)
+        # trnmod = old_bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
+        # tstmod = old_bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
+        # mod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
         
         en = neal.fit(trnmod, X[trn], verbose=False)
         en = neal.fit(tstmod, X[tst], verbose=False)
@@ -138,7 +138,7 @@ S = []
 # cv = []
 for r in ranks:
     
-    mod = bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
+    mod = old_bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
     en = neal.fit(mod, thisX)
     S.append(mod.S*1)
     # ens, esses = neal.cv_fit(mod, thisX, verbose=True)
@@ -172,8 +172,8 @@ Xpred = []
 scl = []
 for _ in range(10):
     
-    # mod = bae_models.KernelBAE(r, penalty=1)
-    mod = bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
+    # mod = old_bae_models.KernelBAE(r, penalty=1)
+    mod = old_bae_models.GaussBAE(r, center=False, tree_reg=0.1, sparse_reg=1e-2)
     en = neal.fit(mod, thisX)
     S.append(mod.S*1)
     W.append(mod.W*1)
@@ -198,7 +198,7 @@ def meanprediction(X, r, draws, **kwargs):
     Xpred = []
     for _ in range(draws):
         
-        mod = bae_models.GaussBAE(r, **kwargs)
+        mod = old_bae_models.GaussBAE(r, **kwargs)
         en = neal.fit(mod, X, verbose=False)
         Xpred.append(mod())
     
@@ -229,7 +229,7 @@ Xtst = np.hstack(Xtst)
 
 #%%
 
-mod = bae_models.GaussBAE(12, center=False, tree_reg=0.1)
+mod = old_bae_models.GaussBAE(12, center=False, tree_reg=0.1)
 neal = bae_util.Neal(decay_rate=0.98)
 en = neal.fit(mod, Xtrn)
 
@@ -284,7 +284,7 @@ zZ = (Z-Z.mean(0,keepdims=True))/(Z.std(0,keepdims=True)+1e-12)
 # eses = []
 # neal = bae_util.Neal(decay_rate=0.98, initial=1, period=2)
 # for k in tqdm(range(2, 29)):
-#     mod = bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
+#     mod = old_bae_models.GeBAE(k, tree_reg=0.1, weight_reg=1e-1)
 #     ba = neal.cv_fit(mod, zZ, draws=10, folds=10)
 #     cv.append(np.mean(ba[0]))
 #     eses.append(ba[1])
@@ -473,7 +473,7 @@ X_ = pp['data'][...,pp['neur_labels']=='ILA'].mean(1)
 # X_ = pp['data'][...,pp['neur_labels']=='RSPd']
 
 
-mod = new_bae_models.JBMF(4,
+mod = bae_models.JBMF(4,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,
@@ -491,7 +491,7 @@ mod = new_bae_models.JBMF(4,
                          # slab_prior=0.1,
                          )
 
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1e-1, 
 #                          weight_pr_reg=1, 
@@ -499,7 +499,7 @@ mod = new_bae_models.JBMF(4,
 #                          weight_l2_reg=1,
 #                          )
 
-# mod = bae_models.KernelBMF2(4,
+# mod = old_bae_models.KernelBMF2(4,
 #                            sparse_reg=0.5,
 #                            tree_reg=1,
 #                            uniform_scale=False,
@@ -590,8 +590,8 @@ tst = np.zeros(len(kays))
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
          
-        mod = bae_models.SemiBMF(k,**args)
-        # mod = bae_models.SpikeNMF(k,**args)
+        mod = old_bae_models.SemiBMF(k,**args)
+        # mod = old_bae_models.SpikeNMF(k,**args)
         
         # wa,ba = bae_util.impcv(mod, X, verbose=True, **opt_args)
         # wa,ba = bae_util.impcv(mod, Xpt[singles], verbose=False, **opt_args)
@@ -606,7 +606,7 @@ plt.plot(kays, tst, '--')
 
 #%%
 
-mod = bae_models.BiPCA(12, center=False, tree_reg=0.1)
+mod = old_bae_models.BiPCA(12, center=False, tree_reg=0.1)
 neal = bae_util.Neal(decay_rate=0.98)
 en = neal.fit(mod, Xtrn)
 

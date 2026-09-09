@@ -10,7 +10,7 @@ hold-out gives a genuine complexity penalty, unlike element-wise imputation CV).
 
 import numpy as np
 
-import bae_models
+import old_bae_models
 import bae_util
 import df_util
 import experiments as exp
@@ -34,7 +34,7 @@ def make_data(K_true, N=200, snr=8.0, seed=0):
 
 
 def model_K(K):
-    return bae_models.SemiBMF(K, nonneg=True, tree_reg=0.0, sparse_reg=0.0,
+    return old_bae_models.SemiBMF(K, nonneg=True, tree_reg=0.0, sparse_reg=0.0,
                               weight_pr_reg=1e-2, weight_l2_reg=1e-2, weight_l1_reg=0.0)
 
 

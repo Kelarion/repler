@@ -39,9 +39,9 @@ import cvxpy as cvx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import plotting as tpl
 
 #%%
@@ -126,14 +126,14 @@ inds, ptr = mod.S.to_csr()
 Sest = sprs.csr_array((np.ones(len(inds)), inds, ptr), 
                       shape=(mod.n, mod.dim_hid)).todense()
 
-mod2 = bae_models.KernelBMF(S.shape[1], sparse_reg=0, tree_reg=0)
-# mod2 = bae_models.SemiBMF(S.shape[1], nonneg=True, weight_reg=1e-2, tree_reg=1e-2)
+mod2 = old_bae_models.KernelBMF(S.shape[1], sparse_reg=0, tree_reg=0)
+# mod2 = old_bae_models.SemiBMF(S.shape[1], nonneg=True, weight_reg=1e-2, tree_reg=1e-2)
 mod2.initialize(X, S0=Sest)
 # mod2.temp = 1e-7
 
 # mod = SparseKernelBMF(S.shape[1], tree_reg=1e-2)
 # mod = KernelBMF(S.shape[1], tree_reg=1e-2)
-# mod2 = bae_models.KernelBMF(S.shape[1], tree_reg=1e-2)
+# mod2 = old_bae_models.KernelBMF(S.shape[1], tree_reg=1e-2)
 #%%
 
 import search
@@ -173,11 +173,11 @@ t0 = time()
 search.kbmf(S, X, J, W, 1, 1e-7, 0, beta)
 print(time()-t0)
 t0 = time()
-C2 = bae_search.kerbmf(X, 1*S0, 
+C2 = old_bae_search.kerbmf(X, 1*S0, 
                        StX=S0.T@X, StS=S0.T@S0, scl=1, N=n, 
                        beta=beta, alpha=0, temp=1e-7)
 print(time() - t0)
-# C3 = bae_search.oldkerbmf(X, Ssp.todense(), 
+# C3 = old_bae_search.oldkerbmf(X, Ssp.todense(), 
 #                        StX=S.T@X, StS=S.T@S, scl=mod2.scl, N=mod2.n, 
 #                        beta=mod2.tree_reg, temp=mod2.temp)
 # C2 = mod2.EStep()
@@ -291,7 +291,7 @@ Sbin = BinaryMatrix(Ssp.indices, Ssp.indptr, S.shape[1])
 
 #%%
 t0=time()
-ba = bae_search.kerbae(X, 1*S, StX, StS, 1, 1e-4)
+ba = old_bae_search.kerbae(X, 1*S, StX, StS, 1, 1e-4)
 print(time()-t0)
 
 t0=time()
@@ -323,8 +323,8 @@ for n in N:
             S = df_util.randtree_feats(n, 2,4)
             X = df_util.noisyembed(S, S.shape[1], 30, scl=1e-4)
             
-            mod = bae_models.KernelBMF(2*S.shape[1], tree_reg=beta)
-            # mod = bae_models.BiPCA(S.shape[1], tree_reg=beta, sparse_reg=0)
+            mod = old_bae_models.KernelBMF(2*S.shape[1], tree_reg=beta)
+            # mod = old_bae_models.BiPCA(S.shape[1], tree_reg=beta, sparse_reg=0)
             en = neal.fit(mod, X, verbose=False, T_min=1e-3)
             
             wa.append(df_util.permham(S, mod.S, norm=True).mean())
@@ -358,12 +358,12 @@ for _ in tqdm(range(draws)):
     W = sts.ortho_group(S.shape[1]).rvs()[:,:S.shape[1]]    
     X = S@W.T
     
-    # mod = bae_models.BiPCA(S.shape[1], tree_reg=0)
-    mod = bae_models.KernelBMF(S.shape[1], tree_reg=0)
+    # mod = old_bae_models.BiPCA(S.shape[1], tree_reg=0)
+    mod = old_bae_models.KernelBMF(S.shape[1], tree_reg=0)
     
     # dl = pt_util.batch_data(torch.FloatTensor(X), batch_size=len(S))
         
-    # mod = bae_models.BernVAE(S.shape[1], X.shape[1], beta=0, weight_reg=1e-2)
+    # mod = old_bae_models.BernVAE(S.shape[1], X.shape[1], beta=0, weight_reg=1e-2)
     # mod.initialize(dl)
     
     ls = []
@@ -452,7 +452,7 @@ for h in tqdm(dim_emb):
             else:
                 dl = pt_util.batch_data(torch.FloatTensor(X), batch_size=bsz)
                 
-            mod = bae_models.BinaryAutoencoder(S.shape[1], X.shape[1], weight_reg=0.1)
+            mod = old_bae_models.BinaryAutoencoder(S.shape[1], X.shape[1], weight_reg=0.1)
             en = neal.fit(mod, dl, T_min=1e-4, verbose=False)
             
             Sest = mod.hidden(dl.dataset.tensors[0]).detach().numpy()
@@ -601,12 +601,12 @@ for _ in tqdm(range(100)):
     Strue = df_util.randtree_feats(16, 2, 4) 
     X = df_util.noisyembed(Strue, 100, 30, scl=1e-3)
 
-    mod = bae_models.BiPCA(Strue.shape[1], center=False, tree_reg=1)
+    mod = old_bae_models.BiPCA(Strue.shape[1], center=False, tree_reg=1)
     en = neal.fit(mod, X, verbose=False)
     aff_fit.append(df_util.permham(Strue, mod.S))
     aff_nbs.append(util.nbs(Strue, mod.S))
     
-    mod = bae_models.BiPCA(Strue.shape[1], center=True, tree_reg=1)
+    mod = old_bae_models.BiPCA(Strue.shape[1], center=True, tree_reg=1)
     en = neal.fit(mod, X, verbose=False)
     cntr_fit.append(df_util.permham(Strue, mod.S))
     cntr_nbs.append(util.nbs(Strue, mod.S))
@@ -801,30 +801,30 @@ b = -Strue.mean(0)@W.T
 S = (Strue + np.random.choice([0,1], Strue.shape, p=[0.9,0.1]))%2
 N = len(S)
 
-# ba = bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-# ba = bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
+# ba = old_bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# ba = old_bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
 #                                      temp=1e-6, STS=S.T@S, N=len(S))
-# wa = bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
+# wa = old_bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
 #                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-ba = bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
+ba = old_bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
                                        beta=beta, temp=1e-6)
-# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
+# wa = old_bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
 #                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-wa = bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
+wa = old_bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
                        StS=1.0*(S.T@S), N=len(S), beta=beta, temp=1e-6)
 
 t0 = time()
-# wa = bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-# wa = bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
+# wa = old_bae_models.bmf(X-b, 1.0*S, W, 1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
+# wa = old_bae_search.sbmf(XW=(X-b)@W, S=1.0*S, WtW=W.T@W, 
 #                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-# ba = bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
+# ba = old_bae_models.update_concepts_asym((X-b)@W, 1.0*S, scl=1, beta=beta, 
 #                                      temp=1e-6, STS=S.T@S, N=len(S))
-# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
+# wa = old_bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1,
 #                      StS=1.0*(S.T@S), N=len(S), temp=1e-6, beta=beta)
-# wa = bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1, temp=1e-6, beta=beta)
-wa = bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
+# wa = old_bae_search.bpca(XW=(X-b)@W, S=1.0*S, scl=1, temp=1e-6, beta=beta)
+wa = old_bae_search.kerbmf(X=X-X.mean(0), S=1.0*S, scl=1.0, StX=1.0*(S.T@(X-X.mean(0))),
                        StS=1.0*(S.T@S), N=len(S), beta=beta, temp=1e-6)
-# ba = bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
+# ba = old_bae_models.update_concepts_kernel(X=X-X.mean(0), S=1.0*S, scl=1.0,
 #                                        beta=beta, temp=1e-6)
 # C = 2*(X-b)@W - 1
 # newS = 1*(np.random.rand(*S.shape) > spc.expit(C/1e-6))

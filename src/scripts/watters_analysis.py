@@ -48,9 +48,9 @@ from pathlib import Path
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
@@ -262,8 +262,8 @@ for _ in range(n_run):
     ts = []
     for k in tqdm(kays):
         
-        # mod = bae_models.BiPCA(k, sparse_reg=1e-4)
-        mod = bae_models.SemiBMF(k, **args)
+        # mod = old_bae_models.BiPCA(k, sparse_reg=1e-4)
+        mod = old_bae_models.SemiBMF(k, **args)
         
         # wa,ba = bae_util.impcv(mod, X, verbose=True, **opt_args)
         wa,ba = bae_util.impcv(mod, Xtrn_grp[:,is_pfc], verbose=False, **opt_args)
@@ -294,7 +294,7 @@ opt_args = {'initial_temp': 100,
             'period': 50,
             }
 
-mods = [bae_models.SemiBMF(k, **args) for i in range(n_chain)]
+mods = [old_bae_models.SemiBMF(k, **args) for i in range(n_chain)]
 ens = [m.fit(Xtrn_grp[:,is_pfc], **opt_args) for m in mods]
 
 allW = np.hstack([m.W for m in mods])

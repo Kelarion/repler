@@ -1,5 +1,5 @@
 """
-PROTOTYPE: server-interface Task + Model for running `new_bae_models` numerics
+PROTOTYPE: server-interface Task + Model for running `bae_models` numerics
 sweeps, in the style of scripts/send_numerics_experiments.py.
 
 Two pieces, both drop-in for the super_experiments / server_utils machinery:
@@ -17,12 +17,12 @@ Two pieces, both drop-in for the super_experiments / server_utils machinery:
                      'tree4(alpha=2)', 'tree4x2(rho=0.5,beta=1)'.
 
   NewBMF          -- the BMFModel that experiments.py never had for the
-                     new_bae_models API.  Same run_model/(loss, S, time) contract
+                     bae_models API.  Same run_model/(loss, S, time) contract
                      as experiments.KBMF / experiments.SBMF, so BMFModel.fit and
                      all its recovery metrics work unchanged.
 
 Run a sweep from scripts/send_sparse_numerics.py (kept separate so the pickled
-class references resolve as `new_bae_experiments.NewBMF`, not `__main__.NewBMF`).
+class references resolve as `bae_experiments.NewBMF`, not `__main__.NewBMF`).
 
 Improvement suggestions are collected at the bottom of this file.
 """
@@ -38,7 +38,7 @@ import util
 import df_util
 import bae_util
 import experiments as exp          # CatTask + BMFModel live here
-import new_bae_models as nbm
+import bae_models as nbm
 
 
 # ===========================================================================
@@ -164,10 +164,10 @@ class StructuredCats(exp.CatTask):
 
 
 # ===========================================================================
-#  Model:  NewBMF  (BMFModel wrapper around new_bae_models)
+#  Model:  NewBMF  (BMFModel wrapper around bae_models)
 # ===========================================================================
 
-# kinds exposed to sweeps -> new_bae_models classes.  Every one takes dim_hid as
+# kinds exposed to sweeps -> bae_models classes.  Every one takes dim_hid as
 # its first positional arg and yields latents via the `.S` property.
 KINDS = {
     'SemiBMF': nbm.SemiBMF,
@@ -198,7 +198,7 @@ def _prior_coupling(prior, best=None):
 
 @dataclass
 class NewBMF(exp.BMFModel):
-    """new_bae_models fit under the BMFModel contract (mirror of exp.KBMF/SBMF).
+    """bae_models fit under the BMFModel contract (mirror of exp.KBMF/SBMF).
 
     `kind` picks the concrete model (see KINDS).  Regularizers are the flat
     super-set; each is routed to the chosen model only if it declares it.
@@ -221,7 +221,7 @@ class NewBMF(exp.BMFModel):
     J_temp: float = 0.0          # 'mrf' only: sampler temperature over J (<=0 = ICM)
     J_sweeps: int = 1            # 'mrf' only: Gibbs sweeps over J per M-step
 
-    # annealing schedule (matches new_bae_models.BMF.fit)
+    # annealing schedule (matches bae_models.BMF.fit)
     T0: float = 10.0
     decay_rate: float = 0.9
     period: int = 8

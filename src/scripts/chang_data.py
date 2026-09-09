@@ -43,9 +43,9 @@ from pathlib import Path
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
@@ -463,7 +463,7 @@ X_ = X
 # X_ = X / X.std((0,1))
 # X_ = Xmd / Xmd.std(0)
 
-mod = bae_models.RRBMF(16,
+mod = old_bae_models.RRBMF(16,
                        2,
                        nonneg=True, 
                        sparse_reg=1e-2,
@@ -538,7 +538,7 @@ opt_args = {'initial_temp': 100,
             'lr': 0.02,
             }
 
-mods = [bae_models.SCPD(k, **args) for i in range(n_chain)]
+mods = [old_bae_models.SCPD(k, **args) for i in range(n_chain)]
 ens = [m.fit(torch.tensor(X), **opt_args) for m in mods]
 
 # allW = np.hstack([m.W for m in mods])
@@ -599,10 +599,10 @@ for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
         for j,r in enumerate(ars):
             
-            # mod = bae_models.BiPCA(k, sparse_reg=1e-4)
-            # mod = bae_models.ConvBMF(k,r,**args)
-            # mod = bae_models.ConvNMF(k,l,**args)
-            mod = bae_models.RRBMF(k,r,**args)
+            # mod = old_bae_models.BiPCA(k, sparse_reg=1e-4)
+            # mod = old_bae_models.ConvBMF(k,r,**args)
+            # mod = old_bae_models.ConvNMF(k,l,**args)
+            mod = old_bae_models.RRBMF(k,r,**args)
             
             # wa,ba = bae_util.impcv(mod, X, verbose=True, **opt_args)
             wa,ba = bae_util.impcv(mod, torch.tensor(X), verbose=False, **opt_args)

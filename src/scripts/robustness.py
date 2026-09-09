@@ -52,8 +52,8 @@ import plotting as dicplt
 
 import distance_factorization as df
 import df_util
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #%% Rank robustness for dense categories
@@ -77,9 +77,9 @@ for i,this_snr in enumerate(snr):
     dh = []
     for r in tqdm(range(1, 2*rtrue+1)):
         
-        # mod = bae_models.KernelBAE(r, penalty=1, fix_scale=False)
-        # mod = bae_models.GaussBAE(r, tree_reg=1, sparse_reg=0, center=False)
-        mod = bae_models.GaussBAE(r, tree_reg=0, sparse_reg=0.1, center=True)
+        # mod = old_bae_models.KernelBAE(r, penalty=1, fix_scale=False)
+        # mod = old_bae_models.GaussBAE(r, tree_reg=1, sparse_reg=0, center=False)
+        mod = old_bae_models.GaussBAE(r, tree_reg=0, sparse_reg=0.1, center=True)
         
         en = neal.fit(mod, X, verbose=False)
         
@@ -117,9 +117,9 @@ dist_to_mod = []
 dist_to_true = []
 for r in tqdm(range(1, 2*rtrue+1)):
     
-    mod = bae_models.KernelBAE(r, penalty=1, fix_scale=False)
-    # mod = bae_models.GaussBAE(r, tree_reg=1, sparse_reg=0, center=False)
-    # mod = bae_models.GaussBAE(r, tree_reg=0, sparse_reg=0.1, center=True)
+    mod = old_bae_models.KernelBAE(r, penalty=1, fix_scale=False)
+    # mod = old_bae_models.GaussBAE(r, tree_reg=1, sparse_reg=0, center=False)
+    # mod = old_bae_models.GaussBAE(r, tree_reg=0, sparse_reg=0.1, center=True)
     
     en = neal.fit(mod, X, verbose=False)
     
@@ -161,8 +161,8 @@ b = []
 scl = []
 for _ in tqdm(range(chains)):
     
-    mod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
-    # mod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
+    mod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
+    # mod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
 
     en = neal.fit(mod, X, verbose=False)
     
@@ -200,9 +200,9 @@ for this_snr in snr:
         trn = idx[:N//2]
         tst = idx[N//2:]
         
-        trnmod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
-        tstmod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
-        # mod = bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
+        trnmod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
+        tstmod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2)
+        # mod = old_bae_models.GaussBAE(Strue.shape[1], sparse_reg=1e-2, center=False)
         
         en = neal.fit(trnmod, X[trn], verbose=False)
         en = neal.fit(tstmod, X[tst], verbose=False)

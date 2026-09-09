@@ -43,13 +43,13 @@ import networkx as nx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
-import new_bae_models
+import bae_models
 
 #%%
 
@@ -290,14 +290,14 @@ X_ = Xmd / Xmd.std(0)
 # X_ = Xmd - Xmd.mean(0)
 # X_ = (Xmd / Xmd.std(0)) - (Xmd / Xmd.std(0)).mean(0)
 
-# mod = bae_models.SemiBMF(7,
+# mod = old_bae_models.SemiBMF(7,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1, 
 #                          tree_reg=1,
 #                          weight_l2_reg=1,
 #                          )
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1e-2,
 #                          weight_pr_reg=1,
@@ -305,7 +305,7 @@ X_ = Xmd / Xmd.std(0)
 #                          weight_l2_reg=1,
 #                          )
 
-mod = new_bae_models.JBMF(7,
+mod = bae_models.JBMF(7,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,
@@ -324,7 +324,7 @@ mod = new_bae_models.JBMF(7,
                          )
 
 
-# mod = bae_models.KernelBMF2(6,
+# mod = old_bae_models.KernelBMF2(6,
 #                            sparse_reg=1e-1,
 #                            tree_reg=1,
 #                            uniform_scale=False,
@@ -420,8 +420,8 @@ tst = np.zeros(len(kays))
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
          
-        mod = bae_models.SemiBMF(k,**args)
-        # mod = bae_models.SpikeNMF(k,**args)
+        mod = old_bae_models.SemiBMF(k,**args)
+        # mod = old_bae_models.SpikeNMF(k,**args)
         
         # wa,ba = bae_util.impcv(mod, X, verbose=True, **opt_args)
         # wa,ba = bae_util.impcv(mod, Xpt[singles], verbose=False, **opt_args)
@@ -456,8 +456,8 @@ opt_args = {'initial_temp': 100,
             'period': 50,
             }
 
-# mods = [bae_models.SpikeNMF(k, **args) for i in range(n_chain)]
-mods = [bae_models.SemiBMF(k, **args) for i in range(n_chain)]
+# mods = [old_bae_models.SpikeNMF(k, **args) for i in range(n_chain)]
+mods = [old_bae_models.SemiBMF(k, **args) for i in range(n_chain)]
 ens = [m.fit(X_, **opt_args) for m in mods]
 
 allW = np.hstack([m.W for m in mods])

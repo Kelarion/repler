@@ -1,4 +1,4 @@
-"""Imputation E-step check for new_bae_models.
+"""Imputation E-step check for bae_models.
 
 With a boolean `mask` (True = held-out / missing), the E-step refills the masked
 entries of the working array with a draw from the generative model given the
@@ -14,7 +14,7 @@ added, so the imputation is an EM-style completion rather than a posterior draw.
 import numpy as np
 from numba import njit
 
-import new_bae_models as nbm
+import bae_models as nbm
 
 
 @njit

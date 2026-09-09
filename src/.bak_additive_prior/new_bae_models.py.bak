@@ -1,0 +1,616 @@
+"""
+new_bae_models.py  --  ILLUSTRATION ONLY (design sketch, partially ported)
+==========================================================================
+
+A refactor of `bae_models.py` that pulls the structure shared by every BMF
+model into a few composable pieces, so that a change to the shared behaviour
+is made *once* instead of being copy-pasted into ~10 classes.
+
+The machinery is split across three modules:
+
+  new_bae_priors.py   the latent side (one slot: latent_prior)
+      LatentPrior      owns the latent state (S, StS, Z), its init, the
+                       sparsity/tree regularizers, the recurrence (`couple`) and
+                       the search `link`; `slab=True` makes it spike-and-slab
+      BoltzmannPrior   structured (Ising) prior -- the `J` from JBMF, now
+                       droppable onto any model (and slab=True works on it too)
+
+  new_bae_weights.py  the weight side
+      LinearOperator   dataclass base: shared structural fields (fit_intercept /
+                       nonneg / resample_dead), L's faces (forward/drive/gram),
+                       the search kernel, and `backward` (one M-step update).
+                       Each subclass adds its own learning-rate + weight-
+                       regularization fields and implements the reg inline:
+        AffineOperator   L(S) = S W^T + b             (numpy)
+        TorchMatrixOp    L(S) = W(S)                  (nn.Linear / autograd)
+        CPOperator       L(S) = einsum CP             (SCPD)
+        ReducedRankOp    L(S) = reduced-rank tensor   (RRBMF)
+        ConvOperator     L(S) = conv1d(S, K)          (ConvBMF)
+
+  new_bae_models.py   (this file) the models
+      BMF                annealing fit loop + Gibbs sampling
+      LinearGaussianBMF  X_hat = L(S) + b with Gaussian likelihood: holds an
+                         operator + a latent_prior, and implements the *one*
+                         E-step / M-step / init that serve every model below.
+
+Every linear-Gaussian model is then just its __post_init__ -- the assembly of an
+operator + a latent_prior.  init_params, EStep, MStep, __call__, loss,
+loglikelihood and init_latents are ALL inherited; nothing model-specific is left.
+To recombine: pick an operator (AffineOperator / TorchMatrixOp / CP / ReducedRank
+/ Conv) and a latent component (LatentPrior or BoltzmannPrior, each with
+`slab=True/False` -- spike-and-slab is just a flag, not a separate slab).  The operator owns
+its parameters, intercept, init, forward, search and `backward` (its one M-step
+update); the model just orchestrates.
+
+The E-step is identical once you have L's three faces:
+
+    forward(S)   reconstruction          L(S)            (-> __call__)
+    drive(X)     adjoint on residual     L*(X - b)       (-> XW)
+    gram()       operator metric         L*L             (-> WtW)
+
+(this is why RRBMF and SCPD literally share `bae_search.sbmf`).  Adding a
+structured prior, or any new shared regularizer, to *all* of them means editing
+one component, not ten classes.
+
+STATUS: SemiBMF and SpikeNMF are full ports, verified bit-for-bit against the
+originals (test_semibmf_port.py, test_spikenmf_port.py).  The other model
+bodies are still illustrative stubs (`...`) with the original source lines
+referenced for a mechanical port.
+"""
+
+import numpy as np
+from dataclasses import dataclass, field
+from typing import Optional
+
+# this module is pure orchestration -- no torch / scipy here; all the numerics
+# (params, init, forward/backward) live in the operators and priors it composes.
+import new_bae_search
+import new_bae_priors as nbp
+from new_bae_priors import LatentPrior, BoltzmannPrior
+from new_bae_weights import (
+    LinearOperator,
+    AffineOperator, TorchMatrixOp, CPOperator, ReducedRankOp, ConvOperator,
+)
+
+
+# ===========================================================================
+#  Base class: fit loop only (unchanged from bae_models.BMF)
+# ===========================================================================
+
+@dataclass
+class BMF:
+    """Annealing fit loop + Gibbs sampling.  Identical to bae_models.BMF."""
+
+    def __post_init__(self):
+        self.temp = 1
+        self.initialized = False
+
+    def initialize(self, X, **args):
+        self.init_params(X, **args)
+        self.init_latents(X, **args)
+        self.initialized = True
+
+    def fit(self, *data, initial_temp=10, decay_rate=0.88, period=10,
+            min_temp=1, max_iter=None, verbose=True, mask=None, **opt_args):
+
+        if max_iter is None:
+            max_iter = period * int(np.log(1e-4 / initial_temp) / np.log(decay_rate))
+
+        if verbose:
+            from tqdm import tqdm
+            pbar = tqdm(range(max_iter))
+
+        en = []
+        if not self.initialized:
+            self.initialize(*data, **opt_args)
+        for it in range(max_iter):
+            T = min_temp + initial_temp * (decay_rate ** (it // period))
+            self.temp = T
+            # with a mask, grad_step imputes the masked entries in place (the
+            # working array in `data` is refined across iterations).
+            _, ls = self.grad_step(*data, mask=mask)
+            en.append(ls)
+
+            if verbose:
+                pbar.update(1)
+
+        return en
+
+    def sample(self, X, temp=None, n_samp=1, burnin=10, **args):
+        if temp is not None:
+            self.temp = temp
+
+        samps = np.zeros((n_samp, len(X), self.dim_hid))
+
+        # Fresh chain state, shaped to the rows of X (NOT the prior's persistent
+        # S/Z, which are sized to the training set).  EStep updates S and Z in
+        # place every sweep (inplace=False only freezes the prior's StS), so this
+        # walks a single Gibbs chain from a random init; Z starts as a binary copy
+        # and, for a slab, the search fills in continuous magnitudes as it sweeps.
+        S = 1.0 * np.random.choice([0, 1], size=(len(X), self.dim_hid))
+        Z = 1.0 * S
+        i = 0
+        for n in range(n_samp * burnin):
+            samp = self.EStep(X, S, Z, inplace=False, **args)
+            if not np.mod(n, burnin):
+                samps[i] = 1 * samp
+                i += 1
+
+        return samps
+
+    def grad_step(self, X, mask=None):
+        newS = self.EStep(X, self.S)
+        loss = self.MStep(X, newS)
+        return newS, loss
+
+
+# ===========================================================================
+#  Shared linear-Gaussian skeleton
+# ===========================================================================
+#
+# Holds the operator + the two prior/penalty components and implements
+# everything common: reconstruction, MSE loss, Gaussian loglik, sign-of-drive
+# latent init, and the single templated E-step that drives every model here
+# (dense, CP, reduced-rank and conv alike).
+
+@dataclass
+class LinearGaussianBMF(BMF):
+
+    dim_hid: int
+    fit_intercept: bool = True
+    operator: LinearOperator = None                                 # set by subclass
+    latent_prior: LatentPrior = field(default_factory=LatentPrior)  # the latent side
+    m_iters: int = 1                             # M-step updates per grad_step
+
+    # the latent state lives on the prior now; expose the spike for the base
+    # BMF fit loop / loss (which read self.S).
+    @property
+    def S(self):
+        return self.latent_prior.S
+
+    # ---- shared reconstruction / loss / likelihood ------------------------
+    # (the intercept b lives on the operator now, so forward/drive take only S/X)
+    def __call__(self, S):
+        return self.operator.forward(S)
+
+    def loss(self, X, mask=None):
+        if mask is None:
+            mask = np.ones(X.shape) > 0
+        N = self(self.S)
+        return np.mean((X[mask] - N[mask]) ** 2)
+
+    def loglikelihood(self, X, Xhat):
+        dot = 0.5 * np.mean((Xhat - X) ** 2) / self.sigma_x
+        lnrm = 0.5 * np.log(self.sigma_x) + 0.5 * np.log(2 * np.pi)
+        return -(dot + lnrm)
+
+    # ---- shared latent init: delegated to the latent component ------------
+    def init_latents(self, X, **args):
+        self.latent_prior.init_latents(self.operator.drive(X))
+
+    # ---- the one E-step that serves every linear-Gaussian model -----------
+    # Fully compositional now: the latent component owns the spike S, the
+    # effective latent Z (== S with no slab, the magnitudes when slab=True),
+    # the StS bookkeeping and the regularizer/tau scalars; the operator owns the
+    # search (already compiled with the prior's link).  The slab-vs-no-slab
+    # branch is gone -- it was decided once, when the prior picked the link.
+    # The E-step operates on the SUPPLIED (S, Z): the fit loop (grad_step) passes
+    # the prior's *persistent* latents, while `sample` passes a fresh chain state
+    # shaped to the rows of X.  Both are updated in place.  Z defaults to a binary
+    # copy of S -- which is exactly the effective latent for a no-slab model, and a
+    # shape-matched seed for a slab (the search overwrites it with the continuous
+    # magnitudes on the first sweep) -- so the default always matches S's shape.
+    # StS, by contrast, stays on the prior (frozen during sampling).
+    def EStep(self, X, S, Z=None, mask=None, inplace=True, slab=True, **kwargs):
+
+        if Z is None:
+            Z = 1.0 * S
+
+        lp = self.latent_prior
+        XW = self.operator.drive(X)
+        WtW = lp.couple(self.operator.gram(), S)      # structured prior recurrence
+        self.operator.search(
+            XW, S, Z, WtW, lp.StS, self.n, self.temp,
+            lp.sparse_reg, lp.tree_reg, lp.slab_prior, self.sigma_x, inplace)
+        ES = Z if slab else S
+
+        if mask is None:
+            return ES
+
+        return ES, self.impute(X, ES, mask)
+
+    def impute(self, X, ES, mask, sample=False):
+        """X[mask] <- a sample from the generative model p(X | latents) =
+        N(forward(ES), sigma_x).  Mutates X in place and returns it."""
+        Xhat = self.operator.forward(ES)
+        samp = Xhat + sample * np.sqrt(self.sigma_x) * np.random.randn(*Xhat.shape)
+        X[mask] = samp[mask]
+        return X
+
+    # ---- the fit loop operates on the prior's persistent latents ----------
+    # grad_step is the one caller that wants to advance the prior's *own* state:
+    # it feeds the persistent spike S and the persistent effective latent Z (which
+    # the slab maintains across sweeps as continuous magnitudes) so they are
+    # updated in place.  `sample` is the other caller; it supplies a fresh (S, Z).
+    def grad_step(self, X, mask=None):
+        lp = self.latent_prior
+        if mask is None:
+            newES = self.EStep(X, lp.S, lp.Z)
+        else:
+            newES, X = self.EStep(X, lp.S, lp.Z, mask=mask)   # X imputed in place
+        loss = self.MStep(X, newES)
+        return newES, loss
+
+    # ---- the one M-step that serves every linear-Gaussian model -----------
+    def MStep(self, X, S, Z=None):
+        """Each operator's `backward` does one in-place update of *its* parameters
+        (analytic-VJP gradient for numpy operators, autograd for torch ones, or a
+        closed-form solve).  The prior's `learn` does one update of *its* params
+        (e.g. JBMF's coupling J) right alongside, exactly as JBMF interleaves the
+        W and J steps -- they factor because the Gaussian loss is separable in
+        (W, J), so two SGD steps equal JBMF's one joint step.  sigma_x is the
+        third independent update.  So this body is the same for SemiBMF / SpikeNMF
+        / JBMF / SCPD / RRBMF / ConvBMF; only the components differ."""
+
+        if Z is None:
+            Z = 1*S
+
+        for _ in range(self.m_iters):
+            resid = self.operator.backward(Z, X)    # one operator parameter update
+            self.latent_prior.learn(S)              # one prior parameter update (e.g. J)
+        err = float(np.mean(resid ** 2))
+        self.sigma_x += self.scl_lr * (err - self.sigma_x)   # independent update
+        return err
+
+    def init_params(self, X, hot_start=True, scl_lr=0, **opt_args):
+        # only the row count (n) is used downstream (the E-step's StS prior); the
+        # feature dim isn't, so len(X) serves both 2-D (n, d) and 3-D (n, t, d)
+        # data -- which is why even the reduced-rank/conv models share this.
+        self.n = len(X)
+        self.sigma_x = 1
+        self.scl_lr = scl_lr
+
+        self.operator.init_params(X, self.dim_hid, hot_start=hot_start, **opt_args)
+
+        # Compose the search: operator scaffold x the latent component's link.
+        # That link IS the slab-vs-no-slab choice (the prior's `link` property:
+        # BINARY_LINK when slab=False, SLAB_LINK when slab=True).  Compiled once.
+        self.operator.build_search(self.latent_prior.link)
+
+
+# ===========================================================================
+#  Concrete models  (what's left is the operator choice + its learning rule)
+# ===========================================================================
+
+@dataclass
+class SemiBMF(LinearGaussianBMF):
+    """FULL PORT of bae_models.SemiBMF.
+
+    AffineOperator (numpy) + the shared MStep -- the operator's `backward` does
+    the gradient update (recon VJP + the weight penalty), and sigma_x is the
+    independent update.  EStep / __call__ / loss / loglikelihood / init_latents /
+    MStep are all inherited; only init_params (operator setup) is model-specific.
+    Bit-for-bit equivalent to the original on the gradient path (test_semibmf_port).
+
+    Constructor is a drop-in for the original; the weight scalars route into the
+    AffineOperator (which now owns its own regularization) and the sparse/tree
+    scalars into the LatentPrior.  The original's NNLS / SVD M-step branches are
+    AffineOperator.backward `method` options (sketched).
+    """
+
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l2_reg: float = 1e-2
+    weight_l1_reg: float = 0.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = AffineOperator(fit_intercept=self.fit_intercept,
+                                       nonneg=self.nonneg,
+                                       pr_reg=self.weight_pr_reg,
+                                       l1_reg=self.weight_l1_reg,
+                                       l2_reg=self.weight_l2_reg)
+        self.latent_prior = LatentPrior(sparse_reg=self.sparse_reg,
+                                        tree_reg=self.tree_reg)
+
+    # init_params + MStep inherited: AffineOperator.init_params builds W, b and
+    # AffineOperator.backward does the gradient update.  The whole model body is
+    # now just the component assembly in __post_init__.
+
+
+@dataclass
+class JBMF(LinearGaussianBMF):
+    """Matrix operator + a *structured* latent prior.  This is the headline:
+    JBMF is now just SemiBMF's skeleton with `latent_prior = BoltzmannPrior`.
+    The `WtW + J` recurrence and the inverse-Ising pseudolikelihood both live in
+    the prior; init_params / EStep / MStep are all inherited.
+
+    NOTE: the BoltzmannPrior (the J coupling + pseudolikelihood) is ported
+    bit-for-bit from bae_models.JBMF and verified in test_boltzmann_port.py.  The
+    decoder (W) side here is a TorchMatrixOp, whose weight penalty uses this
+    refactor's convention (no /dim_hid normalization) rather than JBMF's, so the
+    *prior* is exact while the W M-step follows the operator's convention."""
+
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l1_reg: float = 0.0
+    weight_l2_reg: float = 1e-2
+    J_l1_reg: Optional[float] = None
+    J_loss: str = 'rple'
+    J_lr: float = 1e-2
+    slab: bool = False
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        # self.operator = TorchMatrixOp(fit_intercept=self.fit_intercept,
+        #                               nonneg=self.nonneg,
+        #                               pr_reg=self.weight_pr_reg,
+        #                               l1_reg=0.0,
+        #                               l2_reg=self.weight_l2_reg)
+        self.operator = AffineOperator(fit_intercept=self.fit_intercept,
+                                      nonneg=self.nonneg,
+                                      pr_reg=self.weight_pr_reg,
+                                      l1_reg=self.weight_l1_reg,
+                                      l2_reg=self.weight_l2_reg,
+                                      resample_dead=True)
+        self.latent_prior = nbp.BoltzmannPriorNP(sparse_reg=self.sparse_reg,
+                                           tree_reg=self.tree_reg,
+                                           J_l1_reg=self.J_l1_reg,
+                                           J_loss=self.J_loss,
+                                           J_lr=self.J_lr,
+                                           slab=self.slab,
+                                           slab_prior=self.slab_prior,
+                                           sampler='gibbs')
+
+    # init_params + EStep + MStep inherited: the prior's init_params builds J +
+    # its optimizer, couple folds WtW + J into the search, and learn does the
+    # pseudolikelihood step alongside the operator's W step.
+
+
+@dataclass
+class BiPCA(LinearGaussianBMF):
+    """AffineOperator with an orthogonal closed-form M-step and `bpca` search.
+    The M-step is a one-shot solve, so it uses AffineOperator.backward's `svd`
+    method rather than the gradient path (the shared MStep still drives it)."""
+
+    def init_params(self, X, lr=1.0):
+        self.operator = AffineOperator()
+        # PCA / orthogonal init of W, scl, b; operator.solver = 'svd'
+        # (bae_models.BiPCA:182, M-step :227)
+        ...
+
+
+@dataclass
+class SCPD(LinearGaussianBMF):
+    """PORT of bae_models.SCPD (sparse canonical-polyadic decomposition).
+
+    A CPOperator (L(S) = einsum('ck,tk,nk->ctn', S, U, V) + b over a 3-D data
+    tensor X of shape (n, t, d)) + a plain LatentPrior, with the shared autograd
+    M-step.  Shares the *entire* sbmf E-step with RRBMF; only the operator's
+    drive/gram (and its `backward`) differ.  Like SemiBMF/RRBMF the whole model
+    body is the component assembly in __post_init__: init_params / EStep / MStep /
+    __call__ / loss / loglikelihood are ALL inherited (dim_hid is the CP rank).
+
+    Constructor mirrors the original: the weight scalars route into the CPOperator
+    (participation-ratio on V + L1 on U,V, each /dim_hid as in the original) and
+    the sparse/tree scalars into the LatentPrior.  The operator's M-step optimizer
+    is Adam, as in bae_models.SCPD.initialize:1144 (override via opt_alg=)."""
+
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l1_reg: float = 1e-2
+    slab: bool = False
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = CPOperator(fit_intercept=self.fit_intercept,
+                                   nonneg=self.nonneg,
+                                   pr_reg=self.weight_pr_reg,
+                                   l1_reg=self.weight_l1_reg)
+        self.latent_prior = LatentPrior(sparse_reg=self.sparse_reg,
+                                        tree_reg=self.tree_reg,
+                                        slab=self.slab,
+                                        slab_prior=self.slab_prior)
+
+@dataclass
+class JSCPD(LinearGaussianBMF):
+    """PORT of bae_models.SCPD (sparse canonical-polyadic decomposition).
+
+    A CPOperator (L(S) = einsum('ck,tk,nk->ctn', S, U, V) + b over a 3-D data
+    tensor X of shape (n, t, d)) + a plain LatentPrior, with the shared autograd
+    M-step.  Shares the *entire* sbmf E-step with RRBMF; only the operator's
+    drive/gram (and its `backward`) differ.  Like SemiBMF/RRBMF the whole model
+    body is the component assembly in __post_init__: init_params / EStep / MStep /
+    __call__ / loss / loglikelihood are ALL inherited (dim_hid is the CP rank).
+
+    Constructor mirrors the original: the weight scalars route into the CPOperator
+    (participation-ratio on V + L1 on U,V, each /dim_hid as in the original) and
+    the sparse/tree scalars into the LatentPrior.  The operator's M-step optimizer
+    is Adam, as in bae_models.SCPD.initialize:1144 (override via opt_alg=)."""
+
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-1
+    weight_l1_reg: float = 0.0
+    weight_l2_reg: float = 1e-2
+    J_l1_reg: Optional[float] = None
+    J_loss: str = 'rple'
+    J_lr: float = 1e-2
+    slab: bool = False
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = CPOperator(fit_intercept=self.fit_intercept,
+                                   nonneg=self.nonneg,
+                                   pr_reg=self.weight_pr_reg,
+                                   l1_reg=self.weight_l1_reg)
+        self.latent_prior = nbp.BoltzmannPriorNP(sparse_reg=self.sparse_reg,
+                                           tree_reg=self.tree_reg,
+                                           J_l1_reg=self.J_l1_reg,
+                                           J_loss=self.J_loss,
+                                           J_lr=self.J_lr,
+                                           slab=self.slab,
+                                           slab_prior=self.slab_prior,
+                                           sampler='gibbs')
+
+
+@dataclass
+class RRBMF(LinearGaussianBMF):
+    """FULL PORT of bae_models.RRBMF.
+
+    A ReducedRankOp (L(S) = einsum('ck,knt->ctn', S, V@U.T) + b over a 3-D data
+    tensor X of shape (n, t, d)) + a plain LatentPrior, with the shared autograd
+    M-step.  Shares the *entire* sbmf E-step with SCPD; only the operator's
+    drive/gram (and its `backward`) differ.  Like SemiBMF/SpikeNMF the whole model
+    body is just the component assembly in __post_init__: init_params / EStep /
+    MStep / __call__ / loss / loglikelihood are ALL inherited -- the shared
+    init_params uses len(X), so the 3-D data tensor needs no special-casing.
+
+    Constructor mirrors the original: the weight scalars route into the
+    ReducedRankOp (which owns its participation-ratio / L1 / L2 regularization)
+    and the sparse/tree scalars into the LatentPrior.
+    """
+
+    rank: int = None
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l1_reg: float = 0.0
+    weight_l2_reg: float = 1e-2
+    slab: bool = False
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = ReducedRankOp(rank=self.rank,
+                                      fit_intercept=self.fit_intercept,
+                                      nonneg=self.nonneg,
+                                      pr_reg=self.weight_pr_reg,
+                                      l1_reg=self.weight_l1_reg,
+                                      l2_reg=self.weight_l2_reg)
+        self.latent_prior = LatentPrior(sparse_reg=self.sparse_reg,
+                                        tree_reg=self.tree_reg,
+                                        slab=self.slab,
+                                        slab_prior=self.slab_prior)
+
+
+@dataclass
+class JRRBMF(LinearGaussianBMF):
+    """
+    """
+
+    rank: int = None
+    nonneg: bool = False
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    weight_pr_reg: float = 1e-2
+    weight_l1_reg: float = 0.0
+    weight_l2_reg: float = 1e-2
+    slab: bool = False
+    slab_prior: float = 1.0
+    J_l1_reg: Optional[float] = None
+    J_loss: str = 'rple'
+    J_lr: float = 1e-2
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = ReducedRankOp(rank=self.rank,
+                                      fit_intercept=self.fit_intercept,
+                                      nonneg=self.nonneg,
+                                      pr_reg=self.weight_pr_reg,
+                                      l1_reg=self.weight_l1_reg,
+                                      l2_reg=self.weight_l2_reg)
+        self.latent_prior = nbp.BoltzmannPriorNP(sparse_reg=self.sparse_reg,
+                                           tree_reg=self.tree_reg,
+                                           J_l1_reg=self.J_l1_reg,
+                                           J_loss=self.J_loss,
+                                           J_lr=self.J_lr,
+                                           slab=self.slab,
+                                           slab_prior=self.slab_prior,
+                                           sampler='gibbs')
+
+
+@dataclass
+class ConvBMF(LinearGaussianBMF):
+    """Convolutional operator: the same linear-Gaussian template in a
+    translation-invariant space, so it plugs in a ConvOperator (which carries
+    the convbmf search) and otherwise inherits everything."""
+
+    kernel_size: int = None
+
+    def init_params(self, X, **opt_args):
+        self.operator = ConvOperator()
+        # init GP kernels K, b + operator.optimizer (bae_models.ConvBMF:1231)
+        ...
+
+    # MStep inherited; ConvOperator.backward carries the seq-NMF orthogonality reg.
+
+
+@dataclass
+class SpikeNMF(LinearGaussianBMF):
+    """FULL PORT of bae_models.SpikeNMF.
+
+    A TorchMatrixOp (nn.Linear decoder) + a LatentPrior with slab=True.  The
+    binary spike, the regularizers and the decoder are identical to every other
+    matrix model; the slab flag just makes the effective latent a continuous
+    multiplier Z and swaps the link sbmf -> snmf, and the M-step is the usual
+    autograd step on W -- only fed the continuous ES = S*Z instead of a binary S.
+    EStep / __call__ / loglikelihood are inherited.  Constructor is a drop-in for
+    the original.  (See test_spikenmf_port.py.)
+    """
+
+    nonneg: bool = True
+    sparse_reg: float = 0
+    tree_reg: float = 1e-2
+    slab_prior: float = 1
+    weight_pr_reg: float = 1e-1
+    weight_l1_reg: float = 0
+    weight_l2_reg: float = 1e-2
+    m_iters: int = 1
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.operator = TorchMatrixOp(fit_intercept=self.fit_intercept,
+                                      nonneg=self.nonneg,
+                                      resample_dead=True,
+                                      pr_reg=self.weight_pr_reg,
+                                      l1_reg=self.weight_l1_reg,
+                                      l2_reg=self.weight_l2_reg)
+        # "has a slab" == "the latent prior has slab=True"
+        self.latent_prior = LatentPrior(slab=True,
+                                        sparse_reg=self.sparse_reg,
+                                        tree_reg=self.tree_reg,
+                                        slab_prior=self.slab_prior)
+
+    # init_params + MStep inherited: TorchMatrixOp.init_params builds the
+    # nn.Linear + optimizer (resampling dead columns at init too), and
+    # TorchMatrixOp.backward does the autograd update.  The whole model body is
+    # now just the component assembly in __post_init__.  Bit-for-bit vs the
+    # original (test_spikenmf_port).
+
+
+@dataclass
+class SpikeRRNMF(RRBMF):
+    """Reduced-rank + slab, reusing RRBMF's ReducedRankOp and its entire M-step
+    unchanged -- the only change from RRBMF is flipping the latent prior's slab
+    flag on.  The existence of both this and SpikeNMF (same slab flag, different
+    operator) is the proof that the slab is a latent-side concern, orthogonal to
+    the operator.  (bae_models.SpikeRRNMF.)"""
+
+    slab_prior: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.latent_prior.slab = True            # RRBMF's prior, now spike-and-slab
+        self.latent_prior.slab_prior = self.slab_prior

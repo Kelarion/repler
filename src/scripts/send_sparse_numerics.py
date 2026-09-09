@@ -7,7 +7,7 @@ sys.path.append(CODE_DIR)
 import numpy as np
 
 import server_utils as su
-import new_bae_experiments as nbe   # StructuredCats + NewBMF
+import bae_experiments as nbe   # StructuredCats + NewBMF
 
 ####################################
 

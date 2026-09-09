@@ -50,8 +50,8 @@ import plotting as dicplt
 
 import distance_factorization as df
 import df_util
-import bae
-import bae_models
+import old_bae
+import old_bae_models
 import bae_util
 
 #%%
@@ -126,7 +126,7 @@ Kz3 = Z3@Z3.T
 
 #%% Factorize
 
-baer = bae.BAE(Z1, 40, pvar=0.95)
+baer = old_bae.BAE(Z1, 40, pvar=0.95)
 baer.init_optimizer(decay_rate=0.95, period=2, initial=10)
 
 en = []

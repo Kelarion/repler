@@ -1,4 +1,4 @@
-"""Correctness checks for new_bae_priors.BoltzmannPrior (the {0,1} Ising prior).
+"""Correctness checks for bae_priors.BoltzmannPrior (the {0,1} Ising prior).
 
 The prior is  log p(S) ~ S' J S + 2 h' S  over S in {0,1}^m, with J symmetric and
 zero-diagonal, so the conditional log-odds of S_j is 2*(J S + h)_j and the
@@ -22,7 +22,7 @@ import itertools
 import numpy as np
 import torch
 
-import new_bae_priors as nbp
+import bae_priors as nbp
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ def check_coupling(m=6, seed=0):
 
 def check_search_sign(seed=0):
     """A strong +/- coupling must induce +/- correlation in the sampled codes."""
-    import new_bae_models as nbm
+    import bae_models as nbm
     rng = np.random.default_rng(seed)
     X = rng.standard_normal((300, 12))
     X /= X.std()

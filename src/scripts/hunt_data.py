@@ -43,9 +43,9 @@ import networkx as nx
 import util
 import df_util
 import pt_util
-import bae
-import bae_models
-import bae_search
+import old_bae
+import old_bae_models
+import old_bae_search
 import bae_util
 import plotting as tpl
 
@@ -239,7 +239,7 @@ X_ = X_ / X_.std(1, keepdims=True)
 
 # X_ -= X_.mean(0)
 
-mod = bae_models.SemiBMF(12,
+mod = old_bae_models.SemiBMF(12,
                          nonneg=True, 
                          tree_reg=1,
                          weight_pr_reg=1,
@@ -248,7 +248,7 @@ mod = bae_models.SemiBMF(12,
                          sparse_reg=1,
                          )
 
-# mod = bae_models.SemiBMF(4,
+# mod = old_bae_models.SemiBMF(4,
 #                          nonneg=True,
 #                          tree_reg=0,
 #                          weight_pr_reg=1,
@@ -257,7 +257,7 @@ mod = bae_models.SemiBMF(12,
 #                          sparse_reg=1,
 #                          )
 
-# mod = bae_models.SpikeNMF(11,
+# mod = old_bae_models.SpikeNMF(11,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -266,7 +266,7 @@ mod = bae_models.SemiBMF(12,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = bae_models.SpikeNMF(4,
+# mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -275,7 +275,7 @@ mod = bae_models.SemiBMF(12,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = bae_models.KernelBMF2(12,
+# mod = old_bae_models.KernelBMF2(12,
 #                            sparse_reg=1,
 #                            tree_reg=100,
 #                            uniform_scale=False,
@@ -356,8 +356,8 @@ opt_args = {'initial_temp': 10,
             }
 
 n_run = 3
-modclass = bae_models.SemiBMF
-# modclass = bae_models.SpikeNMF
+modclass = old_bae_models.SemiBMF
+# modclass = old_bae_models.SpikeNMF
 
 full = np.zeros(len(kays))
 trn = np.zeros(len(kays))
@@ -365,7 +365,7 @@ tst = np.zeros(len(kays))
 for _ in range(n_run):
     for i,k in tqdm(enumerate(kays)):
          
-        # mod = bae_models.SemiBMF(k,**args)
+        # mod = old_bae_models.SemiBMF(k,**args)
         mod = modclass(k,**args)
         
         # wa,ba = bae_util.impcv(mod, X_ / X_.std(), folds=10, n_sample=1000, verbose=False, **opt_args)
@@ -509,8 +509,8 @@ _FULL  = dict(period=50, initial_temp=100, decay_rate=0.9,
 
 def _make_and_fit(Xp, model_class, cfg, sched):
     """Instantiate model from cfg dict, fit, and return it."""
-    if model_class is bae_models.SemiBMF:
-        mod = bae_models.SemiBMF(
+    if model_class is old_bae_models.SemiBMF:
+        mod = old_bae_models.SemiBMF(
             cfg['dim_hid'],
             nonneg        = cfg['nonneg'],
             sparse_reg    = cfg['sparse_reg'],
@@ -521,8 +521,8 @@ def _make_and_fit(Xp, model_class, cfg, sched):
         )
         mod.fit(Xp, **sched, scl_lr=cfg.get('scl_lr', 1e-3))
 
-    elif model_class is bae_models.SpikeNMF:
-        mod = bae_models.SpikeNMF(
+    elif model_class is old_bae_models.SpikeNMF:
+        mod = old_bae_models.SpikeNMF(
             cfg['dim_hid'],
             nonneg        = cfg.get('nonneg', True),
             sparse_reg    = cfg['sparse_reg'],
@@ -534,8 +534,8 @@ def _make_and_fit(Xp, model_class, cfg, sched):
         )
         mod.fit(Xp, **sched, scl_lr=cfg.get('scl_lr', 1e-3))
 
-    elif model_class is bae_models.KernelBMF2:
-        mod = bae_models.KernelBMF2(
+    elif model_class is old_bae_models.KernelBMF2:
+        mod = old_bae_models.KernelBMF2(
             cfg['dim_hid'],
             sparse_reg    = cfg['sparse_reg'],
             tree_reg      = cfg['tree_reg'],
@@ -543,9 +543,9 @@ def _make_and_fit(Xp, model_class, cfg, sched):
         )
         mod.fit(Xp, **sched, scl_lr=1.0)
 
-    elif model_class is bae_models.BiPCA:
+    elif model_class is old_bae_models.BiPCA:
         # BiPCA uses closed-form SVD in the M-step; no learning rate needed
-        mod = bae_models.BiPCA(
+        mod = old_bae_models.BiPCA(
             cfg['dim_hid'],
             sparse_reg = cfg['sparse_reg'],
             tree_reg   = cfg['tree_reg'],
@@ -559,7 +559,7 @@ def _make_and_fit(Xp, model_class, cfg, sched):
 
 def _get_S(mod):
     """Return binary S matrix. SpikeNMF stores S*Z (continuous); threshold at 0."""
-    if isinstance(mod, bae_models.SpikeNMF):
+    if isinstance(mod, old_bae_models.SpikeNMF):
         return (mod.S > 0).astype(float)
     return mod.S.copy()
 
@@ -595,7 +595,7 @@ def broad_search(X, conds, area, n_trials=300, n_runs=3, seed=0):
     """
     rng    = np.random.default_rng(seed)
     tv     = task_regressors(conds)
-    models = [bae_models.SemiBMF, bae_models.KernelBMF2, bae_models.BiPCA]
+    models = [old_bae_models.SemiBMF, old_bae_models.KernelBMF2, old_bae_models.BiPCA]
     results = []
 
     for _ in tqdm(range(n_trials), desc='broad search'):
@@ -618,7 +618,7 @@ def broad_search(X, conds, area, n_trials=300, n_runs=3, seed=0):
         model_class = models[int(rng.integers(3))]
         dim_hid     = int(rng.choice([3, 4, 5, 6, 7, 8]))
 
-        if model_class is bae_models.SemiBMF:
+        if model_class is old_bae_models.SemiBMF:
             cfg = dict(
                 dim_hid       = dim_hid,
                 nonneg        = bool(rng.integers(2)),
@@ -627,7 +627,7 @@ def broad_search(X, conds, area, n_trials=300, n_runs=3, seed=0):
                 weight_pr_reg = float(rng.choice([0.1, 0.5, 1.0, 5.0])),
                 weight_l1_reg = float(rng.choice([0.0, 0.01, 0.05, 0.1])),
             )
-        elif model_class is bae_models.KernelBMF2:
+        elif model_class is old_bae_models.KernelBMF2:
             cfg = dict(
                 dim_hid       = dim_hid,
                 sparse_reg    = float(rng.choice([0.0, 0.1, 0.5, 1.0])),
@@ -747,14 +747,14 @@ def semibmf_search(X, conds, area, n_trials=50, n_runs=5, seed=0):
 
         trial_seed = int(rng.integers(2**31))
         best_S, mean_sc, std_sc, best_seed = _fit_n(
-            Xp, tv, bae_models.SemiBMF, cfg, _FULL, n_runs, base_seed=trial_seed)
+            Xp, tv, old_bae_models.SemiBMF, cfg, _FULL, n_runs, base_seed=trial_seed)
         if best_S is None:
             continue
 
         results.append(dict(
             area        = this_area,
             model       = 'SemiBMF',
-            model_class = bae_models.SemiBMF,
+            model_class = old_bae_models.SemiBMF,
             **cfg,
             **prep,
             mean_score  = mean_sc,
@@ -842,7 +842,7 @@ def stimulus_search(X, conds, area, n_trials=60, n_runs=5, seed=0):
             seed_i = trial_seed + i
             np.random.seed(seed_i)
             try:
-                mod = _make_and_fit(Xp, bae_models.SemiBMF, cfg, _FULL)
+                mod = _make_and_fit(Xp, old_bae_models.SemiBMF, cfg, _FULL)
                 S   = _get_S(mod)
                 sc  = stimulus_score(S, tv)
                 scores.append(sc)
@@ -857,7 +857,7 @@ def stimulus_search(X, conds, area, n_trials=60, n_runs=5, seed=0):
         results.append(dict(
             area        = this_area,
             model       = 'SemiBMF',
-            model_class = bae_models.SemiBMF,
+            model_class = old_bae_models.SemiBMF,
             **cfg,
             **prep,
             mean_score  = float(np.mean(scores)),
@@ -923,7 +923,7 @@ def spikenmf_search(X, conds, area, n_trials=60, n_runs=5, seed=0):
 
         trial_seed = int(rng.integers(2**31))
         best_S, mean_sc, std_sc, best_seed = _fit_n(
-            Xp, tv, bae_models.SpikeNMF, cfg, _FULL, n_runs,
+            Xp, tv, old_bae_models.SpikeNMF, cfg, _FULL, n_runs,
             base_seed=trial_seed, score_fn=stimulus_score)
         if best_S is None:
             continue
@@ -931,7 +931,7 @@ def spikenmf_search(X, conds, area, n_trials=60, n_runs=5, seed=0):
         results.append(dict(
             area        = this_area,
             model       = 'SpikeNMF',
-            model_class = bae_models.SpikeNMF,
+            model_class = old_bae_models.SpikeNMF,
             **cfg,
             **prep,
             mean_score  = mean_sc,

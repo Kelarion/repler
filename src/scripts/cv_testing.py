@@ -15,9 +15,9 @@ from tqdm import tqdm
 import util
 import plotting as tpl
 
-import bae_models
+import old_bae_models
 import bae_util
-import bae_search
+import old_bae_search
 import df_util
 import symbolic as sym
 
@@ -59,10 +59,10 @@ nf = []
 for k in tqdm(kunq):
     
     if kernel_mod:
-        mod = bae_models.KernelBMF(dim_hid=k, kernel_input=True, **mod_args)
+        mod = old_bae_models.KernelBMF(dim_hid=k, kernel_input=True, **mod_args)
         en = mod.fit(X@X.T, verbose=False, **opt_args)
     else:
-        mod = bae_models.BiPCA(dim_hid=k, **mod_args)
+        mod = old_bae_models.BiPCA(dim_hid=k, **mod_args)
         en = mod.fit(X, verbose=False, **opt_args)
         
     ham.append(df_util.minham(mod.S, Strue, sym=True).mean())

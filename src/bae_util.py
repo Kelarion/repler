@@ -122,8 +122,8 @@ def _anneal_temps(initial_temp=1, decay_rate=0.8, period=2, min_temp=1e-4, max_i
 
 def _latent_first(method):
     """True if `method` takes the latents before the data matrix (the old
-    bae_models signature EStep(S, X) / MStep(ES, X)), False for the new
-    new_bae_models signature EStep(X, S) / MStep(X, S).  Discriminates on the
+    old_bae_models signature EStep(S, X) / MStep(ES, X)), False for the new
+    bae_models signature EStep(X, S) / MStep(X, S).  Discriminates on the
     first non-self parameter name: 'X' means data-first (new), anything else
     (S, ES, ...) means latent-first (old)."""
     params = [p for p in inspect.signature(method).parameters
@@ -311,7 +311,7 @@ def loocv(model, X, n_sample=1, **opt_args):
 @njit
 def _seed_numba(s):
     # numba keeps its OWN global RNG, untouched by Python's np.random.seed; the
-    # E-step search kernels (bae_search / new_bae_search) draw their stochastic
+    # E-step search kernels (old_bae_search / bae_search) draw their stochastic
     # flips from it, so this must be seeded too for runs to be paired across ranks.
     np.random.seed(s)
 

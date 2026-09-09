@@ -13,7 +13,7 @@ full curve and where the test LL is maximised.
 
 import numpy as np
 
-import bae_models
+import old_bae_models
 import bae_util
 import df_util
 import experiments as exp
@@ -95,7 +95,7 @@ def cv_curve(cv_fn, X, ranks, n_rep, **kw):
     tst = np.zeros((n_rep, len(ranks)))
     for r in range(n_rep):
         for i, K in enumerate(ranks):
-            mod = bae_models.SemiBMF(K, nonneg=False, tree_reg=0.0, sparse_reg=0.0,
+            mod = old_bae_models.SemiBMF(K, nonneg=False, tree_reg=0.0, sparse_reg=0.0,
                                      weight_pr_reg=1e-2, weight_l2_reg=1e-2,
                                      weight_l1_reg=0.0)
             a, b = cv_fn(mod, X, **kw)

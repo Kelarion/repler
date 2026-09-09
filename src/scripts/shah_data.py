@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 import util
 import df_util
 import bae_util
+import old_bae_models
 import bae_models
-import new_bae_models
 import plotting as tpl
 
 
@@ -377,7 +377,7 @@ X_ = 1*out['finger_combinations']['reps_nonneg']
 
 X_ = X_ / X_.std(0)
 
-# mod = bae_models.SemiBMF(8,
+# mod = old_bae_models.SemiBMF(8,
 #                          nonneg=True, 
 #                          tree_reg=1,
 #                          weight_pr_reg=1,
@@ -386,7 +386,7 @@ X_ = X_ / X_.std(0)
 #                          sparse_reg=1,
 #                          )
 
-# mod = bae_models.SemiBMF(4,
+# mod = old_bae_models.SemiBMF(4,
 #                          nonneg=True,
 #                          # nonneg=False,
 #                          # tree_reg=1e-1,
@@ -399,7 +399,7 @@ X_ = X_ / X_.std(0)
 #                          # fit_intercept=False,
 #                          )
 
-mod = new_bae_models.JBMF(8,
+mod = bae_models.JBMF(8,
                          nonneg=True,
                          # nonneg=False,
                          # fit_intercept=False,
@@ -417,7 +417,7 @@ mod = new_bae_models.JBMF(8,
                          # slab_prior=0.1,
                          )
 
-# mod = bae_models.SpikeNMF(11,
+# mod = old_bae_models.SpikeNMF(11,
 #                          nonneg=True, 
 #                          sparse_reg=1,
 #                          weight_pr_reg=1,
@@ -426,7 +426,7 @@ mod = new_bae_models.JBMF(8,
 #                          weight_l1_reg=0,
 #                          )
 
-# mod = bae_models.SpikeNMF(2,
+# mod = old_bae_models.SpikeNMF(2,
 #                          nonneg=False, 
 #                          sparse_reg=0,
 #                          weight_pr_reg=0,
@@ -437,7 +437,7 @@ mod = new_bae_models.JBMF(8,
 #                          slab_prior=1,
 #                          )
 
-# mod = bae_models.KernelBMF2(12,
+# mod = old_bae_models.KernelBMF2(12,
 #                            sparse_reg=1,
 #                            tree_reg=100,
 #                            uniform_scale=False,
