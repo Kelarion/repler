@@ -1273,9 +1273,9 @@ def is_cyclic(graph):
     The graph must be represented as a dictionary mapping vertices to
     iterables of neighbouring vertices. For example:
 
-    >>> cyclic({1: (2,), 2: (3,), 3: (1,)})
+    >>> is_cyclic({1: (2,), 2: (3,), 3: (1,)})
     True
-    >>> cyclic({1: (2,), 2: (3,), 3: (4,)})
+    >>> is_cyclic({1: (2,), 2: (3,), 3: (4,)})
     False
 
     By Gareth Rees on stack exchange

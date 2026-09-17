@@ -16,6 +16,7 @@ import re
 import random
 from time import time
 from itertools import combinations, product
+from collections import defaultdict
 
 #%% 
 class ParsedSequence(object):
@@ -392,550 +393,450 @@ class ParsedSequence(object):
         return swap_idx
 
 
-
-class HierarchicalData(object):
-
-    def __init__(self):
-        raise NotImplementedError
-
-    def labels(self):
-        raise NotImplementedError
-
-    def represent_labels(self, these_leaves):
-        """ finds the label of each of 'these_leaves' """
-
-        idx = np.array([ i for j in these_leaves for \
-            i in self.similarity_graph.nodes('category')[j] ] )
-        var = np.repeat(np.arange(len(these_leaves)), 
-            [len(self.similarity_graph.nodes('category')[j]) for j in these_leaves])
-
-        labels = np.zeros((self.num_cat,len(these_leaves)))
-        labels[idx,var] = 1
-
-        return labels
-
-    def similar_representation(self, dim=500, similarity='laplacian',
-        only_leaves=True, sigma=1, tol=1e-10):
-        """ 
-        Makes a random representation whose kernel matches the inverse Laplacian 
-        or the depth of deepest common ancestor
-        """
-
-        if similarity == 'laplacian':
-            L = self.graph_laplacian()
-            leaves = np.isin(self.similarity_graph,self.items)
-
-            C = la.inv(L+np.diag(leaves)*(1/sigma))
-        elif similarity == 'dca':
-            C = self.deepest_common_ancestor(only_leaves=False)
-
-        if only_leaves:
-            these = np.isin(self.similarity_graph,self.items)
-        else:
-            these = np.ones(len(C))>0
-
-        eps = np.random.randn(len(C),500) # random gaussian vectors 
-        eps -= eps.mean(1, keepdims=True)
-
-        std = la.cholesky(np.cov(eps) + np.eye(eps.shape[0])*tol)
-        rep = la.cholesky(C + np.eye(eps.shape[0])*tol).T@la.inv(std).T@eps
-        return rep[these,:]
-
-    def graph_laplacian(self):
-        """ Laplacian of the similarity graph """
-        N = incidence_matrix(self.similarity_graph, oriented=True).toarray()
-
-        return N@N.T # laplacian
-
-    def deepest_common_ancestor(self, only_leaves=True):
-
-        G = self.similarity_graph
-        if only_leaves:
-            n = self.items.tolist()
-        else:
-            n = list(G)
-
-        # lca = list(all_pairs_lowest_common_ancestor(G, product(n, n)))
-        lca = []
-        ix = []
-        for i,j in product(n, n):
-            dec_i = nx.descendants(G.reverse(), i).union(set([i]))
-            dec_j = nx.descendants(G.reverse(), j).union(set([j]))
-            all_anc = dec_i.intersection(dec_j)
-            anc_depths = [len(G.nodes('category')[a]) for a in all_anc]
-            lca.append(max(anc_depths))
-            ix.append((n.index(i),n.index(j)))
-
-        ix = np.array(ix)
-        lca = np.array(lca)
-
-        # ijv = np.array([(n.index(a[0][0]),n.index(a[0][1]),dpl(G.reverse(), a[1], 0)) for a in lca])
-        
-        LCA = np.ones((len(n), len(n)))
-        # LCA[ijv[:,0],ijv[:,1]] = ijv[:,2]
-        LCA[ix[:,0],ix[:,1]] = lca
-
-        return LCA
-
-
-    def random_sequence(self, child_prob=0.7, **recurse_args):
-        """ 'child_prob' is the probability of a parent node producing a child node """
-
-        self.child_prob = child_prob
-
-        seq = [0]
-        self.make_children(seq, 0, **recurse_args)
-
-        sent = ParsedSequence(''.join(str(seq).split(',')))
-
-        return sent
-
-    def make_children(self, seq, idx, replace=False, max_child=None):
-        """recursion to generate random sequence"""
-        
-        if max_child is None:
-            max_child = self.fan_out
-
-        if idx < self.depth:
-            n_child = (np.random.binomial(max_child-1, self.child_prob, len(seq))+1).tolist()
-            
-            children = []
-            for ix in range(len(seq)):
-                c_all = [e[1] for e in self.similarity_graph.out_edges(seq[ix])]
-
-                ins_idx = ix + sum(n_child[:0]) + 1
-                c = [[i] for i in np.random.choice(c_all, n_child[ix], replace=replace).tolist()]
-                seq[ins_idx:ins_idx] = c
-                children += c
-                
-            for child in children:
-                self.make_children(child, idx+1, replace=replace, max_child=max_child)
-
-    ## functions for making the similarity graph
-    def fill_similarity_graph(self, max_depth=None, path_rule='minimal'):
-        """
-        Constructs a directed acyclic graph such that, for any pair of leaf nodes, 
-        the depth of their nearest common ancestor matches the number of features 
-        they have in common. This is good for constructing an embedding in which 
-        dot products match feature similarity, for example.
+###########################################################
+###### PCFG ###############
+###########################################################
  
-        This is done in two steps:
-            First infer abstract hidden nodes based on shared labels. If two 
-            leaf nodes, i and j, share all but 1 label, then we create a new node 
-            whose labels are the intersection of i and j. After all leaf nodes, 
-            this is repeated on the newly-created hidden nodes, etc. Then we do 
-            another pass but this time for all pairs sharing all but 2 labels, 
-            etc. until we reach `max_depth`. 
+ 
+EOS = 0
+NT, T = 0, 1
+_TOL = 1e-12
+ 
 
-            Then add the edges by constructing paths from the root to each leaf
-            node. This will create new hidden nodes when they are necessary, 
-            where "necessary" is determined by the `path_rule` (see path_to_node 
-            method).
-
-        """
-
-        G = nx.DiGraph()
-        G.add_nodes_from(self.items)
-        nx.set_node_attributes(G, 
-            values={i:self.cats[i] for i in self.items}, 
-            name='category')
-
-        G.add_node(0, category=set())
-
-        if max_depth is None:
-            max_depth = max([len(i) for i in self.cats])
-
-        # self.connect_layer(G, self.items, self.cats)
-
-        ### Infer hidden nodes based on pairwise label intersections
-        for n in range(1,max_depth):
-            # connect pairs which are the same in all but n labels
-
-            these_nodes = 1*self.items 
-            while len(these_nodes)>0:
-                # find common sources for all pairs at each depth 
-                new_nodes = []
-                for i in these_nodes:
-                    for j in these_nodes[these_nodes>i]:
-
-                        G.nodes('category')
-                        L_ij = G.nodes('category')[i].intersection(G.nodes('category')[j])
-
-                        if len(G.nodes('category')[i])-len(L_ij) != n:
-                            continue
-                        
-                        # print(f"{(i,j)}, {G.nodes('category')[i]}V{G.nodes('category')[j]}={L_ij}")
-
-                        matching_nodes = np.isin(G.nodes('category'), L_ij)
-                        if np.any(matching_nodes):
-                            new_source = np.where(matching_nodes)[0].item()
-                        else:
-                            new_source = max(G) + 1
-                            G.add_node(new_source, category=L_ij)
-                            new_nodes.append(new_source)
-
-                        # G.add_edge(new_source, i)
-                        # G.add_edge(new_source, j)
-
-                these_nodes = np.array(new_nodes)
-
-        ### Connect each leaf node to the source 
-        for i in (self.items):
-            self.path_to_node(G, 0, i, rule=path_rule) # recursion!
-
-        return G
-
-    def path_to_node(self, G, source, target, rule='minimal'):
-        """ 
-        Lay down path on G from source to target. To get from i to j, first find all 
-        nodes k with one label more than i, and which share all their labels with j. 
-        Then add an edge from i to k. Furthermore, if k's labels can be expressed as 
-        a union of i's labels an another node, l's labels, add and edge from l to k.
-
-        Possible rules for finding "parents" of k:
-            'minimal' (default)
-                only adds a new step if there exists a node at the same depth as source,
-                such that labels(source) V labels(node) = labels(step)
-            'matching' 
-                creates all possible new steps, but only uses existing valid parents
-            'maximal'
-                creates all possible new steps, and all possible valid parents
-    
-        """
-
-        source_cat = G.nodes('category')[source]
-        targ_cat = G.nodes('category')[target]
-
-        ds = len(source_cat)
-        # dt = len(targ_cat) 
-
-        steps = product(targ_cat-source_cat, [source_cat])
-
-        for s in steps:
-            # we start by specifying the next step's category
-            new_cat = set([s[0]]).union(s[1])
-
-            matching_nodes = [G.nodes('category')[i] == new_cat for i in sorted(G)]
-
-            if np.any(matching_nodes):
-                new_step = sorted(G)[np.where(matching_nodes)[0].item()]
+class PCFG:
+    """Reduced, epsilon-free, integerised grammar plus Stolcke's two closures.
+ 
+    Only terminating derivations are counted, so for an inconsistent grammar
+    (p_finite < 1) everything below is conditioned on the derivation halting.
+    """
+ 
+    def __init__(self, rules, init="S", weights=None):
+        alts = {A: (list(r) if type(r) is list else [r])
+                for A, r in rules.items()}
+                
+        todo = list(alts)
+        while todo:                                    # used but undefined
+            for rhs in alts[todo.pop()]:
+                for c in rhs:
+                    if c.isupper() and c not in alts:
+                        alts[c] = []
+                        todo.append(c)
+        probs = {}
+        for A in alts:
+            if weights and A in weights:
+                w = np.asarray(weights[A], float)
+                probs[A] = list(w / w.sum())
             else:
-                new_step = max(G) + 1
-
-            # print('%s->%s'%(source_cat,new_cat))
-            # find a spouse if it exists
-
-            # bachelors = nx.descendants_at_distance(G.reverse(), target, dt-ds)
-            bachelors = [i for (i,j) in G.nodes('category') if len(j) == ds]
-            matching_nodes = [G.nodes('category')[i].union(source_cat) == new_cat for i in bachelors]
-
-            if np.any(matching_nodes):
-                # add spouses if they exist
-                if new_step not in list(G):
-                    G.add_node(new_step, category=new_cat)
-                G.add_edge(source, new_step)
-
-                for this_spouse in np.where(matching_nodes)[0]: # there are multiple parents
-                    G.add_edge(list(bachelors)[this_spouse], new_step)
-                    # print('%s+%s=%s'%(G.nodes('category')[list(bachelors)[this_spouse]],source_cat,new_cat))
-            
-            elif rule == 'minimal':
-                # don't make the child if there is no parent
-                if new_step in list(G):
-                    G.add_edge(source, new_step) # lay a stone, move on
-                else: 
-                    continue # otherwise this fork is over
-            elif rule == 'maximal':
-                # invent all possible parents
-                if new_step not in list(G):
-                    G.add_node(new_step, category=new_cat)
-
-                for sps in product(new_cat-source_cat, [source_cat]):
-                    new_spouse = max(G) + 1
-                    G.add_node(new_spouse, category=set([sps[0]]).union(sps[1]))
-                    G.add_edge(new_spouse, new_step)
-
-            # print('%s+%s=%s'%(G.nodes('category')[s],G.nodes('category')[source],new_cat))
-
-            if new_step != target:
-                self.path_to_node(G, new_step, target, rule=rule)
-
-class BinaryCategories(HierarchicalData):
-
-    def __init__(self, S):
-
-        self.cats = [set(np.nonzero(s)[0]) for s in S]
-        self.items = np.arange(len(S)) 
-
-        self.similarity_graph = self.fill_similarity_graph()
-
-class RegularTree(HierarchicalData):
-
-    def __init__(self, num_vars, fan_out, respect_hierarchy=True, 
-                    graph_rule='minimal', max_depth=None):
-        """ 
-        'num vars' is a list of number of variables in each layer,
-        while 'fan_out' is how many children each parent has 
-        e.g. num_vars=[1,2,4,8] with fan_out=2 is a normal tree
-        while num_vars=[1,1,1,1] with fan_out=2 is a hypercube
-
-        Possible rules for connecting the graph:
-            'minimal' (default)
-                only adds a new step if there exists a node at the same depth as source,
-                such that labels(source) V labels(node) = labels(step)
-            'matching' 
-                creates all possible new steps, but only uses existing valid parents
-            'maximal'
-                creates all possible new steps, and all possible valid parents
-        """
-
-        self.fan_out = fan_out
-        self.respect_hierarchy = respect_hierarchy
-
-        self.depth = len(num_vars)
-        self.num_vars = sum(num_vars)
-
-        ######### Make the variable tree
-        tot_var = np.cumsum([0,]+num_vars)
-        nodes = [np.arange(tot_var[i],tot_var[i]+num_vars[i])+1 for i in range(self.depth)]
-
-        # horrible,  awful list comprehensions, to keep things fast (?)
-        var_labels = [nodes[0]]
-        _ = [var_labels.append(self.label_nodes(var_labels[i], nodes[i+1])) \
-            for i in range(self.depth-1)]
-        var_labels = np.concatenate(var_labels)
-        # print(children)
-        # edges = [[p,c] for i in range(self.depth-1) for p,c in zip(np.repeat(children[i], fan_out), children[i+1])]
-        
-        var_num = fan_out**np.arange(self.depth)
-        node_idx = np.split(np.arange(np.sum(var_num)), var_num- 1)[1:]
-        edges = [[p,c] for i in range(self.depth-1) \
-            for p,c in zip(np.repeat(node_idx[i],fan_out), node_idx[i+1])]
-
-        # match nodes with var label
-        nds = [(np.arange(np.sum(var_num))[i], {'var':int(np.floor(var_labels[i]))}) \
-            for i in range(np.sum(var_num))]
-
-        # turn into a networkx graph which can easily generate data
-        var_graph = nx.DiGraph()
-        var_graph.add_nodes_from(nds)
-        var_graph.add_edges_from(edges)
-        
-        ######### Make the value tree
-        # convert it into a feature-generator
-        val_graph = nx.DiGraph()
-        val_num = fan_out**np.arange(self.depth+1)
-        node_idx = np.split(np.arange(np.sum(val_num)+1), val_num-1)[1:]
-        val_edges = [[p,c] for i in range(self.depth) \
-            for p,c in zip(np.repeat(node_idx[i],fan_out), node_idx[i+1])]
-
-        # _ = [[[val_graph.add_edge(e[0]+a*1j, e[1]+b*1j) for b in range(self.fan_out)] \
-        #     for a,e in enumerate(var_graph.out_edges(n))] for n in var_graph.nodes]
-        val_labels = [{'var':n[1], 'val':b} for n in var_graph.nodes(data='var') \
-        for b in range(self.fan_out) ]
-
-        val_graph.add_nodes_from([(i,j) for i,j in zip(np.arange(1,np.sum(val_num)+1), val_labels)])
-        val_graph.add_edges_from(val_edges)
-
-        # roots = [node for node in val_graph.nodes() \
-        #     if val_graph.out_degree(node)!=0 and val_graph.in_degree(node)==0]
-        leaves = [node for node in val_graph.nodes() \
-            if val_graph.in_degree(node)!=0 and val_graph.out_degree(node)==0]
-
-        val_graph.add_node(0, var=0,val=0)
-        # _ = [val_graph.add_edge(0, n) for n in roots]
-
-        self.variable_tree = var_graph # tree of variables
-        self.value_tree = val_graph # tree of variable labels 
-
-        self.terminals = leaves
-
-        # unique label combinations into categories
-        varval = [(self.value_tree.nodes(data='var')[i],self.value_tree.nodes(data='val')[i]) \
-            for i in sorted(self.value_tree.nodes)[1:]]
-        cats = np.unique(varval, axis=0, return_inverse=True)[1]
-        paths = [np.array(list(all_simple_paths(self.value_tree, 0, n))).squeeze() \
-            for n in self.terminals]
-        self.cats = [set([cats[i] for i in p[1:]-1]) for p in paths]
-        self.num_cat = max([max(i) for i in self.cats])+1
-
-        ###### Convert to similarity graph
-        # if graph_rule == 'generic':
-        self.items = np.arange(len(leaves))+1
-        self.similarity_graph = self.fill_similarity_graph()
-        # else:
-        #     self.similarity_graph = self.fill_similarity_graph_from_tree(graph_rule)
-        #     self.items = self.terminals 
-
-        self.num_data = len(leaves)
-
-    def labels(self, these_leaves):
-        """ finds the label of each of 'these_leaves' """
-
-        data = [np.array(list(all_simple_paths(self.value_tree, 0, n))).squeeze() for n in these_leaves]
-
-        idx = np.array([self.value_tree.nodes(data='var')[n]-1 for d in data for n in d[1:]])
-        val = np.array([self.value_tree.nodes(data='val')[n] for d in data for n in d[1:]])
-        var = np.concatenate([np.ones(len(d)-1, dtype=int)*i for i,d in enumerate(data)],-1)
-
-        labels = np.zeros((self.num_vars,var.max()+1))*np.nan
-        labels[idx,var] = val
-
-        return labels
-
-    def fill_similarity_graph_from_tree(self, rule='minimal'):
-        """ 
-        DEPRECATED
-
-        Make a graph so that distance between nodes matches distance in the labels
-        
-        Basic algorithm is:
-            see if any two nodes share a label
-
-        """
-
-        # Make similarity graph
-        G = nx.DiGraph()
-        G.add_edges_from(self.value_tree.edges)
-        # turn variable/value combinations into unique categories
-        varval = [(self.value_tree.nodes(data='var')[i],self.value_tree.nodes(data='val')[i]) \
-            for i in self.value_tree.nodes]
-        cats = np.unique(varval, axis=0, return_inverse=True)[1]
-        cats = {i:set([j]) for i,j in zip(self.value_tree.nodes, cats)}
-        cats[0] = set()
-        nx.set_node_attributes(G, values=cats, name='category')
-
-        # first label all nodes according to ancestry
-        node_cats = [] # vertex labels
-        depth = []
-        for node in sorted(G):
-            if node==0:
-                depth.append(0)
-                node_cats.append(set())
-                continue
-            par_cats = set.union(*[(G.nodes('category')[j]) for j in G.predecessors(node)])
-            new_cat = G.nodes('category')[node].union(par_cats)
-            G.nodes[node]['category'] = new_cat
-            node_cats.append(new_cat)
-            depth.append(len(new_cat))
-        depth = np.array(depth)
-
-        # iterate over pairs of the same depth
-        all_nodes = np.arange(len(G))
-        for i in all_nodes: # shallower nodes first
-            for j in all_nodes[(depth==depth[i])&(all_nodes>i)]:
-                L_ij = node_cats[i].intersection(node_cats[j])
-
-                if len(L_ij)<1: # check if they're related
+                probs[A] = [1.0 / len(alts[A])] * len(alts[A]) if alts[A] else []
+ 
+        alts, probs = self._reduce(alts, probs, init)
+        n = self._fixpoint(alts, probs, empty_only=True)   # P(A =>* eps)
+        z = self._fixpoint(alts, probs, empty_only=False)  # P(A halts)
+        self.p_finite = z[init]
+        self.p_empty = n[init] / z[init]
+        self.q_start = z[init] - n[init]
+        alts, probs = self._unepsilon(alts, probs, n, z)
+        if init not in alts:
+            raise ValueError(f"{init!r} derives only the empty string")
+        alts, probs = self._reduce(alts, probs, init)
+ 
+        terms = sorted({c for A in alts for r in alts[A]
+                        for c in r if not c.isupper()})
+        self.vocab = [None] + terms
+        self.token_of = {c: i + 1 for i, c in enumerate(terms)}
+ 
+        names = sorted(alts)
+        idx = {A: i for i, A in enumerate(names)}
+        m = len(names) + 1
+        self.phi_nt = len(names)
+        self.nt_name = names + ["<start>"]
+        self.init_nt = idx[init]
+        self.lhs, self.rhs, self.prob = [], [], []
+        self.rules_of = [[] for _ in range(m)]
+        for A in names:
+            for r, p in zip(alts[A], probs[A]):
+                self.rules_of[idx[A]].append(len(self.lhs))
+                self.lhs.append(idx[A])
+                self.rhs.append(tuple((NT, idx[c]) if c.isupper()
+                                      else (T, self.token_of[c]) for c in r))
+                self.prob.append(p)
+        self.phi = len(self.lhs)
+        self.rules_of[self.phi_nt].append(self.phi)
+        self.lhs.append(self.phi_nt)
+        self.rhs.append(((NT, idx[init]),))
+        self.prob.append(1.0)
+        self.is_unit = [len(r) == 1 and r[0][0] == NT for r in self.rhs]
+ 
+        PL, PU = np.zeros((m, m)), np.zeros((m, m))
+        for i, r in enumerate(self.rhs):
+            if r[0][0] == NT:
+                PL[self.lhs[i], r[0][1]] += self.prob[i]
+                if self.is_unit[i]:
+                    PU[self.lhs[i], r[0][1]] += self.prob[i]
+        self.RL, self.RU = self._closure(PL), self._closure(PU)
+ 
+    # -- compilation helpers ----------------------------------------------
+ 
+    @staticmethod
+    def _reduce(alts, probs, init):
+        """Drop nonterminals deriving no terminal string, then unreachable
+        ones; renormalise what survives."""
+        while True:
+            gen, changed = set(), True
+            while changed:
+                changed = False
+                for A in alts:
+                    if A not in gen and any(
+                            all((not c.isupper()) or c in gen for c in r)
+                            for r in alts[A]):
+                        gen.add(A)
+                        changed = True
+            new_a, new_p, dropped = {}, {}, False
+            for A in alts:
+                if A not in gen:
+                    dropped = True
                     continue
-
-                # find or create nearest common ancestor
-
-                all_cats = [G.nodes('category')[n] for n in sorted(G)]
-                matching_nodes = np.isin(all_cats, L_ij)
-
-                all_anc = nx.descendants(G.reverse(), i).intersection(nx.descendants(G.reverse(), j))
-                anc_depths = [len(G.nodes('category')[a]) for a in all_anc]
-                anc = list(all_anc)[np.argmax(anc_depths).item()]
-
-                if np.any(matching_nodes): # there is an existing node
-                    new_anc = sorted(G)[np.where(matching_nodes)[0].item()]
-                    if np.any(np.isin(list(all_anc), new_anc)): # it's already connected
+                keep = [(r, p) for r, p in zip(alts[A], probs[A])
+                        if all((not c.isupper()) or c in gen for c in r)]
+                dropped |= len(keep) != len(alts[A])
+                if keep:
+                    tot = sum(p for _, p in keep)
+                    new_a[A] = [r for r, _ in keep]
+                    new_p[A] = [p / tot for _, p in keep]
+            alts, probs = new_a, new_p
+            if not dropped:
+                break
+        if init not in alts:
+            raise ValueError(f"the language generated from {init!r} is empty")
+        reach, stack = {init}, [init]
+        while stack:
+            for r in alts[stack.pop()]:
+                for c in r:
+                    if c.isupper() and c not in reach:
+                        reach.add(c)
+                        stack.append(c)
+        return {A: alts[A] for A in reach}, {A: probs[A] for A in reach}
+ 
+    @staticmethod
+    def _fixpoint(alts, probs, empty_only, iters=20000):
+        """Least fixpoint of x[A] = sum_r p * prod x[children]. With
+        empty_only, a terminal kills the term (giving P(A =>* eps)); otherwise
+        it contributes 1 (giving P(A has a finite derivation))."""
+        x = {A: 0.0 for A in alts}
+        for _ in range(iters):
+            delta = 0.0
+            for A in alts:
+                tot = 0.0
+                for r, p in zip(alts[A], probs[A]):
+                    q = p
+                    for c in r:
+                        q *= x[c] if c.isupper() else (0.0 if empty_only else 1.0)
+                    tot += q
+                delta = max(delta, abs(tot - x[A]))
+                x[A] = tot
+            if delta < 1e-14:
+                break
+        return x
+ 
+    @staticmethod
+    def _unepsilon(alts, probs, n, z):
+        """Delete nullable symbols from each RHS in every combination, weighting
+        by n (child went empty) or q = z - n (child did not). The weights over
+        non-empty outcomes total q[A], so dividing by it renormalises."""
+        q = {A: z[A] - n[A] for A in alts}
+        out_a, out_p = {}, {}
+        for A in alts:
+            if q[A] <= _TOL:
+                continue
+            acc = defaultdict(float)
+            for rhs, p in zip(alts[A], probs[A]):
+                if any(c.isupper() and z[c] <= _TOL for c in rhs):
+                    continue
+                pos = [i for i, c in enumerate(rhs) if c.isupper() and n[c] > _TOL]
+                for mask in range(1 << len(pos)):
+                    drop = {pos[b] for b in range(len(pos)) if mask >> b & 1}
+                    kept = [c for i, c in enumerate(rhs) if i not in drop]
+                    if not kept:
                         continue
-
-                else:
-                    new_anc = max(G)+1
-                    G.add_node(new_anc, category=L_ij)
-
-                # sanity checks
-                if len(L_ij)-len(G.nodes('category')[anc]) == 1: # pretty sure it's always ==1
-                    G.add_edge(anc, new_anc)
-                elif len(L_ij) == len(G.nodes('category')[anc]):
-                    print('OOSP!')
-                    raise ValueError
-                else: 
-                    print('DOUBLE OOPS!') # but can't prove it
-                    raise ValueError
-                    print('%s, %s, %s'%(node_cats[i], node_cats[j], L_ij))
-                    print([all_cats[anc]])
-                # find/make a path from new NCA to each node
-                self.path_to_node(G, new_anc, i, rule)
-                self.path_to_node(G, new_anc, j, rule)
-
-        return G
-
-    def label_nodes(self, parents, children): 
-        """ 
-        connects parent nodes to children nodes 
-        
-        this function should be subject to the most change, I think
-        """
-        N = self.fan_out
-
-        L1 = len(parents)
-        L2 = len(children)
-
-        n2 = N*L1
-        # reps = (N*len(L1))/(len(L2))//N
-        if L1 <= L2:
-            reps = N
+                    w = p
+                    for i, c in enumerate(rhs):
+                        w *= n[c] if i in drop else (q[c] if c.isupper() else 1.0)
+                    if w > _TOL:
+                        acc[''.join(kept)] += w
+            if acc:
+                out_a[A] = list(acc)
+                out_p[A] = [v / q[A] for v in acc.values()]
+        return out_a, out_p
+ 
+    @staticmethod
+    def _closure(P):
+        try:
+            R = np.linalg.inv(np.eye(len(P)) - P)
+        except np.linalg.LinAlgError:
+            raise ValueError("closure is singular; the grammar is improper")
+        R[np.abs(R) < _TOL] = 0.0
+        if np.any(R < 0):
+            raise ValueError("closure diverged; the grammar is improper")
+        return R
+ 
+    def generate(self, rng=None, tree=False, max_len=10_000):
+        """Sample a sentence left to right from `continuations`. With
+        tree=True also returns a phrase structure sampled from the parse forest
+        of that sentence; together the two match top-down derivation."""
+        rng = np.random.default_rng() if rng is None else rng
+        st = EarleyState(self)
+        tokens = []
+        while len(tokens) <= max_len:
+            cands, ps = st.continuations()
+            t = _pick(rng, cands, ps)
+            if t == EOS:
+                return (tokens, st.tree(rng)) if tree else tokens
+            st.push(t)
+            tokens.append(t)
+        raise RuntimeError("max_len exceeded")
+ 
+    def encode(self, text, strict=True):
+        if strict and not set(text) <= set(self.token_of):
+            raise KeyError(f"not terminals: {sorted(set(text) - set(self.token_of))}")
+        return [self.token_of.get(c, -1) for c in text]      # -1 never matches
+ 
+    def decode(self, tokens):
+        return ''.join('' if t == EOS else self.vocab[t] for t in tokens)
+ 
+ 
+class EarleyState:
+    """One left-to-right parse. Items are (rule, dot, origin) -> [alpha, gamma].
+ 
+    Forward probabilities are rescaled at each position by the one-step prefix
+    probability. That stops them underflowing on long sentences and makes the
+    denominator in `continuations` exactly 1. It is exact: an item's inner
+    probability picks up s_i / s_origin, and the factors cancel in both
+    completion and prediction.
+    """
+ 
+    def __init__(self, grammar):
+        g = self.g = grammar
+        seed = (g.phi, 0, 0)
+        self.chart = [{seed: [1.0, 1.0]}]
+        self.kernel = [[seed]]          # items prediction may fire from
+        self.log_scale = 0.0
+        self.tokens = []
+        self.viable = True
+        self._done = {}                 # position -> {(lhs, origin): [(rule, gamma)]}
+        self._process(0)
+ 
+    def _process(self, i):
+        g, chart = self.g, self.chart[i]
+ 
+        # completion, origins descending: an epsilon-free grammar makes
+        # completion origins strictly decrease, so one pass suffices. Unit
+        # rules are skipped because RU already sums over unit chains.
+        for k in range(i - 1, -1, -1):
+            batch = [(it[0], v[1]) for it, v in chart.items()
+                     if it[2] == k and it[1] == len(g.rhs[it[0]])
+                     and not g.is_unit[it[0]]]
+            for ridx, gam in batch:
+                col = g.RU[:, g.lhs[ridx]]
+                for (prid, pdot, porig), pv in self.chart[k].items():
+                    prhs = g.rhs[prid]
+                    if pdot >= len(prhs) or prhs[pdot][0] != NT:
+                        continue
+                    ru = col[prhs[pdot][1]]
+                    if ru == 0.0:
+                        continue
+                    new = (prid, pdot + 1, porig)
+                    ent = chart.get(new)
+                    if ent is None:
+                        ent = chart[new] = [0.0, 0.0]
+                        self.kernel[i].append(new)
+                    ent[0] += pv[0] * ru * gam
+                    ent[1] += pv[1] * ru * gam
+ 
+        # prediction, from kernel items only: RL already sums over left-corner
+        # chains, so predicting from predictions would double count.
+        for it in self.kernel[i]:
+            ridx, dot, _ = it
+            rhs = g.rhs[ridx]
+            if dot >= len(rhs) or rhs[dot][0] != NT:
+                continue
+            a = chart[it][0]
+            if a == 0.0:
+                continue
+            row = g.RL[rhs[dot][1]]
+            for Y in np.nonzero(row)[0]:
+                for r2 in g.rules_of[Y]:
+                    p = g.prob[r2]
+                    new = (r2, 0, i)
+                    ent = chart.get(new)
+                    if ent is None:
+                        ent = chart[new] = [0.0, p]
+                    ent[0] += a * row[Y] * p
+ 
+    def push(self, token):
+        """Scan one token. Returns False, leaving the state dead, if no
+        sentence of the grammar starts with the resulting prefix."""
+        g = self.g
+        i = len(self.tokens)
+        sym = (T, token)
+        hits, c = [], 0.0
+        for (ridx, dot, origin), v in self.chart[i].items():
+            if dot < len(g.rhs[ridx]) and g.rhs[ridx][dot] == sym:
+                hits.append(((ridx, dot + 1, origin), v))
+                c += v[0]
+        self.tokens.append(token)
+        if c <= 0.0:
+            self.chart.append({})
+            self.kernel.append([])
+            self.viable = False
+            return False
+        self.chart.append({new: [v[0] / c, v[1] / c] for new, v in hits})
+        self.kernel.append([new for new, _ in hits])
+        self.log_scale += float(np.log(c))
+        self._process(i + 1)
+        return True
+ 
+    # -- phrase structure --------------------------------------------------
+ 
+    def _completed(self, i):
+        """Completed items of set i, grouped by (nonterminal, origin)."""
+        by = self._done.get(i)
+        if by is None:
+            g, by = self.g, defaultdict(list)
+            for (r, dot, o), v in self.chart[i].items():
+                if dot == len(g.rhs[r]) and v[1] > 0.0:
+                    by[(g.lhs[r], o)].append((r, v[1]))
+            self._done[i] = by
+        return by
+ 
+    def tree(self, rng=None, max_depth=1000):
+        """Sample a parse of the tokens read so far, proportional to inner
+        probability -- i.e. from P(tree | sentence). Ambiguous sentences give a
+        different tree each call."""
+        g = self.g
+        if not self.complete:
+            raise ValueError("the tokens so far are not a complete sentence")
+        rng = np.random.default_rng() if rng is None else rng
+        if not self.tokens:
+            return (g.nt_name[g.init_nt], ())
+        return self._sub(g.init_nt, 0, len(self.tokens), rng, max_depth)
+ 
+    def _sub(self, Z, j, i, rng, depth):
+        if depth <= 0:
+            raise RecursionError("unit-production cycle while extracting a tree")
+        opts = self._completed(i).get((Z, j), ())
+        r = _pick(rng, [o[0] for o in opts], [o[1] for o in opts])
+        return (self.g.nt_name[Z], self._kids(r, j, i, rng, depth - 1))
+ 
+    def _kids(self, r, j, i, rng, depth):
+        """Split [j, i) across the RHS of r, right to left. Item (r, t, j) sits
+        in set p exactly when the first t symbols cover [j, p), so the splits
+        are read straight off the chart; weighting each by the inner
+        probability of the two parts samples the forest correctly, the
+        rescaling factors being constant across split points."""
+        g = self.g
+        rhs = g.rhs[r]
+        plan, end = [], i
+        for t in range(len(rhs) - 1, -1, -1):
+            kind, val = rhs[t]
+            if kind == T:
+                plan.append((kind, val, end - 1, end))
+                end -= 1
+            else:
+                cands, ws = [], []
+                for p in range(j, end + 1):
+                    left = self.chart[p].get((r, t, j))
+                    if left is None or left[1] <= 0.0:
+                        continue
+                    tot = sum(gm for _, gm in self._completed(end).get((val, p), ()))
+                    if tot > 0.0:
+                        cands.append(p)
+                        ws.append(left[1] * tot)
+                p = _pick(rng, cands, ws)
+                plan.append((kind, val, p, end))
+                end = p
+        return tuple(val if kind == T else self._sub(val, a, b, rng, depth)
+                     for kind, val, a, b in reversed(plan))
+ 
+    @property
+    def prefix_logprob(self):
+        """log P(some sentence starts with the tokens so far), terminating
+        derivations only."""
+        if not self.viable:
+            return -np.inf
+        if not self.tokens:
+            return float(np.log(self.g.p_finite))
+        return self.log_scale + float(np.log(self.g.q_start))
+ 
+    @property
+    def sentence_logprob(self):
+        """log P(the tokens so far are exactly a sentence)."""
+        g = self.g
+        if not self.viable:
+            return -np.inf
+        if not self.tokens:
+            return float(np.log(g.p_empty * g.p_finite)) if g.p_empty else -np.inf
+        gam = self.chart[len(self.tokens)].get((g.phi, 1, 0))
+        if not gam or gam[1] <= 0.0:
+            return -np.inf
+        return self.log_scale + float(np.log(gam[1] * g.q_start))
+ 
+    @property
+    def complete(self):
+        return self.sentence_logprob > -np.inf
+ 
+    def continuations(self):
+        """(tokens, probs): the exact next-token distribution, token 0 = EOS.
+        ([], []) once the prefix is dead. Rescaling makes the denominator 1."""
+        g = self.g
+        i = len(self.tokens)
+        if not self.viable:
+            return [], []
+        acc = defaultdict(float)
+        for (ridx, dot, _), v in self.chart[i].items():
+            rhs = g.rhs[ridx]
+            if dot < len(rhs) and rhs[dot][0] == T:
+                acc[rhs[dot][1]] += v[0]
+ 
+        toks = sorted(acc)
+        probs = [float(acc[t]) for t in toks]
+        if i == 0:
+            stop = g.p_empty
+            probs = [p * (1.0 - stop) for p in probs]
         else:
-            # reps = N + N*((n2 - len(L2))//N)
-            reps = int(np.ceil(n2/L2))
-        # reps = N
-        # n_s = (reps*len(L2) - N*len(L1))//reps
-        # n_s = np.max([n_s, int(np.ceil((reps*len(L2) - n2 + n_s)/reps))])
-        # n_dup = n2 - n_s # how many children are duplicated 
-        n_dup = int(np.ceil((n2 - L2)/(reps-1)))*reps
-        n_s = n2 - n_dup
-        if self.respect_hierarchy:
-            dups = np.repeat(children,reps) + np.mod(np.arange(reps*L2),reps)/reps
-            c = np.append(dups[:n_dup],children[L2-n_s:])
-        else: 
-            c = np.tile(children, reps)[:n2] + (np.arange(n2)//L2)/reps
-        # p = np.repeat(L1, N)
-        # return [[p[i], c[i]] for i in range(n2)]
-        return c
-
-
-class LabelledItems(HierarchicalData):
-
-    def __init__(self, num_item=None, num_lab=None, labels=None):
-        """
-        Either supply the number of conditions and labels, or just supply 
-        a list of sets containing each item's labels
-
-        If both are supplied, labels are used
-        """
-
-        if labels is not None:
-            self.cats = 1*labels
-            self.items = np.arange(len(labels)) + 1
-            self.num_vars = max([max(i) for i in labels if len(i)>0]) + 1
-            self.num_data = len(labels)
-            self.depth = max([len(l) for l in labels])
-
-            # assumes that each item has the same number of labels!!!
-            # self.fan_out = int(len(labels)**(1/len(labels[0])))
-
-        elif num_item is not None:
-            # not implemented yet, need to think a lil bit
-            self.num_data = num_items
-            # self.
-
-        self.similarity_graph = self.fill_similarity_graph()
-
-    def represent_labels(self, these_leaves):
-        """ finds the label of each of 'these_leaves' """
-
-        idx = np.array([ i for j in these_leaves for \
-            i in self.similarity_graph.nodes('category')[j] ] )
-        var = np.repeat(np.arange(len(these_leaves)), 
-            [len(self.similarity_graph.nodes('category')[j]) for j in these_leaves])
-
-        labels = np.zeros((self.num_vars,len(these_leaves)))
-        labels[idx,var] = 1
-
-        return labels
-
-
+            gam = self.chart[i].get((g.phi, 1, 0))
+            stop = float(gam[1]) if gam else 0.0
+        if stop > 0.0:
+            toks, probs = [EOS] + toks, [stop] + probs
+        return toks, probs
+ 
+ 
+def _pick(rng, options, weights):
+    w = np.asarray(weights, float)
+    if not len(w) or w.sum() <= 0:
+        raise ValueError("no options to sample from")
+    return options[int(np.searchsorted(np.cumsum(w), rng.random() * w.sum()))]
+ 
+ 
+def bracket(tree, g):
+    """(S (E (T (F a))) ...) -- a bracketed phrase structure."""
+    label, kids = tree
+    if not kids:
+        return f"({label})"
+    parts = [g.vocab[k] if isinstance(k, int) else bracket(k, g) for k in kids]
+    return f"({label} {' '.join(parts)})"
+ 
+ 
+def label_paths(tree):
+    """One tuple of labels per token, root first. The last entry of each is the
+    token's preterminal, so [p[-1] for p in label_paths(t)] is a tag sequence."""
+    out = []
+ 
+    def walk(node, path):
+        label, kids = node
+        path += (label,)
+        for k in kids:
+            out.append(path) if isinstance(k, int) else walk(k, path)
+ 
+    walk(tree, ())
+    return out
+ 
