@@ -413,7 +413,7 @@ class PCFG:
     def __init__(self, rules, init="S", weights=None):
         alts = {A: (list(r) if type(r) is list else [r])
                 for A, r in rules.items()}
-                
+
         todo = list(alts)
         while todo:                                    # used but undefined
             for rhs in alts[todo.pop()]:
@@ -584,15 +584,19 @@ class PCFG:
         tree=True also returns a phrase structure sampled from the parse forest
         of that sentence; together the two match top-down derivation."""
         rng = np.random.default_rng() if rng is None else rng
+        nt = len(self.vocab)
         st = EarleyState(self)
         tokens = []
+        probs = []
         while len(tokens) <= max_len:
             cands, ps = st.continuations()
             t = _pick(rng, cands, ps)
             if t == EOS:
-                return (tokens, st.tree(rng)) if tree else tokens
+                return (tokens, probs, st.tree(rng)) if tree else (tokens, probs)
             st.push(t)
             tokens.append(t)
+            probs.append((ps@np.eye(nt)[cands])[1:])
+
         raise RuntimeError("max_len exceeded")
  
     def encode(self, text, strict=True):
