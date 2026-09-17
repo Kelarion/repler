@@ -590,12 +590,12 @@ class PCFG:
         probs = []
         while len(tokens) <= max_len:
             cands, ps = st.continuations()
+            probs.append((ps@np.eye(nt)[cands])[1:])
             t = _pick(rng, cands, ps)
             if t == EOS:
                 return (tokens, probs, st.tree(rng)) if tree else (tokens, probs)
             st.push(t)
             tokens.append(t)
-            probs.append((ps@np.eye(nt)[cands])[1:])
 
         raise RuntimeError("max_len exceeded")
  
