@@ -590,7 +590,7 @@ class PCFG:
         probs = []
         while len(tokens) <= max_len:
             cands, ps = st.continuations()
-            probs.append((ps@np.eye(nt)[cands])[1:])
+            probs.append(ps@np.eye(nt)[cands])
             t = _pick(rng, cands, ps)
             if t == EOS:
                 return (tokens, probs, st.tree(rng)) if tree else (tokens, probs)
