@@ -395,7 +395,7 @@ class ParsedSequence(object):
 
 ###########################################################
 ###### PCFG ###############
-###########################################################
+##########################################################
 
 EOS = 0
 NT, T = 0, 1
@@ -456,14 +456,17 @@ class Sequential:
             return None
         return st.best_tree() if best else st.tree(rng)
 
+    sep = ''          # separator between terminals in a decoded string
+
     def encode(self, text, strict=True):
-        """Characters outside the alphabet map to -1, which never matches."""
-        if strict and not set(text) <= set(self.token_of):
-            raise KeyError(f"not terminals: {sorted(set(text) - set(self.token_of))}")
-        return [self.token_of.get(c, -1) for c in text]
+        """Symbols outside the alphabet map to -1, which never matches."""
+        syms = text.split(self.sep) if self.sep else list(text)
+        if strict and not set(syms) <= set(self.token_of):
+            raise KeyError(f"not terminals: {sorted(set(syms) - set(self.token_of))}")
+        return [self.token_of.get(c, -1) for c in syms]
 
     def decode(self, tokens):
-        return ''.join('' if t == EOS else self.vocab[t] for t in tokens)
+        return self.sep.join(self.vocab[t] for t in tokens if t != EOS)
 
 
 class PCFG(Sequential):
@@ -1044,8 +1047,8 @@ class RegularGrammar(Sequential):
 
     State = WalkState
 
-    def __init__(self, graph, init=None, halt=None, weights="weight",
-                 label="label"):
+    def __init__(self, graph, init=None, halt=None, mean_length=10.0,
+                 weights="weight", label="label"):
         nodes = list(graph)
         if not nodes:
             raise ValueError("the graph has no nodes")
@@ -1058,9 +1061,18 @@ class RegularGrammar(Sequential):
                 P[idx[s], idx[t]] += float(d.get(weights, 1.0))
         row = P.sum(1, keepdims=True)
 
-        h = np.array([halt.get(s, 0.0) if isinstance(halt, dict) else
-                      (halt if halt is not None else
-                       graph.nodes[s].get("halt", 0.0)) for s in nodes], float)
+        given = halt is not None or any("halt" in graph.nodes[s] for s in nodes)
+        if given:
+            h = np.array([halt.get(s, 0.0) if isinstance(halt, dict) else
+                          (halt if halt is not None else
+                           graph.nodes[s].get("halt", 0.0)) for s in nodes], float)
+        else:
+            # Nothing says when to stop, so halt at a constant rate: lengths are
+            # geometric with mean `mean_length`, measured in emitted tokens.
+            if not mean_length or mean_length < 1:
+                raise ValueError("mean_length must be at least 1")
+            h = np.full(m, 1.0 / float(mean_length))
+        self.halt_rate = None if given else 1.0 / float(mean_length)
         h[row[:, 0] <= 0] = 1.0                       # a sink can only halt
         if np.any((h < 0) | (h > 1)):
             raise ValueError("halt probabilities must lie in [0, 1]")
@@ -1116,6 +1128,11 @@ class RegularGrammar(Sequential):
         self.pi = pi * z / (pi @ z)
 
         labels = [str(graph.nodes[s].get(label, s)) for s in nodes]
+        # node names like (0, 1) are not single characters, so strings of them
+        # need a separator; `sep` is empty whenever the labels are single chars
+        self.sep = '' if all(len(c) == 1 for c in labels) else '|'
+        if self.sep and any(self.sep in c for c in labels):
+            raise ValueError(f"node labels may not contain {self.sep!r}")
         self.vocab = [None] + sorted(set(labels))
         self.token_of = {c: i for i, c in enumerate(self.vocab) if i}
         emit = np.array([self.token_of[c] for c in labels])
