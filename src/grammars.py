@@ -396,41 +396,6 @@ class ParsedSequence(object):
 ###########################################################
 ###### PCFG ###############
 ###########################################################
- 
- """Probabilistic grammars that generate sequences left to right.
-
-Two grammar classes share one interface:
-
-    PCFG(rules)              context-free, from production-rule strings
-    RegularGrammar(graph)    regular, from a networkx Graph or DiGraph
-
-Both inherit `Sequential`, which supplies generate / continuations / parse /
-state / encode / decode. All a subclass provides is a `State` class with
-
-    .push(token) -> bool          False means the prefix is dead
-    .continuations() -> (tokens, probs)
-    .viable, .complete, .prefix_logprob, .sentence_logprob
-    .tree(rng), .best_tree()
-
-Token 0 is EOS; terminals are 1..V. `generate` returns the tokens and the dense
-next-token distribution used at each step -- one per token, plus the one that
-produced EOS -- so
-
-    prod_i probs[i][tokens[i]] * probs[-1][EOS] == P(sentence) / p_finite.
-
-Both states carry a *distribution* over the underlying structure rather than a
-single parse or walk, which is what makes those probabilities conditional on
-the tokens emitted so far rather than on hidden state the model cannot see.
-For PCFG that distribution is an Earley chart; for RegularGrammar it is a
-belief over graph nodes, which matters as soon as two nodes share a label.
-
-Both count terminating derivations only and condition on termination, so
-`p_finite` reports how much mass that discards: for a PCFG it is below 1 when
-rules can recurse forever, for a graph when a region cannot reach a halt.
-
-Trees are (label, children) with ints for terminals; `bracket` and
-`label_paths` render either kind.
-"""
 
 EOS = 0
 NT, T = 0, 1
