@@ -614,7 +614,7 @@ X_ = X_[:,X_.sum(0) > 0]
 
 # X_ = X_ - X_.mean(0)
 
-# X_ = util.embed(util.center(X_@X_.T))
+X_ = util.embed(util.center(X_@X_.T))
 
 # X_ /= X_.std(0)
 
@@ -627,56 +627,60 @@ X_ = X_[:,X_.sum(0) > 0]
 #                          # fit_intercept=False,
 #                          tree_reg=0,
 #                          weight_pr_reg=1,
-#                          weight_l2_reg=1e-1,
+#                          weight_l2_reg=1e-2,
 #                          weight_l1_reg=0,
 #                          sparse_reg=1,
 #                          # J_loss='mle',
 #                          # J_l1_reg=0.1,
 #                          # J_lr=1e-3,
-#                          J_lr=0,
+#                          # J_lr=0,
 #                          # slab=True,
 #                          # slab_prior=0.1,
+#                          n_chains=8,
 #                          )
 
 mod = bae_models.BiPCA(4,
-                           # fit_intercept=False,
-                           tree_reg=0,
-                           sparse_reg=1,
-                           # J_loss='mle',
-                           # J_l1_reg=0.2,
-                           J_lr=1e-3,
-                           # J_lr=0,
-                           # fit_scl=False,
-                           # slab=True,
-                           # saem=True,
-                           # gamma=1e-1,
-                           n_chains=8,
-                           )
+                        # fit_intercept=False,
+                        # tree_reg=1e-1,
+                        tree_reg=0,
+                        sparse_reg=1,
+                        # J_loss='mle',
+                        J_l1_reg=0.1,
+                        # J_lr=1e-3,
+                        J_lr=1e-2,
+                        # fit_scl=False,
+                        # slab=True,
+                        # saem=True,
+                        # gamma=1e-1,
+                        n_chains=8,
+                        var_update='legacy',
+                        m_step='legacy',
+                        scale_lr=0.1,
+                        )
 
-# mod = bae_models.KernelBMF(5,
-#                                sparse_reg=1,
-#                                tree_reg=0,
-#                                # uniform_scale=False,
-#                                # l1_reg=10,
-#                                uniform_scale=True,
-#                                kernel_input=True,
-#                                J_lr=1e-12,
-#                                )
-# mod = old_bae_models.KernelBMF2(5,
-#                                sparse_reg=0,
-#                                tree_reg=0,
-#                                # uniform_scale=False,
-#                                # l1_reg=10,
-#                                uniform_scale=True,
-#                                )
+# en = mod.fit(X_ / X_.std(),
+#              period=100,
+#              initial_temp=50,
+#              decay_rate=0.88, 
+#              min_temp=1, 
+#              scl_lr=1e-3,
+#              lr=1e-1,
+#              # hot_start=False,
+#              )
 
 en = mod.fit(X_ / X_.std(),
-             period=100,
-             initial_temp=50,
-             decay_rate=0.88, 
-             min_temp=1, 
-             scl_lr=1e-3,
-             lr=1e-1,
+             # period=10,
+             # initial_temp=100,
+             # decay_rate=0.88,
+             # max_iter=None,
+             initial_temp=0,
+             decay_rate=1,
+             max_iter=1000,
+             min_temp=1,
+             scl_lr=1e-1,
+             # lr=0.25,
+             lr=1,
+             # scale_lr=1e-1,
              # hot_start=False,
              )
 
@@ -685,7 +689,7 @@ mod.collapse()
 samps = mod.sample(X_  / X_.std(), n_samp=100)
 # samps = mod.sample(X_ / X_.std(), n_samp=100, slab=False)
 
-# samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
+samps = np.mod(samps + (samps.mean(1,keepdims=True) > 0.5), 2)
 
 plt.figure()
 
@@ -708,7 +712,7 @@ plt.subplot(2,mod.dim_hid, mod.dim_hid+2)
 plt.imshow(mod.operator.W.T@mod.operator.W)
 
 plt.subplot(2,mod.dim_hid, mod.dim_hid+3)
-plt.imshow(mod.latent_prior.J_W + mod.latent_prior.J_W.T + 2*np.diag(mod.latent_prior.J_h), 
+plt.imshow(mod.latent_prior.J + mod.latent_prior.J.T + 2*np.diag(mod.latent_prior.h), 
            'bwr', vmin=-1, vmax=1)
 
 #%%
@@ -743,7 +747,8 @@ args = {
         # 'sparse_reg': 1,
         'sparse_reg': 1,
         'tree_reg': 0,
-        'J_lr': 1e-3,
+        'J_lr': 1e-2,
+        'J_l1_reg': 0.1,
         # 'J_lr': 0,
         # 'slab': True,
         # 'fit_scl': False,
@@ -751,19 +756,28 @@ args = {
         # 'fit_intercept': True,
         # 'fit_intercept': False,
         'n_chains': 8,
+        'm_step': 'legacy',
+        'var_update': 'legacy',
+        'scale_lr': 0.1,
         }
 
-opt_args = {'initial_temp': 100,
-            'decay_rate': 0.88,
-            'period': 50,
+
+opt_args = {
+            # 'initial_temp': 100,
+            # 'decay_rate': 0.88,
+            # 'period': 50,
+            'initial_temp': 0,
+            'decay_rate': 1,
+            'max_iter': 1000,
+            # 'max_iter': None,
             'hot_start': True,
             # 'hot_start': False,
             # 'scl_lr': 0,
-            'scl_lr': 1e-3,
+            'scl_lr': 1e-1,
             'min_temp': 1,
             # 'min_temp': 1e-4,
             # 'lr': 1e-2,
-            'lr':1e-1,
+            'lr':1,
             }
 
 n_run = 1
@@ -784,7 +798,7 @@ for _ in range(n_run):
         
         trn[i] += np.mean(wa) / n_run
         tst[i] += np.mean(ba) / n_run
-        ens.append(en)
+        # ens.append(en)
         sigs.append(mod.sigma_x)
 
 plt.plot(kays, trn)

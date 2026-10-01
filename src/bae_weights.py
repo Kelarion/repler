@@ -351,8 +351,9 @@ class Procrustes:
     n_chains: int = 1
     fit_intercept: bool = True
     fit_scl: bool = True
-    W_lr: float = 0.25               # relaxation of the polar (Procrustes) update
     scale_lr: float = 0.1           # log-space relaxation of the decoder scale
+    m_step: str = 'reference'        # 'reference' (minimal_structured_bipca) or
+                                     # 'legacy' (the pre-port update; see backward)
     init_jitter: float = 0.1         # multi-chain: per-chain perturbation of the
                                      # shared hot-start (followed by a polar project)
 
@@ -384,12 +385,13 @@ class Procrustes:
     def gram(self):
         return (self._scl ** 2)[..., None, None] * (_swap(self.W) @ self.W)
 
-    def init_params(self, X, dim_hid, hot_start=True, lr=1.0):
+    def init_params(self, X, dim_hid, hot_start=True, lr=0.25):
         """W from the data (PCA) or a random orthonormal frame; `lr` sets the
         intercept relaxation (W and the scale have their own dataclass lrs)."""
         self.dim_hid = dim_hid
         self.d = d = X.shape[1]
         self.b_lr = lr
+        self.W_lr = lr
         b0 = X.mean(0)
         scl0 = np.sqrt(np.mean((X - b0) ** 2)) if self.fit_scl else 1.0
 
@@ -439,10 +441,17 @@ class Procrustes:
 
     def backward(self, ES, X):
         """One decoder update, then the post-update residual (whose mean square is
-        the model's energy).  W is relaxed toward the orthogonal-Procrustes solve
-        of the CENTERED data, the scale toward its least-squares target in LOG
-        space (so the step is scale-free), and the intercept toward its exact
-        closed form."""
+        the model's energy).
+
+        m_step='reference' (default, minimal_structured_bipca._decoder_step): W is
+        relaxed toward the orthogonal-Procrustes solve of the CENTERED data, the
+        scale toward its least-squares target in LOG space (so the step is
+        scale-free), and the intercept toward its exact closed form.
+
+        m_step='legacy' restores the pre-port update -- see `_backward_legacy`."""
+        if self.m_step == 'legacy':
+            return self._backward_legacy(ES, X)
+
         xbar, zbar = X.mean(-2), ES.mean(-2)
         Xc, Zc = X - xbar[..., None, :], ES - zbar[..., None, :]
 
@@ -463,14 +472,40 @@ class Procrustes:
 
         return X - self.forward(ES)
 
+    def _backward_legacy(self, ES, X):
+        """The pre-port M-step, kept for A/B testing against the reference one.
+
+        Three differences: the Procrustes solve is on UNCENTERED data (the
+        intercept is subtracted instead, via b (sum_i ES_i)^T), W is REPLACED by
+        the polar factor rather than relaxed toward it (no W_lr), and the scale is
+        the mean singular value relaxed LINEARLY rather than in log space.  Both
+        the scale and the intercept move at the single `lr` from init_params, so
+        `W_lr` / `scale_lr` are unused here; pass lr=1.0 to reproduce the old
+        default exactly."""
+        lr = self.b_lr
+        ridge = 1e-6 * np.eye(self.d, self.dim_hid)
+        XtES = _swap(X) @ ES                                  # (..., d, m)
+        bES = self.b[..., :, None] * ES.sum(-2)[..., None, :]
+        U, s, Vt = np.linalg.svd(XtES - bES + ridge, full_matrices=False)
+        self.W = U @ Vt
+
+        if self.fit_scl:
+            den = np.maximum((ES ** 2).sum((-2, -1)), 1e-12)
+            self.scl = self._scl + lr * (s.sum(-1) / den - self._scl)
+        if self.fit_intercept:
+            Wz = np.einsum('...dm,...m->...d', self.W, ES.mean(-2))
+            self.b = self.b + lr * (X.mean(-2) - self._scl[..., None] * Wz - self.b)
+        return X - self.forward(ES)
+
     def to_serial(self, c):
         """Return chain c as a single-chain (n_chains=1) Procrustes."""
         op = Procrustes(fit_intercept=self.fit_intercept, fit_scl=self.fit_scl,
-                        W_lr=self.W_lr, scale_lr=self.scale_lr)
+                        scale_lr=self.scale_lr, m_step=self.m_step)
         pick = (lambda a: a[c]) if self._multi else (lambda a: a)
         op.W, op.b = pick(self.W).copy(), pick(self.b).copy()
         op.scl = np.asarray(pick(self._scl))
-        op.b_lr, op.dim_hid, op.d = self.b_lr, self.dim_hid, self.d
+        op.b_lr, op.W_lr = self.b_lr, self.W_lr
+        op.dim_hid, op.d = self.dim_hid, self.d
         return op
 
 

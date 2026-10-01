@@ -312,14 +312,14 @@ X_ = out['PFC']['rsa']
 
 # X_ -= X_.mean(0)
 
-mod = old_bae_models.SemiBMF(5,
-                         nonneg=True,
-                         tree_reg=1e-3,
-                         weight_pr_reg=1,
-                         weight_l2_reg=1e-2,
-                         weight_l1_reg=0,
-                         sparse_reg=1e-1,
-                         )
+# mod = old_bae_models.SemiBMF(5,
+#                          nonneg=True,
+#                          tree_reg=1e-3,
+#                          weight_pr_reg=1,
+#                          weight_l2_reg=1e-2,
+#                          weight_l1_reg=0,
+#                          sparse_reg=1e-1,
+#                          )
 
 # mod = old_bae_models.SemiBMF(7,
 #                          nonneg=False,
@@ -349,22 +349,22 @@ mod = old_bae_models.SemiBMF(5,
 #                           )
 
 
-# mod = bae_models.JBMF(4,
-#                          # nonneg=True,
-#                          nonneg=False,
-#                          # fit_intercept=False,
-#                          tree_reg=0,
-#                          weight_pr_reg=1,
-#                          weight_l2_reg=1e-3,
-#                          weight_l1_reg=1e-2,
-#                          sparse_reg=1e-2,
-#                          # J_loss='mle',
-#                          J_loss='rple',
-#                          # J_l1_reg=1e-3,
-#                          J_lr=1e-3,
-#                          # slab=True,
-#                          # slab_prior=0.1,
-#                          )
+mod = bae_models.JBMF(4,
+                         # nonneg=True,
+                         nonneg=False,
+                         # fit_intercept=False,
+                         tree_reg=0,
+                         weight_pr_reg=1,
+                         weight_l2_reg=1e-3,
+                         weight_l1_reg=1e-2,
+                         sparse_reg=1e-2,
+                         # J_loss='mle',
+                         J_loss='rple',
+                         # J_l1_reg=1e-3,
+                         J_lr=1e-3,
+                         # slab=True,
+                         # slab_prior=0.1,
+                         )
 
 # mod = old_bae_models.SpikeNMF(4,
 #                          nonneg=True, 

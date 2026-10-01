@@ -129,6 +129,7 @@ for _ in tqdm(range(n_run)):
                 recon[i,j,k] += ls[-1] / n_run
                 betas[i,j,k] += prior.beta[0] / n_run
             
+            
 # plt.subplot(1,2,1)
 # plt.plot(ls)
 # plt.ylabel('J recovery (cosine sim)')

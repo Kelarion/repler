@@ -197,6 +197,20 @@ class BMF:
             pbar = tqdm(range(max_iter))
 
         en = []
+        # Close the held-out entries off BEFORE anything reads the data -- the
+        # hot-start SVD, the intercept, the decoder scale and the sign-of-drive
+        # spike seed all happen inside initialize(), and the first E-step runs
+        # before the first impute().  From here on the fit is a function of the
+        # observed entries alone.
+        if mask is not None:
+            # A single chain refines the caller's array in place (callers read the
+            # imputations back out of it); a multi-chain fit keeps that array
+            # pristine and imputes into its own per-chain copy, so seed a copy
+            # there and run the whole fit off it.
+            X0 = data[0]
+            if getattr(self, 'n_chains', 1) > 1:
+                X0 = np.array(X0, dtype=float, copy=True)
+            data = (self._seed_imputation(X0, mask),) + tuple(data[1:])
         if not self.initialized:
             self.initialize(*data, **opt_args)
         # A masked fit owns its imputations: re-seed the per-chain working copy from
@@ -264,6 +278,12 @@ class BMF:
     def _latent_sweep(self, X, **args):
         """One extra E-step on the persistent latents (hook for `refine`)."""
         return self.EStep(X, self.S)
+
+    def _seed_imputation(self, X, mask):
+        """Hook: overwrite the masked entries of X before the fit reads them.
+        A model with no imputing E-step never gets here -- `grad_step` refuses a
+        mask outright -- so the base is a no-op."""
+        return X
 
     def sample(self, X, temp=None, n_samp=1, burnin=10, per_chain=False, mask=None,
                **args):
@@ -338,6 +358,12 @@ class LinearGaussianBMF(BMF):
     latent_prior: LatentPrior = field(default_factory=LatentPrior)  # the latent side
     m_iters: int = 1                             # M-step updates per grad_step
     debug: bool = False                          # record per-iteration E-step log-odds
+    # How the observation variance moves (rate `scl_lr`, set in init_params):
+    #   'scale_free'  sigma *= exp(lr * clip(err/sigma - 1, +-5))   [the reference]
+    #   'legacy'      sigma *= exp(lr * (err - sigma))              [the pre-port rule]
+    # The legacy drive carries the units of err, so its effective rate scales with
+    # the data; the scale-free one is invariant.  Kept switchable for A/B testing.
+    var_update: str = 'scale_free'
 
     saem: bool = False                           # smooth the sufficient statistic
     gamma: float = 1.0                           # SAEM step size
@@ -570,6 +596,27 @@ class LinearGaussianBMF(BMF):
         X[idx] = self.operator.forward(ES)[idx]
         return X
 
+    def _seed_imputation(self, X, mask):
+        """X[mask] <- the mean of the OBSERVED entries of the same feature, in
+        place.  Called by `fit` before initialization, so that the held-out
+        VALUES never reach the hot-start SVD, the intercept, the decoder scale,
+        the spike seed, or the first E-step (which precedes the first `impute`).
+
+        The per-feature observed mean is the natural seed here, not an arbitrary
+        one: it is exactly what the model reconstructs from an all-zero code once
+        the intercept is fit, so it commits the fit to nothing it would not
+        already assume.  A feature observed nowhere falls back to the grand
+        observed mean.  Mutates X, like the rest of the masked path."""
+        m = np.broadcast_to(np.asarray(mask, dtype=bool), X.shape)
+        obs = ~m
+        if not obs.any():
+            raise ValueError("mask holds out every entry; nothing left to fit")
+        seen = obs.sum(0)
+        total = np.where(obs, X, 0.0).sum(0)
+        fill = np.where(seen > 0, total / np.maximum(seen, 1), X[obs].mean())
+        X[m] = np.broadcast_to(fill, X.shape)[m]
+        return X
+
     def _latent_sweep(self, X, mask=None):
         lp = self.latent_prior
         return self.EStep(X, lp.S, lp.Z)
@@ -615,7 +662,8 @@ class LinearGaussianBMF(BMF):
         sq = resid ** 2
         err = sq.mean(axis=tuple(range(1, sq.ndim))) if self._multi else float(sq.mean())
 
-        drive = np.clip(err / np.maximum(self.sigma_x, 1e-12) - 1, -5.0, 5.0)
+        drive = (err - self.sigma_x if self.var_update == 'legacy' else
+                 np.clip(err / np.maximum(self.sigma_x, 1e-12) - 1, -5.0, 5.0))
         self.sigma_x = self.sigma_x * np.exp(self.scl_lr * drive)
         return err
 
@@ -725,14 +773,21 @@ class BiPCA(LinearGaussianBMF):
     """Binary PCA: a Procrustes operator (orthonormal W with one learned scale,
     Gaussian observations) + any latent prior.  The M-step follows
     minimal_structured_bipca: a relaxed polar update of W on centered data, a
-    log-space update of the scale, and the closed-form intercept."""
+    log-space update of the scale, and the intercept relaxed toward its closed
+    form.  The polar and intercept relaxations share the operator's single `lr`
+    (`fit(..., lr=...)`, default 0.25); the reference's exact decoder step is
+    lr=1.0 on the intercept with 0.25 on the polar, which one rate cannot express.
+
+    `m_step='legacy'` and `var_update='legacy'` restore the two pre-port update
+    rules (uncentered full-polar decoder / scale-dependent variance drive) for
+    A/B testing -- see Procrustes.backward and LinearGaussianBMF.MStep."""
 
     sparse_reg: float = 1e-2
     tree_reg: float = 0
     fit_intercept: bool = True
     fit_scl: bool = True
-    W_lr: float = 0.25           # relaxation of the orthogonal-Procrustes update
     scale_lr: float = 0.10       # log-space relaxation of the decoder scale
+    m_step: str = 'reference'    # decoder M-step: 'reference' | 'legacy'
     slab: bool = False
     slab_prior: float = 1.0
 
@@ -747,10 +802,13 @@ class BiPCA(LinearGaussianBMF):
 
     def __post_init__(self):
         super().__post_init__()
+        # The polar and intercept relaxations share one rate, the operator's `lr`
+        # (set in init_params, so reachable as fit(..., lr=...)); only the scale
+        # keeps its own.
         self.operator = Procrustes(n_chains=self.n_chains,
                                    fit_intercept=self.fit_intercept,
                                    fit_scl=self.fit_scl,
-                                   W_lr=self.W_lr, scale_lr=self.scale_lr)
+                                   scale_lr=self.scale_lr, m_step=self.m_step)
         common = dict(n_chains=self.n_chains, sparse_reg=self.sparse_reg,
                       tree_reg=self.tree_reg, slab=self.slab,
                       slab_prior=self.slab_prior)

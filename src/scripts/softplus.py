@@ -1151,8 +1151,8 @@ pt_approx = (pl_approx[None]*pg_approx*(1-crit[None]/np.pi))
 # pgest = (pt_approx/(2*(np.pi-crit)) - pcorr)/(1/(2*np.pi) - pcorr)
 # pgest = (pt/(2*(np.pi-crit)) - pcorr)/(1/(2*np.pi) - pcorr)
 # Phi = sts.vonmises(kpred).cdf(-crit)
-# pgest = (pt_approx - 2*Phi)/((1-crit/np.pi) - 2*Phi)
-pgest = 1-foo
+pgest = (pt_approx - 2*Phi)/((1-crit/np.pi) - 2*Phi)
+# pgest = 1-foo
 
 curv = kaps*np.exp(kaps)/(np.exp(kaps)-spc.i0(kaps))
 FI = curv[None]/(noises**2)[:,None]
@@ -1169,12 +1169,12 @@ cmap = cm.spring
 #     plt.plot(-np.log(noises), spc.logit(pt[:,i]/(1 - crit[i]/np.pi)), c=cmap(i/len(kaps)))
 #     plt.plot(-np.log(noises), spc.logit(pt[:,i]/(1 - crit[i]/np.pi)), c=cmap(i/len(kaps)))
     
-    # plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]), c=cmap(i/len(kaps)))
+#     plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]), c=cmap(i/len(kaps)))
 #     plt.plot(-np.log(noises), spc.logit(pt[:,i]), c=cmap(i/len(kaps)))
 #     # plt.plot(-np.log(noises), spc.logit(pt_cond[:,i]*(1 - crit[i]/np.pi)),'--', c=cmap(i/len(kaps)))
 
-for i in range(len(kaps)):
-    plt.plot(1-cvloc[:,i], pgest[:,i], c=cmap(i/len(kaps)))
+# for i in range(len(kaps)):
+#     plt.plot(1-cvloc[:,i], pgest[:,i], c=cmap(i/len(kaps)))
 
 # plt.semilogy()
 # plt.semilogx()

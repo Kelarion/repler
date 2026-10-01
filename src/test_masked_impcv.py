@@ -108,18 +108,23 @@ def check_mechanics(n_chains=1, seed=0):
 #  2. no peeking at the held-out block
 # ---------------------------------------------------------------------------
 
-def _fit_and_score(Xin, M, X, mask=True, seed=0):
+def _fit_and_score(Xin, M, X, mask=True, seed=0, lr=1.0):
     """Fit on `Xin` (masked unless mask=False) and score against the true X:
     (error on the observed block, correlation of the imputed held-out block)."""
     seed_all(seed)
     mod = nbm.BiPCA(4, tree_reg=0)
     Xw = 1.0 * Xin
-    mod.fit(Xw, mask=M if mask else None, **FIT)
+    mod.fit(Xw, mask=M if mask else None, lr=lr, **FIT)
     pred = mod(mod.sample(Xw, n_samp=8, burnin=10, mask=M)).mean(0)
     return float(mod.loss(X, mask=~M)), corr(pred[M], X[M])
 
 
-def check_no_peek(seed=0, blowup=50.0):
+def check_no_peek(seed=0, blowup=50.0, lr=1.0):
+    """`lr` is the operator's decoder rate.  The fit's FIRST E-step runs before
+    the first imputation, so it reads whatever sits under the mask; everything
+    after that is the model's own fill.  Whether that opening peek survives is a
+    question of how fast the decoder converges, which is what `lr` sets -- hence
+    the parameter (see the lr sweep in __main__)."""
     X, _, _ = synth(seed=seed)
     M = rand_mask(X.shape, 0.2, seed=seed + 1)
 
@@ -128,10 +133,53 @@ def check_no_peek(seed=0, blowup=50.0):
     Xbad = 1.0 * X
     Xbad[M] = blowup                         # ... and here it is replaced by garbage
 
-    return {'clean': _fit_and_score(X, M, X, seed=seed),
-            'mean-filled': _fit_and_score(Xfill, M, X, seed=seed),
-            'garbage': _fit_and_score(Xbad, M, X, seed=seed),
-            'garbage, UNmasked': _fit_and_score(Xbad, M, X, mask=False, seed=seed)}
+    kw = dict(seed=seed, lr=lr)
+    return {'clean': _fit_and_score(X, M, X, **kw),
+            'mean-filled': _fit_and_score(Xfill, M, X, **kw),
+            'garbage': _fit_and_score(Xbad, M, X, **kw),
+            'garbage, UNmasked': _fit_and_score(Xbad, M, X, mask=False, **kw)}
+
+
+def check_bitwise_no_peek(seed=0, lr=0.25, n_chains=1, slab=False, **model_kw):
+    """The strong form: whatever sits under the mask cannot reach the fit AT ALL.
+
+    Fit twice from the same seeds -- once on the true data, once with the held-out
+    entries replaced by arbitrary garbage -- and require every fitted quantity to
+    agree EXACTLY.  Anything that reads X[mask] anywhere (the hot-start SVD, the
+    intercept, the decoder scale, the spike seed, the opening E-step) shows up
+    here as a nonzero difference."""
+    X, _, _ = synth(seed=seed)
+    M = rand_mask(X.shape, 0.2, seed=seed + 1)
+
+    rng = np.random.default_rng(seed + 99)
+    variants = [1.0 * X]
+    for junk in (50.0, -1e3, np.nan):
+        Xb = 1.0 * X
+        Xb[M] = junk if np.isscalar(junk) else junk
+        variants.append(Xb)
+    Xr = 1.0 * X                               # and one with random garbage
+    Xr[M] = rng.normal(20, 5, int(M.sum()))
+    variants.append(Xr)
+
+    ref = None
+    worst = {}
+    for Xin in variants:
+        seed_all(seed)
+        mod = nbm.BiPCA(4, tree_reg=0, n_chains=n_chains, slab=slab, **model_kw)
+        Xw = 1.0 * Xin
+        mod.fit(Xw, mask=M, lr=lr, scl_lr=0.05, **FIT)
+        state = {'W': mod.operator.W, 'b': mod.operator.b,
+                 'scl': np.asarray(mod.operator._scl),
+                 'sigma_x': np.asarray(mod.sigma_x),
+                 'S': mod.latent_prior.S, 'Z': mod.latent_prior.Z,
+                 'X_obs': Xw[..., ~M] if Xw.ndim > M.ndim else Xw[~M]}
+        if ref is None:
+            ref = state
+            continue
+        for k, v in state.items():
+            d = np.abs(np.asarray(v) - np.asarray(ref[k]))
+            worst[k] = max(worst.get(k, 0.0), float(np.nanmax(d)) if d.size else 0.0)
+    return worst
 
 
 def check_sampler_no_peek(seed=0, blowup=50.0):
@@ -250,13 +298,37 @@ if __name__ == "__main__":
                + f"|imputation - final reconstruction|={agree:.1e}")
 
     # 2 -------------------------------------------------------------------
-    res = check_no_peek()
+    # Single chain only: n_chains > 1 runs the search under numba prange, whose
+    # per-thread RNG is not reproducible from a seed, so two runs on the SAME
+    # input already differ (see the INFO line below) and a bitwise comparison
+    # cannot say anything about peeking there.
+    for tag, kw in (('plain', {}), ('slab', dict(slab=True)),
+                    ('Boltzmann prior', dict(J_prior='boltzmann', J_lr=0.3))):
+        for lr in (1.0, 0.25):
+            w = check_bitwise_no_peek(lr=lr, **kw)
+            good = max(w.values()) == 0.0
+            report(good, f"held-out values never reach the fit, bitwise "
+                         f"({tag}, lr={lr})",
+                   "5 fills (truth / 50 / -1e3 / NaN / random) -> identical: "
+                   + "  ".join(f"{k} {v:.0e}" for k, v in w.items()))
+
+    print("[INFO] seeded reproducibility by chain count (pre-existing; prange RNG)")
+    for C in (1, 2, 3):
+        reps = []
+        for _ in range(2):
+            seed_all(0)
+            m = nbm.BiPCA(4, tree_reg=0, n_chains=C)
+            m.fit(1.0 * synth(seed=0)[0], lr=0.25, scl_lr=0.05, **FIT)
+            reps.append(np.asarray(m.operator.W))
+        print(f"    n_chains={C}: max|dW| between two identically seeded runs "
+              f"= {np.abs(reps[0] - reps[1]).max():.2e}")
+
+    res = check_no_peek(lr=0.25)
     lo, ro = res['clean']
     lf, rf = res['mean-filled']
-    lg, rg = res['garbage']
     lu, ru = res['garbage, UNmasked']
-    good = abs(lf - lo) < 0.25 * lo and abs(rf - ro) < 0.05 and lu > 5 * lo
-    report(good, "the held-out VALUES do not drive the fit",
+    good = abs(lf - lo) < 1e-12 and abs(rf - ro) < 1e-12 and lu > 5 * lo
+    report(good, "a mean-filled hold-out fits identically to the true one",
            "  ".join(f"{k}: MSE(obs) {v[0]:.3f} / r(held-out) {v[1]:+.3f}"
                      for k, v in res.items()))
 

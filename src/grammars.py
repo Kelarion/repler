@@ -397,23 +397,118 @@ class ParsedSequence(object):
 ###### PCFG ###############
 ###########################################################
  
- 
+ """Probabilistic grammars that generate sequences left to right.
+
+Two grammar classes share one interface:
+
+    PCFG(rules)              context-free, from production-rule strings
+    RegularGrammar(graph)    regular, from a networkx Graph or DiGraph
+
+Both inherit `Sequential`, which supplies generate / continuations / parse /
+state / encode / decode. All a subclass provides is a `State` class with
+
+    .push(token) -> bool          False means the prefix is dead
+    .continuations() -> (tokens, probs)
+    .viable, .complete, .prefix_logprob, .sentence_logprob
+    .tree(rng), .best_tree()
+
+Token 0 is EOS; terminals are 1..V. `generate` returns the tokens and the dense
+next-token distribution used at each step -- one per token, plus the one that
+produced EOS -- so
+
+    prod_i probs[i][tokens[i]] * probs[-1][EOS] == P(sentence) / p_finite.
+
+Both states carry a *distribution* over the underlying structure rather than a
+single parse or walk, which is what makes those probabilities conditional on
+the tokens emitted so far rather than on hidden state the model cannot see.
+For PCFG that distribution is an Earley chart; for RegularGrammar it is a
+belief over graph nodes, which matters as soon as two nodes share a label.
+
+Both count terminating derivations only and condition on termination, so
+`p_finite` reports how much mass that discards: for a PCFG it is below 1 when
+rules can recurse forever, for a graph when a region cannot reach a halt.
+
+Trees are (label, children) with ints for terminals; `bracket` and
+`label_paths` render either kind.
+"""
+
 EOS = 0
 NT, T = 0, 1
 _TOL = 1e-12
- 
 
-class PCFG:
-    """Reduced, epsilon-free, integerised grammar plus Stolcke's two closures.
- 
-    Only terminating derivations are counted, so for an inconsistent grammar
-    (p_finite < 1) everything below is conditioned on the derivation halting.
-    """
- 
+
+def _pick(rng, options, weights):
+    w = np.asarray(weights, float)
+    if not len(w) or w.sum() <= 0:
+        raise ValueError("no options to sample from")
+    return options[int(np.searchsorted(np.cumsum(w), rng.random() * w.sum()))]
+
+
+class Sequential:
+    """Everything that does not depend on how the state is represented."""
+
+    def state(self, seq=()):
+        """A state with `seq` pushed. Stops early if the prefix dies, so
+        len(st.tokens) - 1 is then the position that killed it."""
+        st = self.State(self)
+        for t in (self.encode(seq, strict=False) if isinstance(seq, str) else seq):
+            if not st.push(t):
+                break
+        return st
+
+    def continuations(self, prefix=()):
+        """(tokens, probs) for what may follow `prefix`. Token 0 means EOS."""
+        return self.state(prefix).continuations()
+
+    def is_valid_prefix(self, prefix=()):
+        return self.state(prefix).viable
+
+    def generate(self, rng=None, tree=False, max_len=10_000):
+        """Sample a sentence left to right, with the distribution used at each
+        step. tree=True also returns a structure for the sampled sentence."""
+        rng = np.random.default_rng() if rng is None else rng
+        nt = len(self.vocab)
+        st = self.state()
+        tokens, probs = [], []
+        while len(tokens) <= max_len:
+            cands, ps = st.continuations()
+            v = np.zeros(nt)
+            v[cands] = ps
+            probs.append(v)
+            t = _pick(rng, cands, ps)
+            if t == EOS:
+                return (tokens, probs, st.tree(rng)) if tree else (tokens, probs)
+            st.push(t)
+            tokens.append(t)
+        raise RuntimeError("max_len exceeded")
+
+    def parse(self, seq, best=True, rng=None):
+        """Parse a sentence (a string, or a list of token ints). Returns the
+        structure, or None if the sequence is not a sentence of the grammar.
+        best=True gives the most probable one, best=False samples."""
+        st = self.state(seq)
+        if not st.complete:
+            return None
+        return st.best_tree() if best else st.tree(rng)
+
+    def encode(self, text, strict=True):
+        """Characters outside the alphabet map to -1, which never matches."""
+        if strict and not set(text) <= set(self.token_of):
+            raise KeyError(f"not terminals: {sorted(set(text) - set(self.token_of))}")
+        return [self.token_of.get(c, -1) for c in text]
+
+    def decode(self, tokens):
+        return ''.join('' if t == EOS else self.vocab[t] for t in tokens)
+
+
+class PCFG(Sequential):
+    """Reduced, epsilon-free, integerised context-free grammar, plus Stolcke's
+    two closure matrices. Rules are strings: each character is a symbol,
+    uppercase = nonterminal."""
+
     def __init__(self, rules, init="S", weights=None):
         alts = {A: (list(r) if type(r) is list else [r])
                 for A, r in rules.items()}
-
         todo = list(alts)
         while todo:                                    # used but undefined
             for rhs in alts[todo.pop()]:
@@ -428,7 +523,7 @@ class PCFG:
                 probs[A] = list(w / w.sum())
             else:
                 probs[A] = [1.0 / len(alts[A])] * len(alts[A]) if alts[A] else []
- 
+
         alts, probs = self._reduce(alts, probs, init)
         n = self._fixpoint(alts, probs, empty_only=True)   # P(A =>* eps)
         z = self._fixpoint(alts, probs, empty_only=False)  # P(A halts)
@@ -439,12 +534,12 @@ class PCFG:
         if init not in alts:
             raise ValueError(f"{init!r} derives only the empty string")
         alts, probs = self._reduce(alts, probs, init)
- 
+
         terms = sorted({c for A in alts for r in alts[A]
                         for c in r if not c.isupper()})
         self.vocab = [None] + terms
         self.token_of = {c: i + 1 for i, c in enumerate(terms)}
- 
+
         names = sorted(alts)
         idx = {A: i for i, A in enumerate(names)}
         m = len(names) + 1
@@ -466,7 +561,7 @@ class PCFG:
         self.rhs.append(((NT, idx[init]),))
         self.prob.append(1.0)
         self.is_unit = [len(r) == 1 and r[0][0] == NT for r in self.rhs]
- 
+
         PL, PU = np.zeros((m, m)), np.zeros((m, m))
         for i, r in enumerate(self.rhs):
             if r[0][0] == NT:
@@ -474,9 +569,9 @@ class PCFG:
                 if self.is_unit[i]:
                     PU[self.lhs[i], r[0][1]] += self.prob[i]
         self.RL, self.RU = self._closure(PL), self._closure(PU)
- 
+
     # -- compilation helpers ----------------------------------------------
- 
+
     @staticmethod
     def _reduce(alts, probs, init):
         """Drop nonterminals deriving no terminal string, then unreachable
@@ -516,7 +611,7 @@ class PCFG:
                         reach.add(c)
                         stack.append(c)
         return {A: alts[A] for A in reach}, {A: probs[A] for A in reach}
- 
+
     @staticmethod
     def _fixpoint(alts, probs, empty_only, iters=20000):
         """Least fixpoint of x[A] = sum_r p * prod x[children]. With
@@ -537,7 +632,7 @@ class PCFG:
             if delta < 1e-14:
                 break
         return x
- 
+
     @staticmethod
     def _unepsilon(alts, probs, n, z):
         """Delete nullable symbols from each RHS in every combination, weighting
@@ -567,7 +662,7 @@ class PCFG:
                 out_a[A] = list(acc)
                 out_p[A] = [v / q[A] for v in acc.values()]
         return out_a, out_p
- 
+
     @staticmethod
     def _closure(P):
         try:
@@ -578,46 +673,18 @@ class PCFG:
         if np.any(R < 0):
             raise ValueError("closure diverged; the grammar is improper")
         return R
- 
-    def generate(self, rng=None, tree=False, max_len=10_000):
-        """Sample a sentence left to right from `continuations`. With
-        tree=True also returns a phrase structure sampled from the parse forest
-        of that sentence; together the two match top-down derivation."""
-        rng = np.random.default_rng() if rng is None else rng
-        nt = len(self.vocab)
-        st = EarleyState(self)
-        tokens = []
-        probs = []
-        while len(tokens) <= max_len:
-            cands, ps = st.continuations()
-            probs.append(ps@np.eye(nt)[cands])
-            t = _pick(rng, cands, ps)
-            if t == EOS:
-                return (tokens, probs, st.tree(rng)) if tree else (tokens, probs)
-            st.push(t)
-            tokens.append(t)
 
-        raise RuntimeError("max_len exceeded")
- 
-    def encode(self, text, strict=True):
-        if strict and not set(text) <= set(self.token_of):
-            raise KeyError(f"not terminals: {sorted(set(text) - set(self.token_of))}")
-        return [self.token_of.get(c, -1) for c in text]      # -1 never matches
- 
-    def decode(self, tokens):
-        return ''.join('' if t == EOS else self.vocab[t] for t in tokens)
- 
- 
+
 class EarleyState:
     """One left-to-right parse. Items are (rule, dot, origin) -> [alpha, gamma].
- 
+
     Forward probabilities are rescaled at each position by the one-step prefix
     probability. That stops them underflowing on long sentences and makes the
     denominator in `continuations` exactly 1. It is exact: an item's inner
     probability picks up s_i / s_origin, and the factors cancel in both
     completion and prediction.
     """
- 
+
     def __init__(self, grammar):
         g = self.g = grammar
         seed = (g.phi, 0, 0)
@@ -628,10 +695,10 @@ class EarleyState:
         self.viable = True
         self._done = {}                 # position -> {(lhs, origin): [(rule, gamma)]}
         self._process(0)
- 
+
     def _process(self, i):
         g, chart = self.g, self.chart[i]
- 
+
         # completion, origins descending: an epsilon-free grammar makes
         # completion origins strictly decrease, so one pass suffices. Unit
         # rules are skipped because RU already sums over unit chains.
@@ -655,7 +722,7 @@ class EarleyState:
                         self.kernel[i].append(new)
                     ent[0] += pv[0] * ru * gam
                     ent[1] += pv[1] * ru * gam
- 
+
         # prediction, from kernel items only: RL already sums over left-corner
         # chains, so predicting from predictions would double count.
         for it in self.kernel[i]:
@@ -675,7 +742,7 @@ class EarleyState:
                     if ent is None:
                         ent = chart[new] = [0.0, p]
                     ent[0] += a * row[Y] * p
- 
+
     def push(self, token):
         """Scan one token. Returns False, leaving the state dead, if no
         sentence of the grammar starts with the resulting prefix."""
@@ -698,9 +765,9 @@ class EarleyState:
         self.log_scale += float(np.log(c))
         self._process(i + 1)
         return True
- 
+
     # -- phrase structure --------------------------------------------------
- 
+
     def _completed(self, i):
         """Completed items of set i, grouped by (nonterminal, origin)."""
         by = self._done.get(i)
@@ -711,7 +778,7 @@ class EarleyState:
                     by[(g.lhs[r], o)].append((r, v[1]))
             self._done[i] = by
         return by
- 
+
     def tree(self, rng=None, max_depth=1000):
         """Sample a parse of the tokens read so far, proportional to inner
         probability -- i.e. from P(tree | sentence). Ambiguous sentences give a
@@ -723,14 +790,14 @@ class EarleyState:
         if not self.tokens:
             return (g.nt_name[g.init_nt], ())
         return self._sub(g.init_nt, 0, len(self.tokens), rng, max_depth)
- 
+
     def _sub(self, Z, j, i, rng, depth):
         if depth <= 0:
             raise RecursionError("unit-production cycle while extracting a tree")
         opts = self._completed(i).get((Z, j), ())
         r = _pick(rng, [o[0] for o in opts], [o[1] for o in opts])
         return (self.g.nt_name[Z], self._kids(r, j, i, rng, depth - 1))
- 
+
     def _kids(self, r, j, i, rng, depth):
         """Split [j, i) across the RHS of r, right to left. Item (r, t, j) sits
         in set p exactly when the first t symbols cover [j, p), so the splits
@@ -760,7 +827,94 @@ class EarleyState:
                 end = p
         return tuple(val if kind == T else self._sub(val, a, b, rng, depth)
                      for kind, val, a, b in reversed(plan))
- 
+
+    def best_tree(self):
+        """The most probable parse, by dynamic programming over the chart.
+        Spans are filled shortest first; within a span, rules with two or more
+        symbols depend only on strictly shorter spans, so only unit rules need
+        relaxing, and at most |N| rounds since a repeated nonterminal in a unit
+        chain can only lower the probability."""
+        g = self.g
+        if not self.complete:
+            raise ValueError("the tokens so far are not a complete sentence")
+        n = len(self.tokens)
+        if not n:
+            return (g.nt_name[g.init_nt], ())
+
+        best = {}                       # (Z, j, i) -> (logprob, rule, plan)
+        for width in range(1, n + 1):
+            for j in range(0, n - width + 1):
+                i = j + width
+                units = []
+                for (Z, o), items in self._completed(i).items():
+                    if o != j:
+                        continue
+                    for r, _ in items:
+                        if g.is_unit[r]:
+                            units.append((Z, r))
+                            continue
+                        sc, plan = self._best_rhs(r, j, i, best)
+                        if sc is not None:
+                            sc += np.log(g.prob[r])
+                            if sc > best.get((Z, j, i), (-np.inf,))[0]:
+                                best[(Z, j, i)] = (sc, r, plan)
+                for _ in range(len(g.nt_name)):
+                    changed = False
+                    for Z, r in units:
+                        child = g.rhs[r][0][1]
+                        if (child, j, i) not in best:
+                            continue
+                        sc = np.log(g.prob[r]) + best[(child, j, i)][0]
+                        if sc > best.get((Z, j, i), (-np.inf,))[0]:
+                            best[(Z, j, i)] = (sc, r, ((NT, child, j, i),))
+                            changed = True
+                    if not changed:
+                        break
+
+        return self._build(g.init_nt, 0, n, best)
+
+    def _best_rhs(self, r, j, i, best):
+        """Best split of [j, i) across the RHS of r. layers[t] maps an end
+        position to (logprob, backpointer) for the first t symbols; membership
+        of (r, t, j) in the chart prunes positions that are not reachable."""
+        g = self.g
+        rhs = g.rhs[r]
+        layers = [{j: (0.0, None)}]
+        for t, (kind, val) in enumerate(rhs):
+            nxt = {}
+            for p, (sc, _) in layers[t].items():
+                if kind == T:
+                    q = p + 1
+                    if p < i and self.tokens[p] == val and (r, t + 1, j) in self.chart[q]:
+                        if sc > nxt.get(q, (-np.inf,))[0]:
+                            nxt[q] = (sc, (kind, val, p, q))
+                else:
+                    for q in range(p + 1, i + 1):
+                        sub = best.get((val, p, q))
+                        if sub is None or (r, t + 1, j) not in self.chart[q]:
+                            continue
+                        cand = sc + sub[0]
+                        if cand > nxt.get(q, (-np.inf,))[0]:
+                            nxt[q] = (cand, (kind, val, p, q))
+            if not nxt:
+                return None, None
+            layers.append(nxt)
+        if i not in layers[-1]:
+            return None, None
+        plan, q = [], i
+        for t in range(len(rhs), 0, -1):
+            bp = layers[t][q][1]
+            plan.append(bp)
+            q = bp[2]
+        return layers[-1][i][0], tuple(reversed(plan))
+
+    def _build(self, Z, j, i, best):
+        g = self.g
+        sc, r, plan = best[(Z, j, i)]
+        kids = tuple(val if kind == T else self._build(val, a, b, best)
+                     for kind, val, a, b in plan)
+        return (g.nt_name[Z], kids)
+
     @property
     def prefix_logprob(self):
         """log P(some sentence starts with the tokens so far), terminating
@@ -770,7 +924,7 @@ class EarleyState:
         if not self.tokens:
             return float(np.log(self.g.p_finite))
         return self.log_scale + float(np.log(self.g.q_start))
- 
+
     @property
     def sentence_logprob(self):
         """log P(the tokens so far are exactly a sentence)."""
@@ -783,11 +937,11 @@ class EarleyState:
         if not gam or gam[1] <= 0.0:
             return -np.inf
         return self.log_scale + float(np.log(gam[1] * g.q_start))
- 
+
     @property
     def complete(self):
         return self.sentence_logprob > -np.inf
- 
+
     def continuations(self):
         """(tokens, probs): the exact next-token distribution, token 0 = EOS.
         ([], []) once the prefix is dead. Rescaling makes the denominator 1."""
@@ -800,7 +954,7 @@ class EarleyState:
             rhs = g.rhs[ridx]
             if dot < len(rhs) and rhs[dot][0] == T:
                 acc[rhs[dot][1]] += v[0]
- 
+
         toks = sorted(acc)
         probs = [float(acc[t]) for t in toks]
         if i == 0:
@@ -812,15 +966,199 @@ class EarleyState:
         if stop > 0.0:
             toks, probs = [EOS] + toks, [stop] + probs
         return toks, probs
- 
- 
-def _pick(rng, options, weights):
-    w = np.asarray(weights, float)
-    if not len(w) or w.sum() <= 0:
-        raise ValueError("no options to sample from")
-    return options[int(np.searchsorted(np.cumsum(w), rng.random() * w.sum()))]
- 
- 
+
+
+PCFG.State = EarleyState
+
+
+class WalkState:
+    """`pending` is the distribution over the next node given the tokens so
+    far, rescaled at each step so `continuations` needs no denominator."""
+
+    def __init__(self, grammar):
+        self.g = grammar
+        self.pending = grammar.pi.copy()
+        self.alphas = []                 # belief over the node at each position
+        self.stop = 0.0                  # a walk emits at least one token
+        self.log_scale = 0.0
+        self.tokens = []
+        self.viable = True
+
+    def push(self, token):
+        g = self.g
+        self.tokens.append(token)
+        rows = g.by_token.get(token)
+        if rows is None or not self.viable:
+            self.viable = False
+            return False
+        a = np.zeros(len(g.pi))
+        a[rows] = self.pending[rows]
+        c = a.sum()
+        if c <= 0.0:
+            self.viable = False
+            return False
+        a /= c
+        self.alphas.append(a)
+        self.pending = a @ g.A
+        self.stop = float(a @ g.halt)
+        self.log_scale += float(np.log(c))
+        return True
+
+    def continuations(self):
+        """(tokens, probs): the exact next-token distribution, token 0 = EOS."""
+        if not self.viable:
+            return [], []
+        acc = {t: float(self.pending[r].sum()) for t, r in self.g.by_token.items()}
+        toks = [t for t in sorted(acc) if acc[t] > 0.0]
+        probs = [acc[t] for t in toks]
+        if self.stop > 0.0:
+            toks, probs = [EOS] + toks, [self.stop] + probs
+        return toks, probs
+
+    @property
+    def prefix_logprob(self):
+        if not self.viable:
+            return -np.inf
+        return self.log_scale + float(np.log(self.g.p_finite))
+
+    @property
+    def sentence_logprob(self):
+        if not self.viable or not self.tokens or self.stop <= 0.0:
+            return -np.inf
+        return self.log_scale + float(np.log(self.stop * self.g.p_finite))
+
+    @property
+    def complete(self):
+        return self.sentence_logprob > -np.inf
+
+
+    def tree(self, rng=None):
+        """Sample a walk from P(walk | sentence), backwards through the
+        forward probabilities, as a right-linear tree."""
+        if not self.complete:
+            raise ValueError("the tokens so far are not a complete sentence")
+        rng = np.random.default_rng() if rng is None else rng
+        g = self.g
+        states = np.arange(len(g.pi))
+        path = [_pick(rng, states, self.alphas[-1] * g.halt)]
+        for t in range(len(self.tokens) - 2, -1, -1):
+            path.append(_pick(rng, states, self.alphas[t] * g.A[:, path[-1]]))
+        return self._tree(path[::-1])
+
+    def best_tree(self):
+        """The most probable walk (Viterbi), as a right-linear tree."""
+        if not self.complete:
+            raise ValueError("the tokens so far are not a complete sentence")
+        g = self.g
+        with np.errstate(divide="ignore"):
+            logA, logh = np.log(g.A), np.log(g.halt)
+            v = np.log(self.alphas[0])
+        back = []
+        for t in range(1, len(self.tokens)):
+            cand = v[:, None] + logA
+            cand[:, self.alphas[t] <= 0] = -np.inf
+            back.append(np.argmax(cand, axis=0))
+            v = cand[back[-1], np.arange(len(v))]
+        path = [int(np.argmax(v + logh))]
+        for t in range(len(self.tokens) - 2, -1, -1):
+            path.append(int(back[t][path[-1]]))
+        return self._tree(path[::-1])
+
+    def _tree(self, path):
+        node = (self.g.nt_name[path[-1]], (self.tokens[-1],))
+        for t in range(len(path) - 2, -1, -1):
+            node = (self.g.nt_name[path[t]], (self.tokens[t], node))
+        return node
+
+
+class RegularGrammar(Sequential):
+    """A networkx graph as a regular grammar: a node is a state emitting one
+    terminal on arrival (its `label` attribute, or its name), an edge is a
+    transition weighted by `weight`, and a sentence is the label sequence of a
+    walk that starts in the start distribution and halts."""
+
+    State = WalkState
+
+    def __init__(self, graph, init=None, halt=None, weights="weight",
+                 label="label"):
+        nodes = list(graph)
+        if not nodes:
+            raise ValueError("the graph has no nodes")
+        idx = {s: i for i, s in enumerate(nodes)}
+        m = len(nodes)
+
+        P = np.zeros((m, m))
+        for s in nodes:
+            for t, d in graph.adj[s].items():
+                P[idx[s], idx[t]] += float(d.get(weights, 1.0))
+        row = P.sum(1, keepdims=True)
+
+        h = np.array([halt.get(s, 0.0) if isinstance(halt, dict) else
+                      (halt if halt is not None else
+                       graph.nodes[s].get("halt", 0.0)) for s in nodes], float)
+        h[row[:, 0] <= 0] = 1.0                       # a sink can only halt
+        if np.any((h < 0) | (h > 1)):
+            raise ValueError("halt probabilities must lie in [0, 1]")
+        A = (1.0 - h)[:, None] * np.divide(P, row, out=np.zeros_like(P), where=row > 0)
+
+        pi = np.zeros(m)
+        if init is None:
+            w = np.array([float(graph.nodes[s].get("start", 0.0)) for s in nodes])
+            pi = w if w.sum() > 0 else np.ones(m)
+        elif isinstance(init, dict):
+            for s, w in init.items():
+                pi[idx[s]] = float(w)
+        elif isinstance(init, (list, tuple, set)):
+            for s in init:
+                pi[idx[s]] = 1.0
+        else:
+            pi[idx[init]] = 1.0
+        if pi.sum() <= 0:
+            raise ValueError("the start distribution is empty")
+        pi /= pi.sum()
+
+        # z[s] = P(the walk from s halts eventually), solved only on the states
+        # that can reach a halting one -- a halt-free cycle makes I - A singular
+        can = h > 0
+        while True:
+            nxt = can | ((A[:, can].sum(1) > 0) if can.any() else False)
+            if np.array_equal(nxt, can):
+                break
+            can = nxt
+        z = np.zeros(m)
+        if can.any():
+            sub = np.where(can)[0]
+            z[sub] = np.linalg.solve(np.eye(len(sub)) - A[np.ix_(sub, sub)], h[sub])
+        z = np.clip(z, 0.0, 1.0)
+        self.p_finite = float(pi @ z)
+        if self.p_finite <= _TOL:
+            raise ValueError("no walk can halt: the language is empty")
+
+        keep = np.where((z > _TOL) & (pi * z > 0))[0]  # drop dead and unreachable
+        grow = set(keep)
+        while True:
+            more = {t for s in grow for t in np.where(A[s] > 0)[0] if z[t] > _TOL}
+            if more <= grow:
+                break
+            grow |= more
+        keep = np.array(sorted(grow))
+        nodes = [nodes[i] for i in keep]
+        A, h, pi, z = A[np.ix_(keep, keep)], h[keep], pi[keep], z[keep]
+
+        # condition on halting (an h-transform by z), so the chain is proper
+        self.A = A * z[None, :] / z[:, None]
+        self.halt = h / z
+        self.pi = pi * z / (pi @ z)
+
+        labels = [str(graph.nodes[s].get(label, s)) for s in nodes]
+        self.vocab = [None] + sorted(set(labels))
+        self.token_of = {c: i for i, c in enumerate(self.vocab) if i}
+        emit = np.array([self.token_of[c] for c in labels])
+        self.by_token = {t: np.where(emit == t)[0] for t in range(1, len(self.vocab))}
+        self.states = nodes
+        self.nt_name = [str(s) for s in nodes]
+
+
 def bracket(tree, g):
     """(S (E (T (F a))) ...) -- a bracketed phrase structure."""
     label, kids = tree
@@ -828,19 +1166,18 @@ def bracket(tree, g):
         return f"({label})"
     parts = [g.vocab[k] if isinstance(k, int) else bracket(k, g) for k in kids]
     return f"({label} {' '.join(parts)})"
- 
- 
+
+
 def label_paths(tree):
     """One tuple of labels per token, root first. The last entry of each is the
     token's preterminal, so [p[-1] for p in label_paths(t)] is a tag sequence."""
     out = []
- 
+
     def walk(node, path):
         label, kids = node
         path += (label,)
         for k in kids:
             out.append(path) if isinstance(k, int) else walk(k, path)
- 
+
     walk(tree, ())
     return out
- 
