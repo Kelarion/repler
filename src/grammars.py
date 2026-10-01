@@ -460,7 +460,8 @@ class Sequential:
 
     def encode(self, text, strict=True):
         """Symbols outside the alphabet map to -1, which never matches."""
-        syms = text.split(self.sep) if self.sep else list(text)
+        # "".split(sep) is [''], not [], so the empty string needs a guard
+        syms = (text.split(self.sep) if self.sep else list(text)) if text else []
         if strict and not set(syms) <= set(self.token_of):
             raise KeyError(f"not terminals: {sorted(set(syms) - set(self.token_of))}")
         return [self.token_of.get(c, -1) for c in syms]
@@ -941,7 +942,9 @@ PCFG.State = EarleyState
 
 class WalkState:
     """`pending` is the distribution over the next node given the tokens so
-    far, rescaled at each step so `continuations` needs no denominator."""
+    far, rescaled at each step so `continuations` needs no denominator. The
+    grammar decides how a step is taken, so fixed-length and halting walks use
+    the same state."""
 
     def __init__(self, grammar):
         self.g = grammar
@@ -967,8 +970,7 @@ class WalkState:
             return False
         a /= c
         self.alphas.append(a)
-        self.pending = a @ g.A
-        self.stop = float(a @ g.halt)
+        self.pending, self.stop = g.advance(a, len(self.tokens))
         self.log_scale += float(np.log(c))
         return True
 
@@ -999,7 +1001,6 @@ class WalkState:
     def complete(self):
         return self.sentence_logprob > -np.inf
 
-
     def tree(self, rng=None):
         """Sample a walk from P(walk | sentence), backwards through the
         forward probabilities, as a right-linear tree."""
@@ -1008,9 +1009,10 @@ class WalkState:
         rng = np.random.default_rng() if rng is None else rng
         g = self.g
         states = np.arange(len(g.pi))
-        path = [_pick(rng, states, self.alphas[-1] * g.halt)]
-        for t in range(len(self.tokens) - 2, -1, -1):
-            path.append(_pick(rng, states, self.alphas[t] * g.A[:, path[-1]]))
+        n = len(self.tokens)
+        path = [_pick(rng, states, self.alphas[-1] * g.back(n))]
+        for t in range(n - 2, -1, -1):
+            path.append(_pick(rng, states, self.alphas[t] * g.link(t + 1)[:, path[-1]]))
         return self._tree(path[::-1])
 
     def best_tree(self):
@@ -1018,17 +1020,17 @@ class WalkState:
         if not self.complete:
             raise ValueError("the tokens so far are not a complete sentence")
         g = self.g
+        n = len(self.tokens)
         with np.errstate(divide="ignore"):
-            logA, logh = np.log(g.A), np.log(g.halt)
             v = np.log(self.alphas[0])
-        back = []
-        for t in range(1, len(self.tokens)):
-            cand = v[:, None] + logA
-            cand[:, self.alphas[t] <= 0] = -np.inf
-            back.append(np.argmax(cand, axis=0))
-            v = cand[back[-1], np.arange(len(v))]
-        path = [int(np.argmax(v + logh))]
-        for t in range(len(self.tokens) - 2, -1, -1):
+            back = []
+            for t in range(1, n):
+                cand = v[:, None] + np.log(g.link(t))
+                cand[:, self.alphas[t] <= 0] = -np.inf
+                back.append(np.argmax(cand, axis=0))
+                v = cand[back[-1], np.arange(len(v))]
+            path = [int(np.argmax(v + np.log(g.back(n))))]
+        for t in range(n - 2, -1, -1):
             path.append(int(back[t][path[-1]]))
         return self._tree(path[::-1])
 
@@ -1043,12 +1045,24 @@ class RegularGrammar(Sequential):
     """A networkx graph as a regular grammar: a node is a state emitting one
     terminal on arrival (its `label` attribute, or its name), an edge is a
     transition weighted by `weight`, and a sentence is the label sequence of a
-    walk that starts in the start distribution and halts."""
+    walk. Three ways for a walk to end, in order of precedence:
+
+      length=n        exactly n tokens, no halting: a plain random walk
+      mean_length=k   halt at rate 1/k, so lengths are geometric with mean k
+      neither         the graph's sinks halt; used automatically when it has
+                      any, otherwise mean_length falls back to 10
+
+    Walks that cannot finish are conditioned away, so `continuations` always
+    sums to 1 and `p_finite` says how much mass that discarded: below 1 when
+    some region cannot reach a sink, or cannot support a walk of the required length.
+    """
 
     State = WalkState
 
-    def __init__(self, graph, init=None, halt=None, mean_length=10.0,
+    def __init__(self, graph, init=None, length=None, mean_length=None,
                  weights="weight", label="label"):
+        if length is not None and mean_length is not None:
+            raise ValueError("give length or mean_length, not both")
         nodes = list(graph)
         if not nodes:
             raise ValueError("the graph has no nodes")
@@ -1060,23 +1074,16 @@ class RegularGrammar(Sequential):
             for t, d in graph.adj[s].items():
                 P[idx[s], idx[t]] += float(d.get(weights, 1.0))
         row = P.sum(1, keepdims=True)
+        A0 = np.divide(P, row, out=np.zeros_like(P), where=row > 0)
 
-        given = halt is not None or any("halt" in graph.nodes[s] for s in nodes)
-        if given:
-            h = np.array([halt.get(s, 0.0) if isinstance(halt, dict) else
-                          (halt if halt is not None else
-                           graph.nodes[s].get("halt", 0.0)) for s in nodes], float)
-        else:
-            # Nothing says when to stop, so halt at a constant rate: lengths are
-            # geometric with mean `mean_length`, measured in emitted tokens.
-            if not mean_length or mean_length < 1:
-                raise ValueError("mean_length must be at least 1")
-            h = np.full(m, 1.0 / float(mean_length))
-        self.halt_rate = None if given else 1.0 / float(mean_length)
-        h[row[:, 0] <= 0] = 1.0                       # a sink can only halt
-        if np.any((h < 0) | (h > 1)):
-            raise ValueError("halt probabilities must lie in [0, 1]")
-        A = (1.0 - h)[:, None] * np.divide(P, row, out=np.zeros_like(P), where=row > 0)
+        if length is None and mean_length is None and not np.any(row <= 0):
+            mean_length = 10.0           # no sinks, so nothing would ever stop
+        self.length = None if length is None else int(length)
+        self.mean_length = mean_length
+        if self.length is not None and self.length < 1:
+            raise ValueError("length must be at least 1")
+        if mean_length is not None and mean_length < 1:
+            raise ValueError("mean_length must be at least 1")
 
         pi = np.zeros(m)
         if init is None:
@@ -1094,39 +1101,55 @@ class RegularGrammar(Sequential):
             raise ValueError("the start distribution is empty")
         pi /= pi.sum()
 
-        # z[s] = P(the walk from s halts eventually), solved only on the states
-        # that can reach a halting one -- a halt-free cycle makes I - A singular
-        can = h > 0
-        while True:
-            nxt = can | ((A[:, can].sum(1) > 0) if can.any() else False)
-            if np.array_equal(nxt, can):
-                break
-            can = nxt
-        z = np.zeros(m)
-        if can.any():
-            sub = np.where(can)[0]
-            z[sub] = np.linalg.solve(np.eye(len(sub)) - A[np.ix_(sub, sub)], h[sub])
-        z = np.clip(z, 0.0, 1.0)
-        self.p_finite = float(pi @ z)
-        if self.p_finite <= _TOL:
-            raise ValueError("no walk can halt: the language is empty")
+        if self.length is not None:
+            # Z[k, s] = P(k further steps are possible from s). Conditioning is
+            # time-dependent here, so it is applied per step in `advance`.
+            Z = np.ones((self.length, m))
+            for k in range(1, self.length):
+                Z[k] = A0 @ Z[k - 1]
+            self.Z, self.A0 = Z, A0
+            self.p_finite = float(pi @ Z[-1])
+            if self.p_finite <= _TOL:
+                raise ValueError(f"no walk of length {self.length} exists")
+            pi = pi * Z[-1] / self.p_finite
+            keep = np.arange(m)
+        else:
+            h = (np.full(m, 1.0 / float(mean_length)) if mean_length is not None
+                 else np.zeros(m))
+            h[row[:, 0] <= 0] = 1.0                   # a sink can only halt
+            A = (1.0 - h)[:, None] * A0
+            # z[s] = P(the walk from s halts eventually), solved only where a
+            # halt is reachable -- a halt-free cycle makes I - A singular
+            can = h > 0
+            while True:
+                nxt = can | ((A[:, can].sum(1) > 0) if can.any() else False)
+                if np.array_equal(nxt, can):
+                    break
+                can = nxt
+            z = np.zeros(m)
+            if can.any():
+                sub = np.where(can)[0]
+                z[sub] = np.linalg.solve(np.eye(len(sub)) - A[np.ix_(sub, sub)], h[sub])
+            z = np.clip(z, 0.0, 1.0)
+            self.p_finite = float(pi @ z)
+            if self.p_finite <= _TOL:
+                raise ValueError("no walk can halt: pass length or mean_length")
+            grow = set(np.where((z > _TOL) & (pi > 0))[0])
+            while True:
+                more = {t for s in grow for t in np.where(A[s] > 0)[0] if z[t] > _TOL}
+                if more <= grow:
+                    break
+                grow |= more
+            keep = np.array(sorted(grow))
+            A, h, z = A[np.ix_(keep, keep)], h[keep], z[keep]
+            pi = pi[keep]
+            # condition on halting (an h-transform by z), so the chain is proper
+            self.A = A * z[None, :] / z[:, None]
+            self.halt = h / z
+            pi = pi * z / (pi @ z)
 
-        keep = np.where((z > _TOL) & (pi * z > 0))[0]  # drop dead and unreachable
-        grow = set(keep)
-        while True:
-            more = {t for s in grow for t in np.where(A[s] > 0)[0] if z[t] > _TOL}
-            if more <= grow:
-                break
-            grow |= more
-        keep = np.array(sorted(grow))
+        self.pi = pi
         nodes = [nodes[i] for i in keep]
-        A, h, pi, z = A[np.ix_(keep, keep)], h[keep], pi[keep], z[keep]
-
-        # condition on halting (an h-transform by z), so the chain is proper
-        self.A = A * z[None, :] / z[:, None]
-        self.halt = h / z
-        self.pi = pi * z / (pi @ z)
-
         labels = [str(graph.nodes[s].get(label, s)) for s in nodes]
         # node names like (0, 1) are not single characters, so strings of them
         # need a separator; `sep` is empty whenever the labels are single chars
@@ -1139,6 +1162,35 @@ class RegularGrammar(Sequential):
         self.by_token = {t: np.where(emit == t)[0] for t in range(1, len(self.vocab))}
         self.states = nodes
         self.nt_name = [str(s) for s in nodes]
+
+    # -- how one step is taken, which is all that differs between the modes --
+
+    def advance(self, a, t):
+        """Given the belief `a` over the node that emitted token t, return the
+        belief over the next node and the probability of stopping here."""
+        if self.length is None:
+            return a @ self.A, float(a @ self.halt)
+        rem = self.length - t
+        if rem <= 0:
+            return np.zeros_like(a), 1.0
+        den = np.where(self.Z[rem] > 0, self.Z[rem], 1.0)
+        return ((a / den) @ self.A0) * self.Z[rem - 1], 0.0
+
+    def link(self, t):
+        """Transition matrix used between tokens t and t+1."""
+        if self.length is None:
+            return self.A
+        rem = self.length - t
+        if rem <= 0:
+            return np.zeros_like(self.A0)
+        den = np.where(self.Z[rem] > 0, self.Z[rem], 1.0)
+        return self.A0 * self.Z[rem - 1][None, :] / den[:, None]
+
+    def back(self, n):
+        """Probability of stopping at each node after n tokens."""
+        if self.length is None:
+            return self.halt
+        return np.ones(len(self.pi)) if n >= self.length else np.zeros(len(self.pi))
 
 
 def bracket(tree, g):
