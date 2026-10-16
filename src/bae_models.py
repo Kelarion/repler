@@ -579,14 +579,17 @@ class LinearGaussianBMF(BMF):
         if self.debug and inplace:
             self.outs.append(out)
 
-        ES = Z if slab else S
+        ES = Z
         # SAEM: fold the fresh draw into the running sufficient statistic and hand
         # the smoothed estimate downstream.  Guarded by `inplace` so `sample` never
         # touches the model-bound ES.
         if self.saem and inplace:
             self.ES += self.gamma * (ES - self.ES)
             ES = self.ES
-        return ES if mask is None else (ES, self.impute(X, ES, mask))
+        # imputation and SAEM always use the effective latent (the magnitudes under
+        # a slab); `slab=False` only changes what is RETURNED, the binary spikes
+        out = ES if slab else S
+        return out if mask is None else (out, self.impute(X, ES, mask))
 
     def impute(self, X, ES, mask):
         """X[mask] <- forward(ES), the conditional MEAN of p(X | latents) (EM-style
@@ -753,7 +756,7 @@ class SemiBMF(LinearGaussianBMF):
     J_prior: str = 'none'
     J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
+    J_lr: float = 0.3                  # J step; the field steps J_lr * m
 
     def __post_init__(self):
         super().__post_init__()
@@ -800,7 +803,7 @@ class BiPCA(LinearGaussianBMF):
     J_prior: str = 'boltzmann'
     J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
+    J_lr: float = 0.3                  # J step; the field steps J_lr * m
     J_beta: float = 1.0          # 'mrf' only: inverse temperature = the SCALE of
                                  # the {-1,0,+1} coupling (fit and applied).
     J_temp: float = 0.0          # 'mrf' only: sampler temperature over J (<=0 = ICM)
@@ -849,7 +852,7 @@ class SCPD(LinearGaussianBMF):
     J_prior: str = 'none'
     J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
+    J_lr: float = 0.3                  # J step; the field steps J_lr * m
 
     def __post_init__(self):
         super().__post_init__()
@@ -887,7 +890,7 @@ class RRBMF(LinearGaussianBMF):
     J_prior: str = 'none'
     J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
+    J_lr: float = 0.3                  # J step; the field steps J_lr * m
 
     def __post_init__(self):
         super().__post_init__()

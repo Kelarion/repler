@@ -361,30 +361,39 @@ class BoltzmannPrior(LatentPrior):
     code.  J and h are learned from the BINARY spike -- never from slab
     magnitudes -- and are applied at face value (`temp` scales only the search)."""
 
-    J_l1_reg: Optional[float] = 0.2   # L1 on the coupling (proximal)
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the L1 on the coupling: the
+                                       # penalty is c*sqrt(log(m^2/1e-3)/n)/m, resolved
+                                       # in init_params into _l1 (J_l1_reg is never
+                                       # overwritten, so re-initializing can't compound)
     J_loss: str = 'rple'               # 'rple' | 'logrise' | 'mle'
-    J_lr: float = 0.3
+    J_lr: float = 0.3                  # J step; the field steps J_lr * m (per-node units)
     h_l2_reg: float = 1e-4             # ridge on the field
     mle_n_samp: int = 100              # persistent fantasy particles ('mle')
     mle_gibbs_steps: int = 1           # sampler sweeps per learn ('mle', PCD)
     sampler: str = 'gibbs'             # 'gibbs' | 'gwg' (gibbs-with-gradients)
     gwg_temp: float = 2.0              # GWG proposal temperature
 
-    # end-of-fit refit (`refit`): reset, select a support under a strong L1,
-    # debias on that support, then rescale the whole coupling by one temperature.
-    refit_l1: Optional[float] = None   # None -> 0.142/m, the reference's default
-    refit_select_steps: int = 350
-    refit_debias_steps: int = 250
-    refit_select_lr: float = 0.4
-    refit_debias_lr: float = 0.15
+    # end-of-fit refit (`refit`): reset, select a support under an L1, debias on
+    # that support, then rescale the whole coupling by one temperature.
+    refit_l1: Optional[float] = 0.2    # multiplier c of the support-selection L1 (same
+                                       # scaling as J_l1_reg)
+    refit_max_steps: int = 3000        # per stage (select, debias)
+    refit_tol: float = 1e-7            # stop when no parameter moves more than this
 
     @property
     def prior_plugin(self):
         return bae_search.PRIOR_BOLTZMANN
 
+    def _resolve_l1(self, n, m, c=None):
+        """c * sqrt(log(m^2/1e-3) / n) / m with c = J_l1_reg (n = rows of S): the
+        textbook nodewise-L1 scaling in this file's units (loss averaged over n*m,
+        tied pairs, {0,1} coding); the tying (x2) and recoding (x1/2) cancel."""
+        c = (self.J_l1_reg if c is None else c) or 0.0
+        return c * np.sqrt(np.log(m ** 2 / 1e-3) / n) / m
+
     def init_params(self, S):
         batch, m = S.shape[:-2], S.shape[-1]
-        self.J_l1_reg *= np.sqrt(np.log(1e3 * m**2) / batch) / m
+        self._l1 = self._resolve_l1(S.shape[-2], m)
         self.J = np.zeros(batch + (m, m))
         self.h = np.zeros(batch + (m,))
         if self.J_loss == 'mle':
@@ -438,34 +447,70 @@ class BoltzmannPrior(LatentPrior):
 
     # def learn(self, S):
     #     self.J, self.h = self._step(self.J, self.h, *self._grads(S),
-                                    # self.J_lr, l1=self.J_l1_reg)
+    #                                 self.J_lr, l1=self.J_l1_reg)
     def learn(self, S):
+        l1 = getattr(self, '_l1', None)
+        if l1 is None:                    # e.g. a collapsed copy: resolve on demand
+            l1 = self._l1 = self._resolve_l1(*S.shape[-2:])
         gJ, gh = self._grads(S)
         self.J, self.h = self._step(self.J, self.h, gJ, S.shape[-1] * gh,   # h in per-node units
-                                    self.J_lr, l1=self.J_l1_reg)
+                                    self.J_lr, l1=l1)
 
     # ---- end-of-fit refit (the reference's _final_prior_fit) --------------
+    def _refit_solve(self, codes, l1=0.0, support=None, J=None, h=None):
+        """Minimize the mean-per-element pseudolikelihood (+ L1 on J) to tolerance
+        by accelerated proximal gradient (FISTA with gradient-based restart).
+
+        Step size: with features x = [s, 1], every node's loss has curvature at
+        most (1/(n m)) x x^T in its own parameters, and each coupling is shared by
+        two nodes, so lr = m / (2 * lambda_max(X^T X / n)) is a safe step for J and
+        h together -- rank- and sparsity-aware, with no rate to tune.  The bound is
+        derived for 'rple'; 'logrise' is not globally smooth, and the restart is
+        what keeps it stable there."""
+        n, m = codes.shape[-2:]
+        Xa = np.concatenate([codes, np.ones(codes.shape[:-1] + (1,))], axis=-1)
+        lam = float(np.max(np.linalg.eigvalsh(_swap(Xa) @ Xa / n)[..., -1]))
+        lr = m / (2 * lam)
+        if J is None:
+            J = np.zeros(codes.shape[:-2] + (m, m))
+        if h is None:                     # the exact optimum when J == 0
+            p = np.clip(codes.mean(-2), 0.5 / n, 1 - 0.5 / n)
+            h = 0.5 * np.log(p / (1 - p))
+        yJ, yh, t = J, h, 1.0
+        for _ in range(self.refit_max_steps):
+            Jn, hn = self._step(yJ, yh, *self._pl_grads(codes, yJ, yh), lr,
+                                l1=l1, support=support)
+            # restart the momentum whenever it points uphill (O'Donoghue-Candes)
+            if np.sum((yJ - Jn) * (Jn - J)) + np.sum((yh - hn) * (hn - h)) > 0:
+                t = 1.0
+            tn = (1 + np.sqrt(1 + 4 * t * t)) / 2
+            yJ = Jn + ((t - 1) / tn) * (Jn - J)
+            yh = hn + ((t - 1) / tn) * (hn - h)
+            if support is not None:
+                yJ = yJ * support
+            moved = max(np.abs(Jn - J).max(), np.abs(hn - h).max())
+            J, h, t = Jn, hn, tn
+            if moved < self.refit_tol:
+                break
+        return J, h
+
     def refit(self, S):
         """Discard the path-dependent (J, h) and refit them from the final spikes:
-        polarity-normalize the codes, select a support under a strong L1, debias on
-        that support, map back to the decoder's coordinates, then fit one scalar
-        temperature for the whole coupling."""
-        m = S.shape[-1]
-        l1 = 0.142 / m if self.refit_l1 is None else self.refit_l1
+        polarity-normalize the codes, select a support under the L1
+        refit_l1 * sqrt(log(m^2/1e-3)/n)/m, debias on that support (both stages
+        solved to tolerance with a curvature-derived step), map back to the
+        decoder's coordinates, then fit one scalar temperature for the coupling."""
+        n, m = S.shape[-2:]
+        l1 = self._resolve_l1(n, m, c=self.refit_l1)
 
         # Polarity-normalize: flip the columns that are on more than half the time,
         # so the L1 selects couplings rather than marginals.
         flip = S.mean(-2) > 0.5                                   # (..., m)
         codes = np.where(flip[..., None, :], 1 - S, S)
 
-        J, h = np.zeros_like(self.J), np.zeros_like(self.h)
-        for _ in range(self.refit_select_steps):
-            J, h = self._step(J, h, *self._pl_grads(codes, J, h),
-                              self.refit_select_lr, l1=l1)
-        support = 1.0 * (np.abs(J) > 1e-8)
-        for _ in range(self.refit_debias_steps):
-            J, h = self._step(J, h, *self._pl_grads(codes, J, h),
-                              self.refit_debias_lr, support=support)
+        J, h = self._refit_solve(codes, l1=l1)
+        support = 1.0 * (np.abs(J) > 0)
+        J, h = self._refit_solve(codes, support=support, J=J, h=h)
 
         # Back to the decoder's (non-flipped) coordinates (h uses the FLIPPED J).
         off = 1.0 * flip
@@ -474,6 +519,7 @@ class BoltzmannPrior(LatentPrior):
         J = sgn[..., :, None] * J * sgn[..., None, :]
 
         self.support = support
+        self.refit_l1_used = l1
         self.prior_scale = self._fit_prior_scale(S, J, h)
         self.J = self.prior_scale[..., None, None] * J
         self.h = self.prior_scale[..., None] * h
@@ -574,10 +620,12 @@ class BoltzmannPrior(LatentPrior):
             slab_prior=self.slab_prior, temp=self.temp, J_l1_reg=self.J_l1_reg,
             J_loss=self.J_loss, J_lr=self.J_lr, h_l2_reg=self.h_l2_reg,
             mle_n_samp=self.mle_n_samp, mle_gibbs_steps=self.mle_gibbs_steps,
-            sampler=self.sampler, gwg_temp=self.gwg_temp)
+            sampler=self.sampler, gwg_temp=self.gwg_temp, refit_l1=self.refit_l1,
+            refit_max_steps=self.refit_max_steps, refit_tol=self.refit_tol)
         self._copy_state(lp, c)
         pick = self._chain(c)
         lp.J, lp.h = pick(self.J).copy(), pick(self.h).copy()
+        lp._l1 = getattr(self, '_l1', None)
         if self.J_loss == 'mle':
             lp.state = pick(self.state).copy()
             lp._stash_moments()
