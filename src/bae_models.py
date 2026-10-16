@@ -191,6 +191,7 @@ class BMF:
 
         probes = _as_probe_dict(probes)
         self.history = {name: [] for name in probes}
+        self._best_op = None     # the cached winning-chain operator is stale once we refit
 
         if verbose:
             from tqdm import tqdm
@@ -635,10 +636,10 @@ class LinearGaussianBMF(BMF):
             ES = self.EStep(X, lp.S, lp.Z)
         else:
             ES, X = self.EStep(X, lp.S, lp.Z, mask=mask)   # X imputed in place
-        return ES, self.MStep(X, ES, lp.S, learn_prior=learn_prior)
+        return ES, self.MStep(X, ES, lp.S, learn_prior=learn_prior, mask=mask)
 
     # ---- the one M-step that serves every linear-Gaussian model -----------
-    def MStep(self, X, ES, S=None, learn_prior=True):
+    def MStep(self, X, ES, S=None, learn_prior=True, mask=None):
         """One update of every parameter, then the reconstruction energy.
 
         `ES` is the EFFECTIVE latent the operator reconstructs from (continuous
@@ -660,6 +661,11 @@ class LinearGaussianBMF(BMF):
             if learn_prior:
                 self.latent_prior.learn(S)               # prior parameter update
         sq = resid ** 2
+        if mask is not None:
+            # observed entries only: imputed entries have ~zero residual by
+            # construction, and averaging them in shrinks the noise variance by
+            # roughly the held-out fraction
+            sq = sq[..., ~np.asarray(mask, bool)]
         err = sq.mean(axis=tuple(range(1, sq.ndim))) if self._multi else float(sq.mean())
 
         drive = (err - self.sigma_x if self.var_update == 'legacy' else
@@ -745,9 +751,9 @@ class SemiBMF(LinearGaussianBMF):
     slab: bool = False
     slab_prior: float = 1.0
     J_prior: str = 'none'
-    J_l1_reg: Optional[float] = 2e-4
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 1e-2
+    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
 
     def __post_init__(self):
         super().__post_init__()
@@ -792,9 +798,9 @@ class BiPCA(LinearGaussianBMF):
     slab_prior: float = 1.0
 
     J_prior: str = 'boltzmann'
-    J_l1_reg: Optional[float] = 2e-4
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 0
+    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
     J_beta: float = 1.0          # 'mrf' only: inverse temperature = the SCALE of
                                  # the {-1,0,+1} coupling (fit and applied).
     J_temp: float = 0.0          # 'mrf' only: sampler temperature over J (<=0 = ICM)
@@ -841,9 +847,9 @@ class SCPD(LinearGaussianBMF):
     slab: bool = False
     slab_prior: float = 1.0
     J_prior: str = 'none'
-    J_l1_reg: Optional[float] = 2e-4
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 1e-2
+    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
 
     def __post_init__(self):
         super().__post_init__()
@@ -879,9 +885,9 @@ class RRBMF(LinearGaussianBMF):
     slab: bool = False
     slab_prior: float = 1.0
     J_prior: str = 'none'
-    J_l1_reg: Optional[float] = 2e-4
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
-    J_lr: float = 1e-2
+    J_lr: float = 0.05                 # fraction of the curvature-safe step (J and h)
 
     def __post_init__(self):
         super().__post_init__()
@@ -965,7 +971,7 @@ class KernelBMF(BMF):
     kernel_input: bool = False
 
     J_prior: str = 'none'
-    J_l1_reg: Optional[float] = 2e-4
+    J_l1_reg: Optional[float] = 0.2    # multiplier c of the theory L1
     J_loss: str = 'rple'
     J_lr: float = 0
 

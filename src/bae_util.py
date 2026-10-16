@@ -346,47 +346,49 @@ def _kfold_assignment(shape, folds, mask='random'):
     return fold_ids.reshape(tuple(shape))
 
 
-def impcv(model, X, mask='random', folds=10, n_sample=1, seed=None, max_folds=None, **opt_args):
+def impcv(model, X, mask='random', folds=10, n_sample=10, seed=None, max_folds=None,
+          burnin=20, return_folds=False, **opt_args):
     """
     Imputation-based K-fold cross validation.
-    """
 
+    Each fold holds out its entries, fits the model FROM SCRATCH on the rest
+    (imputing the held-out entries as it goes), then scores them under `n_sample`
+    posterior samples drawn with the mask, so the scoring latents never see the
+    held-out values.  Returns (train_ll, test_ll) averaged over the folds
+    evaluated; with return_folds=True, a (n_eval, 3) array of per-fold
+    (train_ll, test_ll, test_nmse) instead.
+
+    Pass the same `seed` for every model or rank being compared so they all see
+    the same fold partition (common random numbers), and compare them by per-fold
+    paired differences.  Held-out NMSE (squared error / variance of the held-out
+    entries) does not depend on the fitted noise variance, so it is the steadier
+    score on heavy-tailed data.
+    """
     n_folds = max(1, int(round(folds)))
     n_eval = n_folds if max_folds is None else min(n_folds, int(max_folds))
-
-    # common random numbers: seed the global RNG so the partition + imputation +
-    # sampling are identical across ranks, then restore the caller's stream so the
-    # surrounding sweep RNG is left undisturbed.
     rng_state = _seed_all(seed) if seed is not None else None
-
     try:
         fold_ids = _kfold_assignment(X.shape, n_folds, mask=mask)
-
-        train, test = [], []
+        out = []
         for f in range(n_eval):
             M = (fold_ids == f)
             if not M.any():
                 continue
-            Ximp = 1.0*X
-
-            en = model.fit(Ximp, mask=M, **opt_args)
-
-            # sample WITH the mask: the held-out entries are refilled from the
-            # model each sweep, so the scoring latents never see them.  (With
-            # n_chains > 1 the fit imputes into its own per-chain copy, so
-            # `Ximp` still holds the true held-out values here.)
-            pred = model(model.sample(Ximp, n_samp=n_sample, mask=M))
+            # a warm start would begin from a model fit with this fold observed,
+            # and the cached best-chain operator would belong to the last fold
+            model.initialized = False
+            model._best_op = None
+            model.fit(1.0 * X, mask=M, **opt_args)
+            model._best_op = None
+            pred = model(model.sample(1.0 * X, n_samp=n_sample, mask=M, burnin=burnin))
             loglik = model.loglikelihood(X, pred)
-            test.append(np.mean(loglik[...,M]))
-            train.append(np.mean(loglik[...,~M]))
-            # test.append(np.mean((X[M] - pred.mean(0)[M])**2) / np.mean(X[M]**2))
-            # train.append(np.mean((X[~M] - pred.mean(0)[~M])**2) / np.mean(X[~M]**2))
-
+            nmse = np.mean((X - pred.mean(0))[M] ** 2) / np.var(X[M])
+            out.append((np.mean(loglik[..., ~M]), np.mean(loglik[..., M]), nmse))
     finally:
         if rng_state is not None:
             np.random.set_state(rng_state)
-
-    return np.mean(train), np.mean(test)
+    out = np.array(out)
+    return out if return_folds else (out[:, 0].mean(), out[:, 1].mean())
 
 def oldimpcv(model, X, mask='random', folds=10, n_sample=1, seed=None, max_folds=None,
             initial_temp=1, decay_rate=0.8, period=2,
@@ -777,5 +779,3 @@ class Enby(dis.ExponentialFamily):
 #################################################################
 ########### Sampling latents ####################################
 #################################################################
-
-
