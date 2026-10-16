@@ -557,7 +557,7 @@ class LinearGaussianBMF(BMF):
     # The E-step operates on the SUPPLIED (S, Z) -- grad_step passes the prior's
     # persistent latents, `sample` a fresh chain shaped to the rows of X -- and
     # updates both in place.
-    def EStep(self, X, S, Z=None, mask=None, inplace=True, **kwargs):
+    def EStep(self, X, S, Z=None, mask=None, inplace=True, slab=True, **kwargs):
         
         if Z is None:
             Z = 1.0 * S           # the effective latent of a no-slab prior, and a
@@ -578,7 +578,7 @@ class LinearGaussianBMF(BMF):
         if self.debug and inplace:
             self.outs.append(out)
 
-        ES = Z
+        ES = Z if slab else S
         # SAEM: fold the fresh draw into the running sufficient statistic and hand
         # the smoothed estimate downstream.  Guarded by `inplace` so `sample` never
         # touches the model-bound ES.

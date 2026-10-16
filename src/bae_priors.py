@@ -361,7 +361,7 @@ class BoltzmannPrior(LatentPrior):
     code.  J and h are learned from the BINARY spike -- never from slab
     magnitudes -- and are applied at face value (`temp` scales only the search)."""
 
-    J_l1_reg: Optional[float] = 2e-4   # L1 on the coupling (proximal)
+    J_l1_reg: Optional[float] = 0.2   # L1 on the coupling (proximal)
     J_loss: str = 'rple'               # 'rple' | 'logrise' | 'mle'
     J_lr: float = 0.3
     h_l2_reg: float = 1e-4             # ridge on the field
@@ -384,6 +384,7 @@ class BoltzmannPrior(LatentPrior):
 
     def init_params(self, S):
         batch, m = S.shape[:-2], S.shape[-1]
+        self.J_l1_reg *= np.sqrt(np.log(1e3 * m**2) / batch) / m
         self.J = np.zeros(batch + (m, m))
         self.h = np.zeros(batch + (m,))
         if self.J_loss == 'mle':
@@ -435,8 +436,12 @@ class BoltzmannPrior(LatentPrior):
             J = J * support
         return J, h - lr * gh
 
+    # def learn(self, S):
+    #     self.J, self.h = self._step(self.J, self.h, *self._grads(S),
+                                    # self.J_lr, l1=self.J_l1_reg)
     def learn(self, S):
-        self.J, self.h = self._step(self.J, self.h, *self._grads(S),
+        gJ, gh = self._grads(S)
+        self.J, self.h = self._step(self.J, self.h, gJ, S.shape[-1] * gh,   # h in per-node units
                                     self.J_lr, l1=self.J_l1_reg)
 
     # ---- end-of-fit refit (the reference's _final_prior_fit) --------------

@@ -1686,3 +1686,12 @@ def grid(n, m=None, torus=False, slip=0.0,
                     if p > 0:
                         G.add_edge(r * m + c, t, action=a, weight=p)
     return G
+
+def cycle(k):
+
+    aye = np.arange(k)
+    jay = np.roll(np.arange(k),-1)
+
+    e = [(*ij, {'action':0}) for ij in zip(aye,jay)]
+
+    return nx.MultiDiGraph(e)
