@@ -429,6 +429,20 @@ class FSA(Automaton):
         i, j = self._node_index[u], self._node_index[v]
         return _ordered(a for ii, jj, a in self._edges if ii == i and jj == j)
 
+    def reverse(self, pair):
+        """The (node, action) pairs that undo `pair` = (u, a): (v, b) for each
+        node v that a can take u to, and each action b with an edge v -> u,
+        in the full graph. To hold out an edge in both directions:
+        forbid={pair} | g.reverse(pair). With slip (or any nondeterminism)
+        this can be several pairs per destination."""
+        (u, a), = self._as_pairs([pair])
+        i = self._node_index[u]
+        dests = {j for ii, j, aa in self._edges if ii == i and aa == a}
+        if not dests:
+            raise KeyError(f"no action {a!r} at node {u!r}")
+        return {(self.states[j], b) for j in dests
+                for b in self.edge_actions(self.states[j], u)}
+
     # -- hold-outs --------------------------------------------------------------
 
     def generate(self, rng=None, tree=False, max_len=10_000, forbid=(),
@@ -1037,6 +1051,17 @@ class PDA(Automaton):
         (group,) = self._as_groups([end_with])
         return group
 
+    def reverse(self, group):
+        """The groups that undo `group` = (s, pop, a), as FSA.reverse does for
+        pairs: every group at a state t the group's edges reach that has an
+        edge back to s, whatever its pop symbol. To hold out a transition in
+        both directions: forbid={group} | g.reverse(group)."""
+        (s, pop, a), = self._as_groups([group])
+        i = self._node_index[s]
+        dests = {j for ii, j, aa, p, _, _ in self._raw if (ii, p, aa) == (i, pop, a)}
+        return {(self.states[t], p, aa) for t, j, aa, p, _, _ in self._raw
+                if t in dests and j == i}
+
     def _as_groups(self, items):
         """Validate (state, pop, action) groups against the full graph."""
         out = set()
@@ -1138,3 +1163,4 @@ def grid(n, m=None, torus=False, slip=0.0,
 def cycle(k):
     """A directed k-cycle with a single action, 0."""
     return nx.MultiDiGraph([(i, (i + 1) % k, {"action": 0}) for i in range(k)])
+    
